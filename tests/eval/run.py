@@ -7,6 +7,7 @@ from pathlib import Path
 from agent_memory import AgentMemory
 
 from .harness import evaluate
+from .heldout import HELDOUT
 from .world import build_world
 
 
@@ -33,10 +34,16 @@ def build(root: Path):
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         memory = build(Path(tmp))
-        card = evaluate(*make_fns(memory))
+        fns = make_fns(memory)
+        card = evaluate(*fns)
+        held = evaluate(*fns, scenarios=HELDOUT)
     out = card.to_markdown()
     if card.failures:
         out += "\n\nFailures:\n" + "\n".join(f"- {f}" for f in card.failures)
+    out += ("\n\nHeld-out abstention (scenarios never used for tuning): "
+            f"{held.abstention:.2f} ({held.abstain_hits}/{held.abstain_total})")
+    if held.failures:
+        out += "\n\nHeld-out failures:\n" + "\n".join(f"- {f}" for f in held.failures)
     sys.stdout.buffer.write((out + "\n").encode("utf-8"))
     return 0
 

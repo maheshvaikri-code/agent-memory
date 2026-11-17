@@ -1,7 +1,7 @@
 """Scores an implementation from the text it renders."""
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional
 
 from .scenarios import SCENARIOS, Scenario
 from .world import MARKERS, PINNED
@@ -85,9 +85,10 @@ def _judge(s: Scenario, text: str, card: Scorecard) -> bool:
     return ok
 
 
-def evaluate(recall_fn: RecallFn, check_fn: RecallFn) -> Scorecard:
+def evaluate(recall_fn: RecallFn, check_fn: RecallFn,
+             scenarios: Optional[List[Scenario]] = None) -> Scorecard:
     card = Scorecard()
-    for s in SCENARIOS:
+    for s in (SCENARIOS if scenarios is None else scenarios):
         text = (check_fn if s.check else recall_fn)(s.task, s.files)
         ok = _judge(s, text, card)
         card.by_condition[s.condition].append(ok)
