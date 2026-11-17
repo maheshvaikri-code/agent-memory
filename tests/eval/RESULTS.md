@@ -11,19 +11,78 @@ Run on 2026-11-16 with `PYTHONPATH=src python -m tests.eval.run`:
 | adjacent | 6/6 |
 | superseded | 6/6 |
 | stale | 6/6 |
-| guardrail | 6/6 |
+| guardrail | 8/8 |
 
-- must-include recall: 1.00 (28/28)
+- must-include recall: 1.00 (30/30)
 - superseded or retracted leaks: 0
 - abstention: 1.00 (12/12)
 
+Held-out abstention (scenarios never used for tuning): 0.38 (6/16)
+
+The final fix wave added two guardrail scenarios (a decision matched by its
+constraint text, `tests/eval/world.py` gained the constraint) and the
+held-out set. No existing scenario or expectation changed.
+
 ## Baseline versus result
 
-| Metric | Baseline (`BASELINE.md`) | After the rework |
-|---|---|---|
-| must-include recall | 0.39 (11/28) | 1.00 (28/28) |
-| superseded or retracted leaks | 0 | 0 |
-| abstention | 0.50 (6/12) | 1.00 (12/12) |
+The baseline was measured on the original 48 scenarios (28 must-include
+items); the result column for those 48 is unchanged by the two added
+scenarios, which both pass.
+
+| Metric | Baseline (`BASELINE.md`) | After the rework (48) | Now (50) |
+|---|---|---|---|
+| must-include recall | 0.39 (11/28) | 1.00 (28/28) | 1.00 (30/30) |
+| superseded or retracted leaks | 0 | 0 | 0 |
+| abstention | 0.50 (6/12) | 1.00 (12/12) | 1.00 (12/12) |
+
+## Held-out abstention: the main figure is in-sample
+
+**The main suite's abstention of 1.00 was tuned in-sample.** Its twelve
+abstention scenarios were run over and over while the retriever was tuned
+(the stemmer's `-ings` rule above was written to pass two of them). It says
+little about tasks the tuning never saw.
+
+`tests/eval/heldout.py` holds 16 plausible tasks the world stores nothing
+about: the final reviewer's 12 and 4 more written before the set was first
+run. They are never used for tuning. Same harness and rule: nothing but the
+pinned set may appear. Result: **0.38 (6/16)**; the reviewer's 12 alone
+score 0.42 (5/12).
+
+Every failure is the same weakness: the recall floor lets a record through
+on a single shared non-stopword stem. "write unit tests for the date
+formatting helper" returns the SFTP billing decision (`writ`); "document the
+release process" returns the MongoDB alternative (`document`); "handle
+timezone conversion in reports" returns the refund decision (`handl`); "set
+up a new lint rule" returns the cache-headers convention (`set`); "configure
+the sentry error reporting DSN" returns the ApiError convention (`error`).
+On this set an agent sees an unrelated record on 10 of 16 tasks the memory
+knows nothing about. It is labelled with its `why`
+("matched: writ"), so it can be ignored, but it costs tokens and attention.
+
+### The floor experiment (reverted)
+
+A stricter floor was tried: a record survives only with an informative
+match, meaning two or more distinct matched concepts, a scope hit of at
+least 0.6, a semantic hit, a matched term that is distinctive by document
+frequency (df <= 2, as `check()` uses), or arrival by graph hop. The rule
+for keeping it: main recall 1.00, leaks 0, abstention >= 0.90, every
+condition >= 5/6, and all unit tests passing.
+
+| Floor | Main recall | Leaks | Main abstention | Held-out | Unit tests |
+|---|---|---|---|---|---|
+| current (any shared stem) | 1.00 (30/30) | 0 | 1.00 | 0.38 (6/16) | all pass |
+| informative match, as above | 0.97 (29/30), task_only 5/6 | 0 | 1.00 | 0.38 (6/16) | 4 fail |
+| same without the distinctive-term clause | 0.90 (27/30), superseded 4/6 | 0 | 1.00 | 1.00 (16/16) | 7 fail |
+
+The rule as written does not help at all: in a world of about forty
+records almost every term has df <= 2, so "distinctive" holds for the
+spurious matches (`writ`, `document`, `set`) as much as for real ones, and
+the change only costs recall. Dropping that clause fixes the held-out set
+but loses records whose only match is one real concept ("add logging to
+the order handler" needs the structlog convention, which shares only `log`).
+A lexical floor cannot tell those two cases apart; that needs the semantic
+channel or a larger corpus where document frequency means something. Both
+variants failed the rule, so the floor is unchanged.
 
 ## Latency
 

@@ -224,8 +224,10 @@ summary = memory._consolidator.consolidate()
 health = memory._consolidator.get_memory_health()
 ```
 
-Consolidation archives old session items, merges exact duplicates, and never
-deletes a record.
+Consolidation archives old session items, decays old records to `archived`
+status (it never deletes a record), and merges exact duplicates. Guardrail
+kinds (rejected alternatives, bug patterns, failed refactors, quirks, hot
+paths, performance constraints) and `priority="must"` records never decay.
 
 ## Context Building
 
@@ -269,8 +271,11 @@ print(result.data)   # [1]
 result = engine.execute("NODES bug_pattern WHERE modules_affected CONTAINS 'cache'")
 print([n["id"] for n in result.data])   # ['bp_race_condition']
 
-# Follow edges: the modules a decision constrains
-# (after memory.decisions.add_constraint("Use RocksDB over SQLite", "src/cache", "..."))
+# Follow edges: the modules a decision constrains.
+# add_constraint links two existing records, so the module must be added first.
+memory.codebase.add_module("src/cache", "LRU caching layer")
+memory.decisions.add_constraint("Use RocksDB over SQLite", "src/cache",
+                                "cache writes go through the RocksDB batch API")
 result = engine.execute("TRAVERSE decision:dec_use_rocksdb_over_sqlite -> CONSTRAINS -> module")
 print(result.data)   # [('module', 'mod_src_cache')]
 ```
