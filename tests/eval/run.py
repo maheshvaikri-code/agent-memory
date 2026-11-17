@@ -1,4 +1,9 @@
-"""Print the scorecard: PYTHONPATH=src python -m tests.eval.run"""
+"""Print the scorecard: PYTHONPATH=src python -m tests.eval.run [--shared]
+
+--shared runs the same evaluation with every AgentMemory backed by a shared store
+(AgentMemory.open), the serial-equivalence check of the concurrency-safe storage.
+"""
+import contextlib
 import json
 import sys
 import tempfile
@@ -31,12 +36,26 @@ def build(root: Path):
     return memory
 
 
-def main() -> int:
-    with tempfile.TemporaryDirectory() as tmp:
+@contextlib.contextmanager
+def _mode(shared: bool):
+    """Plain AgentMemory(...), or every instance backed by a shared store in its own folder."""
+    if not shared:
+        yield
+        return
+    from tests.shared_mode import force_shared
+    with tempfile.TemporaryDirectory() as stores, force_shared(stores):
+        yield
+
+
+def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    shared = "--shared" in argv
+    with _mode(shared), tempfile.TemporaryDirectory() as tmp:
         memory = build(Path(tmp))
         fns = make_fns(memory)
         card = evaluate(*fns)
         held = evaluate(*fns, scenarios=HELDOUT)
+        getattr(memory, "close", lambda: None)()      # shared mode: checkpoint, release
     out = card.to_markdown()
     if card.failures:
         out += "\n\nFailures:\n" + "\n".join(f"- {f}" for f in card.failures)
