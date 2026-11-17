@@ -15,11 +15,18 @@ the largest — 12+ distinct stores, not just a key-value log.
 
 ## Maturity
 
-The last full run, `python -m pytest tests`, reported 205 passed, 1 skipped
-and 3 deselected (the deselected tests are the opt-in strict latency gates,
-`pytest -m perf`; the skip is the embeddings test, which needs the optional
-embeddings package). Retrieval quality is gated by the evaluation suite in
-`tests/eval`.
+The last full run, `python -m pytest tests`, reported 375 passed, 1 skipped
+and 7 deselected. The deselected tests are opt-in: six strict latency gates
+(`pytest -m perf`) and one heavy multi-process stress test (`pytest -m
+stress`); the skip is the embeddings test, which needs the optional
+embeddings package. Retrieval quality is gated by the evaluation suite in
+`tests/eval`, which scores the same through a shared store as in memory.
+Shared stores are tested with real processes: concurrent writers, counters
+under contention, and processes killed at named points inside a write and a
+compaction. On the development laptop a write under contention from four
+processes has a p95 of about 3 ms, the check a read makes for other
+processes' writes costs about 0.015 ms when there are none, and a
+5,000-record store opens in about 0.2 s.
 
 ## What it can actually do
 
@@ -54,6 +61,12 @@ and it broke."
 performance notes** — each its own store with its own query surface, all on
 the same graph so they can be cross-referenced (a todo linked to the
 decision that created it, a skill linked to the bug pattern that taught it).
+
+**Shared memory** — `AgentMemory.open("project.memory", agent="codex")`
+lets several agents on one machine use one memory at the same time. Every
+write is durable when the call returns and seen by the other processes on
+their next read; two agents writing the same fact get one record; a process
+killed mid-write never corrupts the store.
 
 **Cache integration** — `cache_integration.py` wraps `ison-cache` so memory
 retrieval respects a token budget instead of dumping the whole history.
@@ -108,5 +121,9 @@ print(again.recall(task="payment webhook retries").to_prompt())
   a paraphrase that shares no word with a memory will not find it.
 - Staleness is tracked per file, not per function; a busy file marks every
   memory anchored to it as changed.
-- Concurrent writers are not yet safe: two processes saving the same file
-  overwrite each other.
+- Only processes on one machine can share a memory, and only through
+  `AgentMemory.open()`. Plain `AgentMemory(...)`, `load()` and `save()` stay
+  single-process: two processes that each load and save the same plain file
+  still overwrite each other. Network filesystems (NFS, SMB) and FAT/exFAT
+  are not supported, and the `amem` CLI does not use `open()` yet (its write
+  commands refuse a shared store).

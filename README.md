@@ -105,6 +105,83 @@ amem end-session project.memory s_20240101_1000 -c 0.8
 amem export project.memory -o project.json -f json
 ```
 
+## Sharing one memory between agents
+
+Several processes on one machine (Claude Code, Codex, a script, an IDE plugin) can use one
+memory at the same time. Open it with `AgentMemory.open()` instead of `AgentMemory(...)` or
+`load()`; it creates the store when the file does not exist, and everything else in the API
+stays the same.
+
+```python
+from agent_memory import AgentMemory
+
+with AgentMemory.open("project.memory", repo_root=".", agent="claude-code") as memory:
+    session = memory.start_session("add retry logic to the payment webhook")
+    memory.remember("convention", {"name": "webhook_retries",
+                                   "rule": "cap payment webhook retries at 5 attempts"})
+    memory.end_session(session)
+```
+
+Another process, at the same time or later:
+
+```python
+from agent_memory import AgentMemory
+
+other = AgentMemory.open("project.memory", repo_root=".", agent="codex")
+print(other.recall(task="payment webhook retries").to_prompt())   # sees the write above
+other.refresh()        # applies other processes' writes now; reads already do it for you
+other.checkpoint()     # folds the journal into the snapshot
+other.close()          # checkpoints if this process wrote, then refuses further writes
+```
+
+What you can rely on:
+
+- A write that returned is durable and every other process sees it on its next read, with no
+  explicit refresh.
+- Two agents writing at the same moment never lose each other's writes. The same fact written
+  by both is merged into one record, and counters (feedback, template use, skill examples)
+  add up exactly.
+- Killing a process at any instant, mid-write included, never corrupts the store: an
+  unfinished write is dropped and every acknowledged one is kept.
+- A reader never sees a half-written file.
+- Single-process use is unchanged: `AgentMemory(...)`, `load()` and `save()` work as before,
+  and `save()` is now atomic (temp file, then replace).
+
+A shared store is three files:
+
+| File | Content |
+| --- | --- |
+| `project.memory` | The snapshot: ordinary ISON that `load()` reads, plus one internal `store_meta` node |
+| `project.memory.journal` | One checksummed line per transaction since the last snapshot |
+| `project.memory.lock` | Empty; the target of the exclusive OS file lock |
+
+Options to `open()`: `durability="flush"` (default) makes each write survive the process
+dying but not a power loss; `durability="fsync"` also survives power loss, at the cost of a
+disk sync per write. `lock_timeout` (default 10 s) is how long a call waits for the lock
+before raising `StoreLockTimeout`. The journal is folded into the snapshot automatically when
+it passes `compact_min_bytes` (default 1 MiB) and is larger than the snapshot, and by
+`checkpoint()` and `close()`. `AgentMemory.load()` on a shared store gives a plain,
+single-process copy with the journal replayed.
+
+Limits:
+
+- Local filesystems only. Network filesystems (NFS, SMB) are not supported: OS file locks
+  are not reliable there. FAT and exFAT are not supported either (coarse timestamps,
+  unstable file ids).
+- The lock is not fair: a process writing in a tight loop can starve others, which then
+  raise `StoreLockTimeout` after `lock_timeout`.
+- One `AgentMemory` instance must not be used from several threads at once; give each thread
+  its own instance, or serialise the calls.
+- Code that iterates `memory.graph.nodes()` or `edges()` while calling store methods should
+  iterate a copy (`list(memory.graph.nodes())`): a store call can apply other processes'
+  writes to the graph mid-loop.
+- After `close()`, store methods and writes raise `ValueError("this store is closed")`;
+  `recall()` and `check()` answer from the state the instance last saw.
+- `export_json()` and `save()` to another path include the internal `store_meta` node.
+- The `amem` CLI still uses `load()`/`save()` (moving it and the server onto `open()` is the
+  next sub-project). On a shared store its read commands work, since `load()` replays the
+  journal, and its write commands refuse with `StoreInUse` rather than overwrite the store.
+
 ## Memory Types
 
 ### 1. Codebase Mental Model

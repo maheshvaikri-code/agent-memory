@@ -255,3 +255,111 @@ About 10 tasks: (0) audit + `from_ison` check + atomic `save()`; (1) lock + jour
 (6) counter-site fixes; (7) `AgentMemory.open`/`load`/`save` integration + exceptions;
 (8) multi-process stress + crash-injection harness; (9) perf gates, docs, README/DESCRIBE.
 Each task: implementer + reviewer subagents, as before.
+
+## 12. Implementation notes
+
+Written after the nine tasks were built and reviewed. The design above held; these are the
+places where the code differs from it or adds to it, and what the final checks found.
+
+### 12.1 Deviations from the design
+
+- **Every public store method is a transaction** (§4.3 named about four sites).
+  `BaseStore.__init_subclass__` wraps every public, non-generator method of every store in
+  `transactional`, so a store read takes the lock, applies other processes' writes first and
+  sees fresh state, and no read-modify-write in a store can race. The audit could therefore
+  not miss a site. The cost is that store reads take the lock: about 0.1 ms per call
+  uncontended (0.12 ms measured for `conventions.get_stats()` on the development laptop).
+  The facade's `recall`, `check` and `get_context` stay lockless (`refresh_if_stale`), and
+  `AgentMemory.get_stats()` runs as one transaction, so it takes the lock once instead of
+  once per store and returns numbers from a single state.
+- **The writer's text index follows remote changes.** `SharedGraph.remote_ops` is bumped
+  whenever content arrives from another process (a replayed op, a reload from disk); the
+  `MemoryWriter` drops its merge-on-same-text index when the counter moved, so a fact written
+  by another process is merged, not duplicated.
+- **`JournalBackend.read_only(path)`** returns the snapshot with the journal replayed as a
+  plain graph with no backend. `AgentMemory.load()` uses it when a journal exists.
+- **Lockless reads never declare corruption.** Any anomaly in a lockless read (another
+  generation, a sequence gap, a damaged or vanished line, a shrunk or unreadable file) makes
+  it retry under the lock, and only there is `StoreCorrupt` raised, when the journal read from
+  its start is damaged.
+- **An unreadable journal is never treated as absent.** `journal.Tail.error` carries the
+  reason (a sharing violation, a directory, an I/O error); under the lock it raises
+  `StoreCorrupt`, and a lockless read retries under the lock.
+- **A live writer follows a moved snapshot.** A compaction that replaced the snapshot and then
+  crashed (or failed) before rewriting the journal leaves a journal that still carries the old
+  generation. A process that was behind it must not append to that stale journal, because the
+  next reader discards it. Under the lock, every transaction first compares the snapshot's
+  file signature `(size, mtime_ns, inode)` with the one it is based on; when it changed, the
+  snapshot is read and its generation decides: the same generation continues, another one
+  makes the process rebuild from the new snapshot (and reset the journal) before it appends.
+  The same signature is part of what `refresh_if_stale` compares, because a rewritten journal
+  can have the old size and mtime.
+- **A per-backend thread lock.** Each `JournalBackend` has an `RLock` taken before the file
+  lock and around lockless reads, so threads of one process do not contend through the OS
+  and never interleave on the graph or the journal position.
+- **`checkpoint()` is refused inside a transaction** (`RuntimeError`): the transaction's ops
+  are not journaled yet, so folding the graph then would put unjournaled state in a snapshot.
+- **`close()` does not raise on a lock timeout.** Every write is already in the journal, so a
+  checkpoint at close that cannot take the lock in time is skipped and a note is appended to
+  the backend's `warnings`; the next compaction folds the journal instead.
+- **Stale temp snapshots are removed only when older than 60 s** (by `open()`), so the temp
+  file of an atomic write still in progress outside the store's lock, such as a plain
+  `save()` to the same path, is not deleted under it.
+
+### 12.2 Behaviour users can observe
+
+- `save()` writes LF newlines (it is now atomic and writes the text itself). On Windows it
+  used to write CRLF, so a saved file changes its bytes once.
+- A snapshot deleted while agents run makes every locked operation of a live instance raise
+  `StoreCorrupt`: loud, never silent loss. Lockless reads keep answering from memory.
+- After `close()`, store methods and writes raise `ValueError("this store is closed")`;
+  `recall()` and `check()` keep answering from the state the instance last saw.
+- One `AgentMemory` instance is not safe for use from several threads.
+- Code that iterates `graph.nodes()` or `graph.edges()` while calling store methods can hit
+  "dictionary changed size during iteration" in shared mode, because each store call can
+  apply other processes' writes; iterate a list copy (as `check_suggestion` now does).
+- In shared mode `export_json()` and `save()` to another path include the internal
+  `store_meta` node.
+- Two processes that start a session in the same second get distinct session ids (the
+  per-process counter is checked against the graph inside the session's transaction).
+
+### 12.3 Limits
+
+- Local filesystems only: no NFS or SMB. FAT and exFAT are not supported either: their
+  timestamps are coarse and their file ids unstable, and the snapshot signature relies on
+  both.
+- The file lock is not fair. A process writing in a tight loop can starve others, which raise
+  `StoreLockTimeout` after the default 10 s.
+- `durability="flush"` survives the process dying, not a power loss; `"fsync"` adds a disk
+  sync per transaction.
+- The strict performance gates are opt-in (`pytest -m perf`) because they fail on a
+  throttled laptop; two loose guards always run.
+
+### 12.4 What the final checks found (Task 9)
+
+- **Serial equivalence.** With `AGENT_MEMORY_FORCE_SHARED=1` every `AgentMemory(...)` in the
+  suite is backed by a fresh shared store (`tests/shared_mode.py`). Two tests fail, both by
+  design: `test_plain_memory_is_unchanged` asserts that a plain instance is not shared, and
+  `test_save_isonl_suffix_is_still_supported` compares a plain `ISONGraph` count of the saved
+  copy, which counts the `store_meta` node, with the shared graph's count, which excludes it.
+  No defect was found. `python -m tests.eval.run --shared` prints a scorecard identical to the
+  plain run (recall 1.00, leaks 0, abstention 1.00, held-out abstention 0.38).
+- **`get_stats()`** took the lock once per store (15 times) and could mix states; it is now
+  one transaction.
+- **Performance** on the development laptop: contended write p95 3.1 ms (4 processes x 60
+  writes; budget 15 ms), idle `refresh_if_stale` 0.014 ms (budget 0.2 ms), open of a
+  5,000-record store 0.21 s (budget 1.5 s). Building that store is slow in both modes (about
+  100 s for 5,000 `remember` calls), because each write scans the records of its kind; that
+  is the writer's cost, not the storage's.
+- Warnings recorded after `open()` (a skipped compaction, a skipped checkpoint at close,
+  replay notes) go to the backend's `warnings` list; `load_warnings` is a copy taken at open,
+  so they are not on a public attribute.
+
+### 12.5 Open decisions (not resolved here)
+
+- Reads after `close()` raise for store methods (above). Whether reads should keep working
+  on the last state, as `recall()` does, is open.
+- `start_session` links a new session to the last session of any agent (§10).
+- The CLI and the greenfield, governed and integration modules still use plain
+  `load()`/`save()`. On a shared store the CLI's read commands work and its write commands
+  raise `StoreInUse`. Sub-project 3 moves the CLI to `open()`.
