@@ -211,3 +211,18 @@ def test_a_raising_sink_does_not_break_recall(memory):
     result = memory.recall(task="payment webhook retry")
     assert memory.storm.id in ids(result)
     assert memory.recall(task="payment webhook retry").items
+
+
+def test_over_cap_pinned_record_that_matches_the_query_competes_in_ranked_packing(memory):
+    long_rule = " ".join(f"never log secrets from webhook payload field {n} verbatim" for n in range(14))
+    big = memory.remember("convention", {"category": "security", "rule": long_rule},
+                          priority="must")
+    # cap (15% of 800 = 120) < cost of the convention < the overall budget
+    result = memory.recall(task="webhook retry", max_tokens=800)
+    hits = [i for i in result.items if i.record.id == big.id]
+    assert len(hits) == 1 and not hits[0].pinned
+    assert memory.storm.id in ids(result)
+    # with a large budget it fits the pinned share and keeps its guarantee
+    result = memory.recall(task="webhook retry", max_tokens=4000)
+    hits = [i for i in result.items if i.record.id == big.id]
+    assert len(hits) == 1 and hits[0].pinned

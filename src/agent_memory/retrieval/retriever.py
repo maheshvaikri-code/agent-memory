@@ -302,14 +302,15 @@ class Retriever:
         ranked = self.rank(query, files, kinds, cands=cands)
         pinned = self._pinned(cands, {item.record.ref: item for item in ranked}) if kinds is None else []
         taken = {item.record.ref for item in ranked} | {item.record.ref for item in pinned}
-        ranked = [item for item in ranked if not item.pinned]   # packed once, in the pinned group
         carried = self._open_session_items(cands, taken) if kinds is None else []
 
         budget = max_tokens - self.counter.count("\n".join(HEADERS.values()) + "\n")
         pinned_cap = int(max_tokens * PINNED_BUDGET_SHARE)
         selected: List[ScoredMemory] = []
         used = pinned_used = 0
-        for group, cap in ((pinned, pinned_cap), (ranked, None), (carried, None)):
+
+        def pack(group: List[ScoredMemory], cap: Optional[int] = None) -> None:
+            nonlocal used, pinned_used
             for item in group:
                 cost = self.counter.count(render_item(item, compact) + "\n")
                 if used + cost > budget:
@@ -320,6 +321,16 @@ class Retriever:
                 used += cost
                 if cap is not None:
                     pinned_used += cost
+
+        pack(pinned, pinned_cap)
+        # A pinned record that also matched the query but did not fit the pinned share
+        # competes as an ordinary ranked item.
+        packed = {item.record.ref for item in selected}
+        for item in pinned:
+            if item.record.ref not in packed:
+                item.pinned = False
+        pack([item for item in ranked if item.record.ref not in packed])
+        pack(carried)
 
         result = RecallResult(task or "", files, selected, 0, compact)
         while result.items and self.counter.count(result.to_prompt()) > max_tokens:
