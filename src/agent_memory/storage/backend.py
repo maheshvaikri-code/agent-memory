@@ -35,6 +35,10 @@ from .shared_graph import META_ID, META_TYPE, SharedGraph
 
 _TEMP_MAX_AGE = 60.0       # seconds before a stray temp snapshot is considered abandoned
 _ISONL = ".isonl"          # the line format plain load()/save() pick by suffix
+# After a compaction was skipped (the snapshot could not be replaced), automatic compaction is
+# tried again only once the journal has doubled or this many seconds have passed, so a held
+# snapshot does not make every write pay the replace retry inside the lock.
+_COMPACT_BACKOFF_SECONDS = 60.0
 
 _FileSignature = Optional[Tuple[int, int, int]]
 
@@ -113,6 +117,10 @@ class JournalBackend:
         self._depth = 0
         self._pending: List[str] = []
         self._closed = False
+        # After a skipped compaction: (generation, journal offset, monotonic time) of the
+        # attempt. Automatic compaction waits; checkpoint() and close() always try.
+        self._compact_backoff: Optional[Tuple[str, int, float]] = None
+        self._skip_noted = False   # one warning per run of skipped compactions
 
     @contextlib.contextmanager
     def _exclusive(self):
@@ -468,13 +476,32 @@ class JournalBackend:
     def _maybe_compact(self) -> None:
         """Compaction after a commit is housekeeping. The transaction is already durable, so
         a failure here is a warning: it must not make the caller think the write failed."""
-        if self.offset <= self.compact_min_bytes:
+        if self.offset <= self.compact_min_bytes or self._backing_off():
             return
         try:
             if self.offset > os.path.getsize(self.path):
                 self._compact()
         except Exception as exc:
-            self.warnings.append(f"compaction skipped: {exc}")
+            self._skipped_compaction(exc)
+
+    def _backing_off(self) -> bool:
+        if self._compact_backoff is None:
+            return False
+        generation, offset, since = self._compact_backoff
+        if (generation == self.generation and self.offset < 2 * offset
+                and time.monotonic() - since < _COMPACT_BACKOFF_SECONDS):
+            return True
+        self._compact_backoff = None
+        return False
+
+    def _skipped_compaction(self, exc: BaseException) -> None:
+        """Back off automatic compaction, and warn once until a compaction succeeds again."""
+        self._compact_backoff = (self.generation, self.offset, time.monotonic())
+        if not self._skip_noted:
+            self._skip_noted = True
+            self.warnings.append(f"compaction skipped: {exc} (retried automatically after "
+                                 f"the journal doubles or {_COMPACT_BACKOFF_SECONDS:.0f} s, "
+                                 f"and by every checkpoint())")
 
     def _resync(self) -> None:
         """A commit failed while we still hold the lock: cut whatever part of the line reached
@@ -522,8 +549,9 @@ class JournalBackend:
             if not isinstance(exc, OSError):
                 raise
             # a third party holds the snapshot open (antivirus, editor), or the disk is full
-            self.warnings.append(f"compaction skipped: {exc}")
+            self._skipped_compaction(exc)
             return False
+        self._compact_backoff, self._skip_noted = None, False
         self._snapshot_signature = _file_signature(self.path)
         faults.hit("after_snapshot_replace")
         self.generation = new_generation
