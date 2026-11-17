@@ -84,3 +84,16 @@ class TestGraphEmbeddedMemory:
         stats = embedded.stats()
         assert stats["indexed"] is True
         assert stats["total_embeddings"] == 3
+
+
+def test_indexes_registry_kinds_and_plugs_into_recall():
+    m = AgentMemory("t")
+    quirk = m.remember("quirk", {"description": "pipeline drops commands over the payload limit"})
+    gone = m.remember("quirk", {"description": "an old belief that was wrong"})
+    m.retract(gone.id, "wrong")
+    embedded = GraphEmbeddedMemory(m, use_mock_encoder=True)
+    counts = embedded.index_all()
+    assert counts["quirk"] == 1 and counts["total"] == 1
+    m.attach_semantic(embedded)
+    result = m.recall(task="pipeline drops commands")   # must not raise
+    assert quirk.id in repr(result)

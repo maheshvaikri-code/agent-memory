@@ -38,18 +38,12 @@ except ImportError:
     SentenceTransformerEncoder = None
     MockEncoder = None
 
+from .record import KINDS, MemoryRecord
 
-# Node types this indexes, and which properties to concatenate into the
-# text that gets embedded. Mirrors cache_integration.SemanticMemory's
-# coverage so results are comparable regardless of which backend is used.
-INDEXABLE_TYPES: Dict[str, List[str]] = {
-    "convention": ["category", "rule", "pattern"],
-    "decision": ["title", "context"],
-    "bug_pattern": ["name", "signature", "description"],
-    "dependency": ["name", "description"],
-    "template": ["name", "pattern", "template"],
-    "module": ["name", "purpose", "description"],
-}
+
+# Kept for importers. The kind registry in record.py is the source of truth;
+# each kind is embedded by its rendered text.
+INDEXABLE_TYPES: Dict[str, List[str]] = {kind: [] for kind in KINDS}
 
 
 @dataclass
@@ -117,15 +111,13 @@ class GraphEmbeddedMemory:
             return {"status": "already_indexed"}
 
         counts: Dict[str, int] = {}
-        for node in self.memory.graph.nodes():
-            fields = INDEXABLE_TYPES.get(node.type)
-            if fields is None:
-                continue
-            text = " ".join(str(node.properties[f]) for f in fields if node.properties.get(f))
-            if not text:
-                continue
-            self._store.add(node.ref, text)
-            counts[node.type] = counts.get(node.type, 0) + 1
+        for kind in KINDS:
+            for node in self.memory.graph.nodes(kind):
+                rec = MemoryRecord.from_node(node)
+                if rec.status != "active" or not rec.text:
+                    continue
+                self._store.add(node.ref, rec.text)
+                counts[kind] = counts.get(kind, 0) + 1
 
         self._indexed = True
         counts["total"] = sum(counts.values())
