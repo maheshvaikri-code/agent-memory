@@ -13,7 +13,7 @@ from .budget import TokenCounter
 from .channels import graph_neighbours, scope_scores
 from .lexical import BM25
 from .render import HEADERS, render, render_item
-from .tokenize import tokenize, tokens_for
+from .tokenize import compound_tokens, tokenize, tokens_for
 
 log = logging.getLogger(__name__)
 
@@ -168,7 +168,8 @@ class Retriever:
 
         stems = " ".join(os.path.splitext(os.path.basename(f))[0] for f in files)
         query_tokens = tokenize(f"{query} {stems}")
-        bm25 = BM25({ref: tokens_for(rec.text) for ref, rec in cands.items()})
+        bm25 = BM25({ref: tokens_for(rec.text) + compound_tokens(rec.text)
+                     for ref, rec in cands.items()})
         hits = {h.key: h for h in bm25.search(query_tokens)}
         lexical = {ref: h.score for ref, h in hits.items()}
         scope, promoted = scope_scores(self.graph, cands, files)
@@ -291,6 +292,21 @@ class Retriever:
         return out
 
     # -- public ------------------------------------------------------------
+
+    def check(self, approach: str, files: Optional[List[str]] = None,
+              limit: int = 10) -> List[ScoredMemory]:
+        """Prior negative experience relevant to a proposed approach.
+
+        Guardrail kinds only, plus decisions that constrain a module holding
+        one of `files`. Stricter floor than recall(); orphaned records are
+        excluded. This reports relevance, not contradiction: deciding whether
+        the approach actually conflicts is the caller's job.
+        """
+        files = [norm_path(f, self.repo_root) for f in (files or [])]
+        guardrails = [kind for kind, spec in KINDS.items() if spec.tier == GUARDRAIL]
+        _, promoted = scope_scores(self.graph, self._candidates(["decision"]), files)
+        ranked = self.rank(approach or "", files, guardrails, strict=True, extra_refs=promoted)
+        return ranked[:limit]
 
     def recall(self, task: str = "", files: Optional[List[str]] = None,
                symbols: Optional[List[str]] = None, kinds: Optional[List[str]] = None,

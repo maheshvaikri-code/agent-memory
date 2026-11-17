@@ -48,6 +48,23 @@ def tokenize(text: str) -> List[str]:
 
 
 @lru_cache(maxsize=65536)
+def compound_tokens(text: str) -> Tuple[str, ...]:
+    """Joined form of each camelCase word in `text` ("MongoDB" -> "mongodb").
+
+    tokenize() splits camelCase, so a query that writes the word lower-case
+    ("mongodb") would never meet the stored "mongo", "db". Indexing the joined
+    form on the document side closes that gap without changing tokenize().
+    """
+    out = []
+    for word in _WORD.findall(text or ""):
+        if _CAMEL.search(word):
+            joined = word.lower()
+            if joined not in STOPWORDS:
+                out.append(_stem(joined))
+    return tuple(out)
+
+
+@lru_cache(maxsize=65536)
 def tokens_for(text: str) -> Tuple[str, ...]:
     """Cached tokens. Unchanged records cost a dictionary lookup per recall."""
     return tuple(tokenize(text))

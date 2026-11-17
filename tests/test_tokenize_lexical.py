@@ -1,10 +1,15 @@
 from agent_memory.retrieval.lexical import BM25
-from agent_memory.retrieval.tokenize import tokenize, tokens_for
+from agent_memory.retrieval.tokenize import compound_tokens, tokenize, tokens_for
 
 
 def test_splits_code_identifiers_and_paths():
     assert tokenize("handleWebhook retry_delivery services/payments/webhook.py") == \
         ["handl", "webhook", "retry", "delivery", "servic", "payment", "webhook", "py"]
+
+
+def test_compound_tokens_join_camel_case_words_only():
+    assert compound_tokens("Rejected: MongoDB handleWebhook retry") == ("mongodb", "handlewebhook")
+    assert compound_tokens("retry_delivery plain words") == ()
 
 
 def test_stems_inflections_to_a_common_form():

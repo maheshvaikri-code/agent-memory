@@ -225,6 +225,16 @@ class AgentMemory:
                 if check:
                     warnings.append(check)
 
+        # Ranked guardrails, in addition to the exact matches above.
+        for item in self.check(suggestion):
+            warnings.append({
+                "type": "guardrail",
+                "id": item.record.id,
+                "kind": item.record.kind,
+                "message": item.text,
+                "score": item.score,
+            })
+
         return warnings
 
     def who_knows(self, topic: str) -> Optional[Dict[str, Any]]:
@@ -249,6 +259,11 @@ class AgentMemory:
         """
         return self._retriever.recall(task=task, files=files, symbols=symbols, kinds=kinds,
                                       max_tokens=max_tokens, compact=compact)
+
+    def check(self, approach: str, files: Optional[List[str]] = None):
+        """Rejected alternatives, bug patterns, failed refactors and constraints
+        relevant to `approach`. Empty when nothing relevant is stored."""
+        return self._retriever.check(approach, files)
 
     def attach_semantic(self, searcher) -> None:
         """Add an optional embedding channel. `searcher.search(query, k=...)` must return
