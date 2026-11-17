@@ -74,5 +74,6 @@ where = ["src"]
 testpaths = ["tests"]
 markers = [
     "perf: strict wall-clock latency bounds; flaky on CPUs that throttle, so opt-in with -m perf",
+    "stress: heavy multi-process stress (opt in with -m stress)",
 ]
-addopts = "-m 'not perf'"
+addopts = "-m 'not perf and not stress'"
