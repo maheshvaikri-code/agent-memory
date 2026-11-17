@@ -5,6 +5,8 @@ Context Builder - Builds coding context from memory
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+from .record import MemoryRecord
+
 if TYPE_CHECKING:
     from .memory import AgentMemory
 
@@ -203,9 +205,48 @@ class ContextBuilder:
 
         context = CodingContext(task=task, files=files, items=result.items, result=result,
                                 estimated_tokens=result.tokens)
+        context.session_context = self._session_frame()
+        ranked = {item.record.ref for item in result.items}
         for item in result.items:
-            self._place(context, item)
+            self._place(context, item, ranked)
         return context
+
+    def _session_frame(self) -> Dict[str, Any]:
+        """The keys SessionStore.get_session_context returned for the latest session, so
+        they are present whenever a session exists. The lists hold ranked items only."""
+        graph = self.memory.graph
+        latest, started = None, ""
+        for node in graph.nodes("session"):
+            when = str(node.properties.get("started") or "")
+            if latest is None or when > started:
+                latest, started = node, when
+        if latest is None:
+            return {}
+        previous, seen, current = [], {latest.id}, ("session", latest.id)
+        while len(previous) < 10:
+            nxt = next((e.target for e in graph.edges("CONTINUES", source=current)
+                        if e.target[1] not in seen and graph.has_node(*e.target)), None)
+            if nxt is None:
+                break
+            seen.add(nxt[1])
+            previous.append(dict(graph.get_node(*nxt).properties))
+            current = nxt
+        return {"session": dict(latest.properties), "previous_sessions": previous,
+                "decisions": [], "partial_work": [], "open_questions": [], "blockers": []}
+
+    def _fix_for(self, ref, ranked) -> Optional[Dict[str, Any]]:
+        """The fix linked to a bug pattern by FIX_FOR: a ranked one first, else an active one."""
+        graph = self.memory.graph
+        fixes = []
+        for edge in graph.edges("FIX_FOR", target=ref):
+            if edge.source[0] == "fix_pattern" and graph.has_node(*edge.source):
+                rec = MemoryRecord.from_node(graph.get_node(*edge.source))
+                if rec.status == "active":
+                    fixes.append(rec)
+        if not fixes:
+            return None
+        fixes.sort(key=lambda r: (r.ref not in ranked, str(r.id)))
+        return {"id": fixes[0].id, **fixes[0].fields}
 
     def _bucket(self, item) -> str:
         kind = item.record.kind
@@ -218,7 +259,7 @@ class ContextBuilder:
                 return name
         return "module_context"
 
-    def _place(self, context: CodingContext, item) -> None:
+    def _place(self, context: CodingContext, item, ranked=frozenset()) -> None:
         rec = item.record
         props = {"id": rec.id, **rec.fields}
         bucket = self._bucket(item)
@@ -234,8 +275,11 @@ class ContextBuilder:
         elif bucket == "hot_paths":
             context.hot_paths.append({"warning": item.text, **props})
         elif bucket == "bug_risks":
-            key = "fix" if rec.kind == "fix_pattern" else "pattern"
-            context.bug_risks.append({"type": "bug_risk", key: props})
+            # {"type", "pattern", "fix"} as before; a fix rides on its pattern's entry and
+            # is not an entry of its own (it stays in `items` and the prompt)
+            if rec.kind != "fix_pattern":
+                context.bug_risks.append({"type": "bug_risk", "pattern": props,
+                                          "fix": self._fix_for(rec.ref, ranked)})
         elif bucket == "dependencies":
             key = "workaround" if rec.kind == "workaround" else "quirk"
             context.dependencies.append({key: props})

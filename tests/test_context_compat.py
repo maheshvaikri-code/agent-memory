@@ -102,3 +102,57 @@ def test_excluding_an_unrelated_category_keeps_carried_session_items():
     assert any("max batch size" in q["question"] for q in ctx.session_context["open_questions"])
     only = m.get_context("add a dark mode toggle", include=["bug_risks"])
     assert "max batch size" not in only.to_prompt()
+
+
+# -- return shapes of spec section 8 ---------------------------------------------------
+
+def test_every_bug_risk_entry_has_a_pattern_and_a_fix_key():
+    ctx = build().get_context("fix the cache stampede", files=["src/cache/lru.py"])
+    assert ctx.bug_risks
+    for b in ctx.bug_risks:
+        assert b["type"] == "bug_risk" and set(b) >= {"pattern", "fix"}
+        assert b["pattern"]["name"]                       # the old access path works
+    (stampede,) = [b for b in ctx.bug_risks if b["pattern"]["name"] == "cache_stampede"]
+    assert stampede["fix"]["fix_template"] == "take a per-key lock"
+
+
+def test_a_pattern_without_a_fix_has_fix_none():
+    m = AgentMemory("t")
+    m.bugs.add_pattern("webhook_storm", "unbounded retry on webhook")
+    (entry,) = m.get_context("unbounded retry on the webhook").bug_risks
+    assert entry["pattern"]["name"] == "webhook_storm" and entry["fix"] is None
+
+
+def test_a_fix_whose_pattern_did_not_rank_is_not_its_own_bug_risk_entry():
+    m = AgentMemory("t")
+    m.bugs.add_pattern("cache_stampede", "concurrent misses recompute the key")
+    m.bugs.add_fix_pattern("cache_stampede", "take a per-key lock with a timeout", "")
+    ctx = m.get_context("per-key lock timeout", include=["bug_risks"])
+    assert any(i.record.kind == "fix_pattern" for i in ctx.items)
+    assert all("pattern" in b for b in ctx.bug_risks)
+    assert "per-key lock" in ctx.to_prompt()
+
+
+def test_session_context_has_all_its_keys_whenever_a_session_exists():
+    m = build()
+    assert m.get_context("fix the cache stampede").session_context == {}
+    sid = m.start_session("cache work")
+    m.sessions.add_open_question(sid, "should the stampede lock be per key?")
+    ctx = m.get_context("paint the logo purple")
+    sc = ctx.session_context
+    assert {"session", "previous_sessions", "decisions", "partial_work",
+            "open_questions", "blockers"} <= set(sc)
+    assert sc["session"]["task"] == "cache work"
+    assert sc["decisions"] == [] and sc["blockers"] == [] and sc["partial_work"] == []
+    assert [q["question"] for q in sc["open_questions"]] == ["should the stampede lock be per key?"]
+
+
+def test_previous_sessions_follow_the_continues_chain():
+    m = build()
+    first = m.start_session("one")
+    m.end_session(first)
+    second = m.start_session("two")
+    m.sessions.continue_session(second, first)
+    sc = m.get_context("anything").session_context
+    assert sc["session"]["task"] == "two"
+    assert [s["task"] for s in sc["previous_sessions"]] == ["one"]
