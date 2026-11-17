@@ -16,14 +16,17 @@ _VOWELS = "aeiou"
 
 
 def _undouble(w: str) -> str:
-    """planning -> plann -> plan. Never below four letters: "settings" must not become
-    "set", nor "logging" "log" -- a short root is a different, common word."""
-    if len(w) > 4 and w[-1] == w[-2] and w[-1] not in _VOWELS + "ls":
+    """planning -> plann -> plan, logged -> logg -> log."""
+    if len(w) > 2 and w[-1] == w[-2] and w[-1] not in _VOWELS + "ls":
         return w[:-1]
     return w
 
 
 def _stem(w: str) -> str:
+    if len(w) > 5 and w.endswith("ings"):
+        # A plural "-ings" word is a noun ("settings", "warnings"): drop only the plural,
+        # so "settings" does not meet the verb "set". "setting" still stems to "set".
+        return w[:-1]
     if len(w) > 4 and w.endswith("ies"):
         w = w[:-3] + "y"
     elif len(w) > 4 and w.endswith("ied"):
@@ -33,11 +36,9 @@ def _stem(w: str) -> str:
     elif len(w) > 3 and w.endswith("s") and not w.endswith(("ss", "us", "is")):
         w = w[:-1]
     if len(w) > 5 and w.endswith("ing"):
-        w = w[:-3]
-        w = _undouble(w)
+        w = _undouble(w[:-3])
     elif len(w) > 4 and w.endswith("ed") and not w.endswith("eed"):
-        w = w[:-2]
-        w = _undouble(w)
+        w = _undouble(w[:-2])
     if len(w) > 4 and w.endswith("e"):
         w = w[:-1]
     return w

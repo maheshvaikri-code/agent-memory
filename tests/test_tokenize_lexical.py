@@ -18,11 +18,14 @@ def test_stems_inflections_to_a_common_form():
     assert tokenize("migrations migration") == ["migration"] * 2
 
 
-def test_undoubling_keeps_short_roots_apart():
-    assert tokenize("planned planning") == ["plan"] * 2
-    assert tokenize("settings setting") == ["sett"] * 2
-    assert tokenize("set") == ["set"]          # "are set immutable" is not about settings
-    assert tokenize("logging logged log") == ["logg", "logg", "log"]
+def test_short_roots_collapse_but_plural_ing_nouns_keep_their_ing():
+    assert tokenize("planned planning plan") == ["plan"] * 3
+    assert tokenize("logging logged log") == ["log"] * 3
+    assert tokenize("mapping mapped map") == ["map"] * 3
+    assert tokenize("running run") == ["run"] * 2
+    # "settings" is a noun: it must not meet the verb in "are set immutable"
+    assert tokenize("settings") == ["setting"]
+    assert tokenize("set") == ["set"]
 
 
 def test_drops_stopwords_and_single_characters():
