@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from .memory import AgentMemory
 
+from .record import KINDS, MemoryRecord, normalize_text, utc_now
+
 
 class MemoryConsolidator:
     """
@@ -124,33 +126,19 @@ class MemoryConsolidator:
                 if importance >= 1.2 and age_days < max_age * 1.5:
                     continue
 
-                # Check if actively used
-                if self._is_actively_used(node):
+                if node.properties.get("status") == "archived":
                     continue
 
                 nodes_to_remove.append((node.type, node.id))
                 decayed += 1
 
-        # Remove decayed nodes
+        # Archive, never delete: the record stays for history and is not recalled.
+        now_iso = utc_now()
         for node_type, node_id in nodes_to_remove:
-            try:
-                self.memory.graph.remove_node(node_type, node_id)
-            except:
-                pass
+            self.memory.graph.update_node(node_type, node_id, status="archived",
+                                          invalid_at=now_iso, updated_at=now_iso)
 
         return decayed
-
-    def _is_actively_used(self, node) -> bool:
-        """Check if a node is actively referenced"""
-        # Check if node has recent edges
-        node_ref = (node.type, node.id)
-
-        for edge in self.memory.graph.edges():
-            if edge.source == node_ref or edge.target == node_ref:
-                # Has connections, likely still relevant
-                return True
-
-        return False
 
     def _strengthen_used_memories(self) -> int:
         """Increase confidence/proficiency of frequently used memories"""
@@ -185,30 +173,30 @@ class MemoryConsolidator:
         return strengthened
 
     def _merge_similar(self) -> int:
-        """Merge similar memories to reduce redundancy"""
+        """Merge active records of the same kind with the same normalised text."""
         merged = 0
-
-        # Find similar bug patterns
-        patterns = {}
-        for node in self.memory.graph.nodes():
-            if node.type == "bug_pattern":
-                sig = node.properties.get("signature", "")
-                if sig in patterns:
-                    # Potential duplicate
+        graph = self.memory.graph
+        for kind in KINDS:
+            groups: Dict[str, List[MemoryRecord]] = {}
+            for node in graph.nodes(kind):
+                rec = MemoryRecord.from_node(node)
+                if rec.status == "active" and rec.text:
+                    groups.setdefault(normalize_text(rec.text), []).append(rec)
+            for records in groups.values():
+                if len(records) < 2:
+                    continue
+                records.sort(key=lambda r: (-r.confidence, r.created_at or "", str(r.id)))
+                keep, rest = records[0], records[1:]
+                evidence = [keep.evidence] + [r.evidence for r in rest]
+                evidence = "; ".join(dict.fromkeys(e for e in evidence if e))
+                now = utc_now()
+                graph.update_node(kind, keep.id, confidence=min(0.95, keep.confidence + 0.1),
+                                  evidence=evidence, updated_at=now)
+                for rec in rest:
+                    graph.update_node(kind, rec.id, status="superseded", invalid_at=now, updated_at=now)
+                    if not graph.has_edge("SUPERSEDES", keep.ref, rec.ref):
+                        graph.add_edge("SUPERSEDES", keep.ref, rec.ref, reason="duplicate", date=now)
                     merged += 1
-                else:
-                    patterns[sig] = node.id
-
-        # Find similar conventions
-        conventions = {}
-        for node in self.memory.graph.nodes():
-            if node.type == "convention":
-                key = (node.properties.get("category"), node.properties.get("rule"))
-                if key in conventions:
-                    merged += 1
-                else:
-                    conventions[key] = node.id
-
         return merged
 
     def _archive_sessions(self) -> int:
