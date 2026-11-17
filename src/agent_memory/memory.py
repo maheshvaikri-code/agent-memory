@@ -425,9 +425,10 @@ class AgentMemory:
     # Statistics
     # =========================================================================
 
+    @transactional
     def get_stats(self) -> Dict[str, Any]:
-        """Get comprehensive memory statistics"""
-        self._sync()
+        """Get comprehensive memory statistics. In shared mode one transaction: the lock is
+        taken once and every number comes from the same state."""
         return {
             "name": self.name,
             "total_nodes": self.graph.node_count(),
