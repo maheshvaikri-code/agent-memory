@@ -226,3 +226,49 @@ def test_over_cap_pinned_record_that_matches_the_query_competes_in_ranked_packin
     result = memory.recall(task="webhook retry", max_tokens=4000)
     hits = [i for i in result.items if i.record.id == big.id]
     assert len(hits) == 1 and hits[0].pinned
+
+
+def test_dedup_matches_the_pairwise_definition():
+    import random
+    from agent_memory.retrieval.retriever import DEDUP_JACCARD, Retriever
+    from agent_memory.retrieval.tokenize import tokens_for
+
+    def naive(items):
+        kept, kept_tokens = [], []
+        for item in items:
+            tokens = set(tokens_for(item.record.text))
+            if not any((tokens | o) and len(tokens & o) / len(tokens | o) >= DEDUP_JACCARD
+                       for o in kept_tokens):
+                kept.append(item)
+                kept_tokens.append(tokens)
+        return kept
+
+    rng = random.Random(7)
+    vocab = [f"word{n}" for n in range(12)]
+    for _ in range(200):
+        items = [SimpleNamespace(record=SimpleNamespace(
+                     text=" ".join(rng.sample(vocab, rng.randint(0, 8)))))
+                 for _ in range(rng.randint(1, 25))]
+        assert Retriever._dedup(items) == naive(items)
+
+
+def test_dedup_with_corpus_prefixes_matches_without():
+    import random
+    from agent_memory.retrieval.lexical import BM25
+    from agent_memory.retrieval.retriever import Retriever, _Index
+    from agent_memory.retrieval.tokenize import tokens_for
+
+    rng = random.Random(11)
+    vocab = [f"term{n}" for n in range(10)]
+    for _ in range(100):
+        texts = [" ".join(rng.sample(vocab, rng.randint(0, 7))) for _ in range(30)]
+        index = _Index((), BM25({n: tokens_for(t) for n, t in enumerate(texts)}))
+        items = [SimpleNamespace(record=SimpleNamespace(text=t)) for t in texts[:20]]
+        assert Retriever._dedup(items, index.prefix) == Retriever._dedup(items)
+
+
+def test_record_cache_sees_direct_graph_updates(memory):
+    ref = memory.naming.ref
+    assert any(i.record.ref == ref for i in memory.recall(task="cache key naming").items)
+    memory.graph.update_node(*ref, status="superseded")      # bypasses the writer
+    assert all(i.record.ref != ref for i in memory.recall(task="cache key naming").items)

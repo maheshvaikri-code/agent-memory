@@ -1,7 +1,7 @@
 """Tokeniser for memory text and task descriptions. Code-aware, no dependencies."""
 import re
 from functools import lru_cache
-from typing import List, Tuple
+from typing import FrozenSet, List, Tuple
 
 STOPWORDS = frozenset("""
 a an and are as at be but by do does for from how i if in into is it its
@@ -74,3 +74,9 @@ def compound_tokens(text: str) -> Tuple[str, ...]:
 def tokens_for(text: str) -> Tuple[str, ...]:
     """Cached tokens. Unchanged records cost a dictionary lookup per recall."""
     return tuple(tokenize(text))
+
+
+@lru_cache(maxsize=65536)
+def token_set(text: str) -> FrozenSet[str]:
+    """Cached distinct tokens, for set comparisons such as near-duplicate checks."""
+    return frozenset(tokens_for(text))
