@@ -33,7 +33,7 @@ DEDUP_JACCARD = 0.8
 PINNED_BUDGET_SHARE = 0.15
 GRAPH_SEEDS = 10
 DISTINCTIVE_DF = 2
-INDEX_CACHE = 4          # BM25 indexes kept (recall and check use different candidate sets)
+INDEX_CACHE = 4          # BM25 indexes kept, one per candidate-set role (recall, check, ...)
 INDEX_REFRESH_MIN = 64   # changed records an index absorbs in place (or a tenth, if larger)
 SESSION_KINDS = ("open_question", "blocker", "partial_work")
 _NONE: FrozenSet[str] = frozenset()
@@ -194,19 +194,20 @@ class _Index:
         seen = self.records
         return len(seen) == len(records) and all(a is b for a, b in zip(seen, records))
 
-    def refresh(self, cands: Dict[NodeRef, MemoryRecord], limit: int) -> bool:
-        """Bring the index up to `cands` in place when at most `limit` records differ."""
+    def refresh(self, cands: Dict[NodeRef, MemoryRecord], limit: int) -> Optional[int]:
+        """Bring the index up to `cands` in place when at most `limit` records differ.
+        Returns the number of documents removed, or None when it would not refresh."""
         changed = {}
         for ref, rec in cands.items():
             if self.by_ref.get(ref) is not rec:
                 changed[ref] = rec
                 if len(changed) > limit:
-                    return False
+                    return None
         gone = [ref for ref in self.by_ref if ref not in cands]
         if len(changed) + len(gone) > limit:
-            return False
-        self.bm25.update([ref for ref in changed if ref in self.by_ref] + gone,
-                         {ref: _doc(rec) for ref, rec in changed.items()})
+            return None
+        remove = [ref for ref in changed if ref in self.by_ref] + gone
+        self.bm25.update(remove, {ref: _doc(rec) for ref, rec in changed.items()})
         if self._order is not None:
             # Prefix filtering needs one fixed total order, not an exact one: existing
             # tokens keep their place (so cached prefixes stay valid), new ones go first.
@@ -217,7 +218,7 @@ class _Index:
                         self._next_rare -= 1
         self.records = tuple(cands.values())
         self.by_ref = dict(cands)
-        return True
+        return len(remove)
 
     def prefix(self, text: str) -> Tuple[str, ...]:
         hit = self._prefixes.get(text)
@@ -254,7 +255,11 @@ class Retriever:
         # change to the node, whoever makes it, so no write path has to invalidate anything.
         # Cached records are shared between recalls and never handed out (see _detach).
         self._records: Dict[NodeRef, tuple] = {}
-        self._indexes: List[_Index] = []    # most recent first
+        # One index per candidate-set role (recall's kinds, check's guardrails, ...), least
+        # recently used first. An index is only ever refreshed against its own role's
+        # candidates, so alternating recall() and check() never converts one into the other.
+        self._indexes: Dict[Any, _Index] = {}
+        self.index_stats = {"builds": 0, "refreshes": 0, "removed": 0}
 
     # -- candidates --------------------------------------------------------
 
@@ -289,24 +294,24 @@ class Retriever:
         self._records[ref] = (_snapshot(props), _types(props), rec)
         return rec
 
-    def _index(self, cands: Dict[NodeRef, MemoryRecord]) -> "_Index":
-        """Index over `cands`: reused while the candidate records are the same objects,
-        updated in place when only a few changed, rebuilt otherwise."""
-        records = tuple(cands.values())
-        found = next((i for i, index in enumerate(self._indexes) if index.same(records)), None)
-        if found is None:
-            limit = max(INDEX_REFRESH_MIN, len(cands) // 10)
-            # closest in size first, so recall's and check()'s indexes do not swap roles
-            nearest = sorted(range(len(self._indexes)),
-                             key=lambda i: abs(len(self._indexes[i].records) - len(records)))
-            found = next((i for i in nearest
-                          if abs(len(self._indexes[i].records) - len(records)) <= limit
-                          and self._indexes[i].refresh(cands, limit)), None)
-        if found is None:
-            self._indexes = [_Index(cands)] + self._indexes[:INDEX_CACHE - 1]
-        elif found:
-            self._indexes.insert(0, self._indexes.pop(found))
-        return self._indexes[0]
+    def _index(self, cands: Dict[NodeRef, MemoryRecord], role: Any) -> "_Index":
+        """The index for `role` over `cands`: reused while the candidate records are the
+        same objects, updated in place when only a few changed, rebuilt otherwise."""
+        index = self._indexes.pop(role, None)
+        if index is not None and not index.same(tuple(cands.values())):
+            removed = index.refresh(cands, max(INDEX_REFRESH_MIN, len(cands) // 10))
+            if removed is None:
+                index = None
+            else:
+                self.index_stats["refreshes"] += 1
+                self.index_stats["removed"] += removed
+        if index is None:
+            index = _Index(cands)
+            self.index_stats["builds"] += 1
+        self._indexes[role] = index           # most recently used last
+        while len(self._indexes) > INDEX_CACHE:
+            del self._indexes[next(iter(self._indexes))]
+        return index
 
     def _semantic_scores(self, query: str, cands) -> Dict[NodeRef, float]:
         if self.semantic is None or not query.strip():
@@ -332,7 +337,10 @@ class Retriever:
 
     def _rank(self, query: str, files: List[str], kinds: Optional[Iterable[str]] = None,
               strict: bool = False, extra_refs: Iterable[NodeRef] = (),
-              cands: Optional[Dict[NodeRef, MemoryRecord]] = None) -> "_Ranking":
+              cands: Optional[Dict[NodeRef, MemoryRecord]] = None,
+              role: Any = None) -> "_Ranking":
+        if role is None:
+            role = tuple(kinds) if kinds else None
         cands = dict(cands) if cands is not None else self._candidates(kinds)
         for ref in extra_refs:   # promoted decisions when kinds is restricted
             if ref not in cands and self.graph.has_node(*ref):
@@ -346,7 +354,7 @@ class Retriever:
         query_text = f"{query} {stems}"
         query_tokens = tokenize(query_text) + list(compound_tokens(query_text))
         words = _camel_groups(query_text)
-        index = self._index(cands)
+        index = self._index(cands, role)
         bm25 = index.bm25
         lexical, hits = bm25.match(query_tokens)     # scores; matched terms
         scope, promoted = scope_scores(self.graph, cands, files)
@@ -395,7 +403,7 @@ class Retriever:
             final[ref] = (base * rec.confidence * STALENESS_FACTOR[state] * _recency(rec)
                           * TIER_BOOST[tier] * _feedback(rec))
             states[ref] = state
-        order = sorted(final, key=lambda ref: (-final[ref], str(cands[ref].id)))
+        order = sorted(final, key=lambda ref: (-final[ref], str(cands[ref].id), ref[0]))
         kept = self._dedup_texts([cands[ref].text for ref in order], index.prefix)
 
         def build(ref: NodeRef) -> ScoredMemory:
@@ -505,7 +513,7 @@ class Retriever:
                 item = ScoredMemory(rec, rec.confidence, {"pinned": 1.0}, "unknown",
                                     rec.tier, rec.text, "always applies", pinned=True)
             out.append(item)
-        out.sort(key=lambda s: (-s.score, str(s.record.id)))
+        out.sort(key=lambda s: (-s.score, str(s.record.id), s.record.kind))
         return out
 
     def _open_session_items(self, cands: Dict[NodeRef, MemoryRecord], taken: set) -> List[ScoredMemory]:
@@ -537,7 +545,8 @@ class Retriever:
         files = [norm_path(f, self.repo_root) for f in (files or [])]
         guardrails = [kind for kind, spec in KINDS.items() if spec.tier == GUARDRAIL]
         _, promoted = scope_scores(self.graph, self._candidates(["decision"]), files)
-        ranking = self._rank(approach or "", files, guardrails, strict=True, extra_refs=promoted)
+        ranking = self._rank(approach or "", files, guardrails, strict=True, extra_refs=promoted,
+                             role="check")
         return [_detach(ranking.item(ref)) for ref in ranking.refs[:limit]]
 
     def recall(self, task: str = "", files: Optional[List[str]] = None,

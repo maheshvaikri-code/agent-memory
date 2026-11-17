@@ -328,13 +328,55 @@ def test_index_absorbs_a_write_in_place_and_ranks_like_a_fresh_retriever(memory)
                                   "dependency_id": "d"})
     task = "webhook retry queue"
     memory.recall(task=task)
-    index = memory._retriever._indexes[0]
+    index = memory._retriever._indexes[None]                  # recall's index (all kinds)
     memory.remember("quirk", {"description": "webhook retry storm on queue 9", "dependency_id": "d"})
     memory.graph.update_node(*memory.naming.ref, rule="cache keys and webhook retry names")
     got = memory.recall(task=task)
-    assert memory._retriever._indexes[0] is index           # updated, not rebuilt
+    assert memory._retriever._indexes[None] is index        # updated, not rebuilt
     fresh = Retriever(memory.graph, memory.repo_root).recall(task=task)
     # scores may differ in the last digits through recency only (time passes between recalls)
     assert [(i.record.id, i.channels, i.why) for i in got.items] == \
         [(i.record.id, i.channels, i.why) for i in fresh.items]
     assert [i.score for i in got.items] == pytest.approx([i.score for i in fresh.items], rel=1e-6)
+
+
+def test_same_id_in_two_kinds_keeps_one_order_across_writes(tmp_path):
+    from agent_memory.retrieval.retriever import Retriever
+    m = AgentMemory("t", repo_root=str(tmp_path))
+    m.graph.add_node("quirk", "x", dependency_id="d", description="webhook retry storm alpha beta")
+    m.graph.add_node("hot_path", "x", name="webhook retry storm")
+
+    def order(r):
+        return [i.record.ref for i in r.recall(task="webhook retry").items]
+
+    before = order(m._retriever)
+    m.graph.update_node("quirk", "x", evidence="seen again")      # text unchanged
+    assert order(m._retriever) == before == order(Retriever(m.graph, m.repo_root))
+
+
+def test_alternating_recall_and_check_keep_one_index_each(tmp_path):
+    from agent_memory.retrieval.retriever import Retriever
+    m = AgentMemory("t", repo_root=str(tmp_path))
+    topics = ["webhook", "cache", "token", "ledger"]
+    for n in range(2000):
+        m.graph.add_node("quirk", f"q{n}", dependency_id="d",
+                         description=f"{topics[n % 4]} component {n} misbehaves on large input")
+    for n in range(300):
+        m.graph.add_node("convention", f"c{n}", category="c",
+                         rule=f"{topics[n % 4]} component misbehaves on large input {n} use guard")
+    r = m._retriever
+    for n in range(6):
+        task = f"{topics[n % 4]} misbehaves on large input"
+        got_recall, got_check = m.recall(task=task), m.check(task)
+        if n == 3:
+            fresh = Retriever(m.graph, m.repo_root)
+            assert [i.record.ref for i in got_recall.items] == \
+                [i.record.ref for i in fresh.recall(task=task).items]
+            assert [i.record.ref for i in got_check] == [i.record.ref for i in fresh.check(task)]
+    assert r.index_stats == {"builds": 2, "refreshes": 0, "removed": 0}
+
+    m.graph.update_node("quirk", "q7", description="webhook component 7 now misbehaves twice")
+    for n in range(4):
+        m.recall(task="webhook misbehaves"), m.check("webhook misbehaves")
+    # one write: each role refreshes once, removing and re-adding the one changed record
+    assert r.index_stats == {"builds": 2, "refreshes": 2, "removed": 2}

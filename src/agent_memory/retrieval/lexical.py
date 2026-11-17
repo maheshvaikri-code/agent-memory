@@ -17,7 +17,7 @@ class BM25:
         self.tf: Dict[Hashable, Counter] = {}
         self.length: Dict[Hashable, int] = {}
         self.df: Counter = Counter()
-        self.postings: Dict[str, List[Tuple[Hashable, int]]] = {}
+        self.postings: Dict[str, Dict[Hashable, int]] = {}     # term -> {key: tf}
         self.total = 0
         self.update((), docs)
 
@@ -25,14 +25,14 @@ class BM25:
         """Drop the documents in `remove`, then add (or re-add) those in `add`.
 
         Leaves the index exactly as a fresh build over the resulting documents would
-        score it; only the order of keys inside a posting list can differ.
+        score it; only the order of keys inside a posting dict can differ. Removing a
+        document costs one dictionary deletion per distinct term.
         """
         for key in remove:
             for term in self.tf.pop(key):
                 self.df[term] -= 1
-                postings = self.postings[term]
                 if self.df[term]:
-                    postings[:] = [p for p in postings if p[0] != key]
+                    del self.postings[term][key]
                 else:
                     del self.df[term], self.postings[term]
             self.total -= self.length.pop(key)
@@ -43,7 +43,7 @@ class BM25:
             self.total += len(tokens)
             self.df.update(counts.keys())
             for term, n in counts.items():
-                self.postings.setdefault(term, []).append((key, n))
+                self.postings.setdefault(term, {})[key] = n
         self.n = len(self.tf)
         self.avg = self.total / self.n if self.n else 0.0
         k1, b, avg = self.k1, self.b, self.avg
@@ -62,7 +62,7 @@ class BM25:
         masks: Dict[Hashable, int] = {}     # which terms matched, one bit per term
         for bit, term in enumerate(terms):
             idf, flag = self.idf(term), 1 << bit
-            for key, tf in self.postings[term]:
+            for key, tf in self.postings[term].items():
                 scores[key] = scores.get(key, 0) + idf * tf * (self.k1 + 1) / (tf + self.norm[key])
                 masks[key] = masks.get(key, 0) | flag
         sets: Dict[int, FrozenSet[str]] = {}
