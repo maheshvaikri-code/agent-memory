@@ -218,7 +218,7 @@ class ContextBuilder:
         latest, started = None, ""
         for node in graph.nodes("session"):
             when = str(node.properties.get("started") or "")
-            if latest is None or when > started:
+            if latest is None or when >= started:     # a tie goes to the later one
                 latest, started = node, when
         if latest is None:
             return {}

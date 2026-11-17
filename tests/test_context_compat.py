@@ -152,7 +152,10 @@ def test_previous_sessions_follow_the_continues_chain():
     first = m.start_session("one")
     m.end_session(first)
     second = m.start_session("two")
-    m.sessions.continue_session(second, first)
+    m.graph.update_node("session", first, started="2026-01-01T09:00:00")
+    m.graph.update_node("session", second, started="2026-01-02T09:00:00")
+    if not m.graph.has_edge("CONTINUES", ("session", second), ("session", first)):
+        m.sessions.continue_session(second, first)
     sc = m.get_context("anything").session_context
     assert sc["session"]["task"] == "two"
     assert [s["task"] for s in sc["previous_sessions"]] == ["one"]
