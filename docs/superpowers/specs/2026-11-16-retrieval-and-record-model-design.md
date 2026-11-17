@@ -221,7 +221,7 @@ It reports *relevant prior negative experience*. It does not claim to detect con
 
 ### 6.5 Index lifetime
 
-There is no persistent index. `recall()` tokenises on demand with a per-process cache keyed by `text`, so unchanged records cost a dictionary lookup. Target: p95 under 50 ms at 5,000 records, lexical and scope channels, on a laptop. If measurement misses that, the fallback is a revision counter bumped by `_add_memory`.
+There is no persistent index. `recall()` tokenises on demand with a per-process cache keyed by `text`, so unchanged records cost a dictionary lookup. Target: p95 under 50 ms at 5,000 records, lexical and scope channels, on a laptop. If measurement misses that, the fallback is a revision counter bumped by `_add_memory`. As built, a snapshot-validated record cache is used instead; see section 12.
 
 ## 7. Module layout
 
@@ -305,6 +305,6 @@ What changed during implementation that the sections above do not state:
 - **Lexical indexes.** BM25 indexes are kept per candidate-set role (an LRU of 4) and updated incrementally in place.
 - **Detached copies.** Records returned from `recall()` and `check()` are detached copies; mutating them does not touch the graph.
 - **Tokeniser.** `compound_tokens` adds the camelCase-joined form on both the document and the query side. Stemmer rules: un-doubling is restored (`running` -> `run`), and a plural `-ings` keeps `-ing` when the stem is three letters or fewer.
-- **Decay.** Recency decay reads `created_at` as aware UTC and applies only to active records.
+- **Decay.** The consolidator's decay reads `created_at` as aware UTC and only touches active records. Retrieval's recency modifier is separate and uses `updated_at or created_at`.
 - **Latency gate.** The strict 50 ms gate is opt-in (`pytest -m perf`). A loose always-on guard stays in the default suite, because wall-clock gates are flaky on a throttled machine.
-- **Store ids.** `BaseStore._make_id` replaces every character outside `[A-Za-z0-9_-]` with `_`, so ids are always valid ISONGraph identifiers. Ids of already-valid names are unchanged.
+- **Store ids.** `BaseStore._make_id` keeps its space, `/` and `.` replacements and lowercasing, and additionally replaces space, tab, CR, LF, `:` and `|` (exactly the characters ISONGraph rejects in node ids) with `_`. Ids of already-valid names, including non-ASCII ones, are unchanged.

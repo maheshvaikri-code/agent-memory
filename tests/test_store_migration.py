@@ -83,8 +83,35 @@ def test_store_ids_are_valid_graph_identifiers():
         assert node_id and not any(ch in node_id for ch in " :|"), node_id
 
 
+def _old_make_id(prefix, name):
+    clean = name.replace(" ", "_").replace("/", "_").replace(".", "_").lower()
+    return f"{prefix}_{clean}"
+
+
 def test_make_id_keeps_already_valid_ids_unchanged():
     m = AgentMemory("t")
-    name = "naming snake_case/a.b-c"
-    old = f"conv_{name.replace(' ', '_').replace('/', '_').replace('.', '_').lower()}"
-    assert m.conventions._make_id("conv", name) == old
+    names = [
+        "naming snake_case/a.b-c",
+        "Café au lait",
+        "é",
+        "ü",
+        "日本語",
+        "Kebab-Case-Name",
+        "UPPER_and_Lower",
+        "nb space",
+        "",
+    ]
+    for name in names:
+        assert m.conventions._make_id("conv", name) == _old_make_id("conv", name), name
+    assert m.conventions._make_id("p", "é") != m.conventions._make_id("p", "ü")
+
+
+def test_make_id_survives_every_whitespace_kind():
+    m = AgentMemory("t")
+    name = "a\tb\nc\rd e:f|g h"
+    node_id = m.conventions._make_id("conv", name)
+    assert not any(ch in node_id for ch in " \t\n\r:|")
+    assert node_id == "conv_a_b_c_d_e_f_g h"
+    m.graph.add_node("convention", node_id)
+
+

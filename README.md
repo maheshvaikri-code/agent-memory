@@ -253,27 +253,26 @@ memory.retract(r.id, "no longer true")
 
 ## ISONQL Queries
 
-Query the memory graph directly:
+Query the memory graph directly. ISONQL statements start with `NODES`, `EDGES`,
+`TRAVERSE`, `PATH`, `COUNT`, `SUM`, `AVG`, `MIN` or `MAX`:
 
 ```python
 from ison_graph.query import QueryEngine
 
 engine = QueryEngine(memory.graph)
 
-# Find all decisions
-result = engine.execute("MATCH (decision) RETURN *")
+# Count decisions
+result = engine.execute("COUNT decision")
+print(result.data)   # [1]
 
 # Find bug patterns for a module
-result = engine.execute("""
-    MATCH (bp:bug_pattern)
-    WHERE modules_affected CONTAINS 'cache'
-    RETURN bp
-""")
+result = engine.execute("NODES bug_pattern WHERE modules_affected CONTAINS 'cache'")
+print([n["id"] for n in result.data])   # ['bp_race_condition']
 
-# Find expertise chain
-result = engine.execute("""
-    TRAVERSE team_member:sarah -> HAS_EXPERTISE -> expertise_area
-""")
+# Follow edges: the modules a decision constrains
+# (after memory.decisions.add_constraint("Use RocksDB over SQLite", "src/cache", "..."))
+result = engine.execute("TRAVERSE decision:dec_use_rocksdb_over_sqlite -> CONSTRAINS -> module")
+print(result.data)   # [('module', 'mod_src_cache')]
 ```
 
 ## Evaluation

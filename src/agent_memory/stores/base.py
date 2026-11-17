@@ -70,8 +70,9 @@ class BaseStore(ABC):
     def _make_id(self, prefix: str, name: str) -> str:
         """Create a unique ID from prefix and name"""
         clean = name.replace(" ", "_").replace("/", "_").replace(".", "_").lower()
-        # ISONGraph node ids must not contain whitespace, ':' or '|'; keep only safe characters.
-        clean = re.sub(r"[^A-Za-z0-9_-]", "_", clean)
+        # ISONGraph rejects ids containing space, tab, CR, LF, ':' or '|' and nothing else;
+        # replace exactly those so ids of already-valid names never change.
+        clean = re.sub(r"[ \t\n\r:|]", "_", clean)
         return f"{prefix}_{clean}"
 
     def _sanitize(self, s: str) -> str:
