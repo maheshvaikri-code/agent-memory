@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from .record import NodeRef
+from .storage.txn import txn
 
 EDGE = "ANCHORED_TO"
 STALENESS_FACTOR = {"fresh": 1.0, "unknown": 1.0, "drifted": 0.7, "broken": 0.4, "orphaned": 0.2}
@@ -126,16 +127,17 @@ def add_anchor(graph, ref: NodeRef, path, symbol: str = "",
     A path outside the repo (see anchor_path) is recorded without a hash, so its state
     is "unknown" and the file is never read; so is an unreadable or oversized file.
     """
-    rel, inside = anchor_path(path, repo_root)
-    target = ("file", file_node_id(rel))
-    if not graph.has_node(*target):
-        graph.add_node("file", target[1], path=rel)
-    digest = content_hash(_abs(rel, repo_root)) if repo_root and inside else None
-    if graph.has_edge(EDGE, ref, target):
-        if not symbol:
-            symbol = str(graph.get_edge(EDGE, ref, target).properties.get("symbol") or "")
-        graph.remove_edge(EDGE, ref, target)
-    graph.add_edge(EDGE, ref, target, symbol=symbol, hash=digest or "", commit=commit)
+    with txn(graph):
+        rel, inside = anchor_path(path, repo_root)
+        target = ("file", file_node_id(rel))
+        if not graph.has_node(*target):
+            graph.add_node("file", target[1], path=rel)
+        digest = content_hash(_abs(rel, repo_root)) if repo_root and inside else None
+        if graph.has_edge(EDGE, ref, target):
+            if not symbol:
+                symbol = str(graph.get_edge(EDGE, ref, target).properties.get("symbol") or "")
+            graph.remove_edge(EDGE, ref, target)
+        graph.add_edge(EDGE, ref, target, symbol=symbol, hash=digest or "", commit=commit)
 
 
 def _anchors(graph, ref: NodeRef) -> List[Tuple[str, str, str]]:
@@ -158,16 +160,17 @@ def restamp(graph, ref: NodeRef, repo_root: Optional[str]) -> int:
     Anchors whose file is missing or unreadable are left untouched, so they stay orphaned.
     Anchors outside the repo are never hashed (see add_anchor).
     """
-    if not repo_root:
-        return 0
-    commit = head_commit(repo_root)
-    count = 0
-    for path, symbol, _ in _anchors(graph, ref):
-        if not anchor_path(path, repo_root)[1] or content_hash(_abs(path, repo_root)) is None:
-            continue
-        add_anchor(graph, ref, path, symbol, repo_root, commit)
-        count += 1
-    return count
+    with txn(graph):
+        if not repo_root:
+            return 0
+        commit = head_commit(repo_root)
+        count = 0
+        for path, symbol, _ in _anchors(graph, ref):
+            if not anchor_path(path, repo_root)[1] or content_hash(_abs(path, repo_root)) is None:
+                continue
+            add_anchor(graph, ref, path, symbol, repo_root, commit)
+            count += 1
+        return count
 
 
 class HashCache:

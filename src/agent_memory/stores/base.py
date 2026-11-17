@@ -2,12 +2,15 @@
 Base Store - Abstract base class for memory stores
 """
 
+import inspect
 import re
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 
 from ison_graph import ISONGraph
+
+from ..storage.txn import transactional
 
 
 class BaseStore(ABC):
@@ -17,6 +20,18 @@ class BaseStore(ABC):
     Each store manages a specific type of memory (conventions, bugs, etc.)
     and provides methods for querying, adding, and updating that memory.
     """
+
+    def __init_subclass__(cls, **kwargs):
+        """Every public store method runs in a transaction, so reads see other processes'
+        writes and read-modify-write code cannot race. Generators and private helpers are left
+        alone. With a plain graph the wrapper is a no-op."""
+        super().__init_subclass__(**kwargs)
+        for name, value in list(vars(cls).items()):
+            if name.startswith("_") or not inspect.isfunction(value):
+                continue
+            if inspect.isgeneratorfunction(value) or getattr(value, "__transactional__", False):
+                continue
+            setattr(cls, name, transactional(value))
 
     def __init__(self, graph: ISONGraph):
         from ..writer import MemoryWriter

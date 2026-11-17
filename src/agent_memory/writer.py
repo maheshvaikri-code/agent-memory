@@ -11,6 +11,7 @@ from .record import (
     envelope_props, is_closed, make_id, normalize_text, utc_now,
 )
 from .retrieval.tokenize import tokens_for
+from .storage.txn import transactional
 
 SIMILAR_JACCARD = 0.6
 REINFORCE_STEP = 0.1
@@ -37,6 +38,7 @@ class MemoryWriter:
         self.session_id = ""
         self._by_text: Dict[Tuple[str, str], NodeRef] = {}
         self._indexed: set = set()
+        self._remote_seen = 0
 
     # -- lookup ------------------------------------------------------------
 
@@ -52,6 +54,11 @@ class MemoryWriter:
         An answered question or a resolved blocker is still active (it is history) but is
         never a merge target: asking the same question again is a new open question.
         """
+        remote = getattr(self.graph, "remote_ops", 0)
+        if remote != self._remote_seen:           # other processes changed the graph
+            self._by_text.clear()
+            self._indexed.clear()
+            self._remote_seen = remote
         if kind not in self._indexed:
             for node in self.graph.nodes(kind):
                 rec = MemoryRecord.from_node(node)
@@ -110,6 +117,7 @@ class MemoryWriter:
 
     # -- writes ------------------------------------------------------------
 
+    @transactional
     def add(self, kind: str, fields: Dict[str, Any], *, node_id=None,
             anchors: Iterable = (), scope: Optional[List[str]] = None, evidence: str = "",
             priority: Optional[str] = None, confidence: Optional[float] = None,
@@ -164,6 +172,7 @@ class MemoryWriter:
             self._replace(old, ref, evidence)
         return WriteResult(ref, created=True, similar=similar)
 
+    @transactional
     def supersede(self, old_ref: NodeRef, kind: str, fields: Dict[str, Any], **kw) -> WriteResult:
         self.graph.get_node(*old_ref)
         result = self.add(kind, fields, **kw)
@@ -175,11 +184,13 @@ class MemoryWriter:
                                 reason=kw.get("evidence", ""), date=utc_now())
         return result
 
+    @transactional
     def retract(self, ref: NodeRef, reason: str = "") -> None:
         self._set_status(ref, "retracted")
         if reason:
             self._append_evidence(ref, f"retracted: {reason}")
 
+    @transactional
     def feedback(self, ref: NodeRef, helpful: bool) -> None:
         rec = MemoryRecord.from_node(self.graph.get_node(*ref))
         if helpful:

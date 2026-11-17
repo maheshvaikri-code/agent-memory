@@ -29,7 +29,7 @@ from .context import ContextBuilder, CodingContext
 from .consolidation import MemoryConsolidator
 from . import anchors as anchors_mod
 from .record import KINDS, MemoryRecord
-from .storage import JournalBackend, SharedGraph, StoreInUse, atomic_write_text
+from .storage import JournalBackend, SharedGraph, StoreInUse, atomic_write_text, transactional
 from .writer import MemoryWriter, WriteResult
 from .retrieval import RecallResult, Retriever
 
@@ -94,6 +94,7 @@ class AgentMemory:
     # Session Management
     # =========================================================================
 
+    @transactional
     def start_session(self, task: str) -> str:
         """Start a new coding session"""
         session_id = self.sessions.start_session(task)
@@ -106,6 +107,7 @@ class AgentMemory:
         self.writer.session_id = session_id
         return session_id
 
+    @transactional
     def end_session(self, session_id: str, completion: float = 1.0) -> None:
         """End the current session"""
         self.sessions.end_session(session_id, completion)
@@ -156,6 +158,7 @@ class AgentMemory:
     # Memory Recording (convenience methods)
     # =========================================================================
 
+    @transactional
     def record(self, event_type: str, **kwargs) -> None:
         """
         Generic event recording.
@@ -221,8 +224,9 @@ class AgentMemory:
                 **decision_conflict
             })
 
-        # Check tech debt (failed refactoring)
-        for node in self.graph.nodes():
+        # Check tech debt (failed refactoring). A list, because each store call is its own
+        # transaction and may apply other processes' writes to the graph mid-loop.
+        for node in list(self.graph.nodes()):
             if node.type == "tech_debt":
                 check = self.techdebt.check_suggestion(
                     node.properties.get("location", ""),
@@ -284,27 +288,33 @@ class AgentMemory:
         objects with `.node_ref` and `.score`; GraphEmbeddedMemory qualifies."""
         self._retriever.semantic = searcher
 
+    @transactional
     def remember(self, kind: str, fields: Dict[str, Any], **kw) -> WriteResult:
         """Record a memory. See MemoryWriter.add for keyword arguments."""
         return self.writer.add(kind, fields, **kw)
 
+    @transactional
     def supersede(self, old_id, kind: str, fields: Dict[str, Any], **kw) -> WriteResult:
         """Replace `old_id` with a new record; the old one stops being returned."""
         return self.writer.supersede(self.writer.find(old_id), kind, fields, **kw)
 
+    @transactional
     def retract(self, memory_id, reason: str = "") -> None:
         """Mark a memory as wrong. It is kept, and no longer returned."""
         self.writer.retract(self.writer.find(memory_id), reason)
 
+    @transactional
     def feedback(self, memory_id, helpful: bool) -> None:
         """Tell the memory whether a recalled record helped."""
         self.writer.feedback(self.writer.find(memory_id), helpful)
 
+    @transactional
     def anchor(self, memory_id, path: str, symbol: str = "") -> None:
         """Tie a memory to a file, recording the file's current content hash."""
         anchors_mod.add_anchor(self.graph, self.writer.find(memory_id), path, symbol,
                                self.repo_root, anchors_mod.head_commit(self.repo_root))
 
+    @transactional
     def verify(self, memory_id) -> int:
         """Confirm a memory still holds: re-stamp its anchors at the current file hashes."""
         return anchors_mod.restamp(self.graph, self.writer.find(memory_id), self.repo_root)
@@ -318,9 +328,13 @@ class AgentMemory:
         checkpoint; saving elsewhere writes a full snapshot copy. A plain instance may not
         overwrite a store that has a journal: open it with AgentMemory.open()."""
         target = str(path)
-        if self._backend is not None and os.path.normcase(os.path.abspath(target)) ==                 os.path.normcase(self._backend.path):
+        if (self._backend is not None
+                and os.path.normcase(os.path.abspath(target))
+                == os.path.normcase(self._backend.path)):
             self._backend.checkpoint()
             return
+        if self._backend is not None:
+            self._sync()                  # the copy includes other processes' recent writes
         if self._backend is None and os.path.exists(target + ".journal"):
             raise StoreInUse(f"{target} is a shared store (it has a journal); use "
                              f"AgentMemory.open({target!r}) or save to another path")

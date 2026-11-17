@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from .memory import AgentMemory
 
 from .record import GUARDRAIL, KINDS, MemoryRecord, normalize_text, utc_now
+from .storage.txn import txn
 
 
 def _parse_utc(timestamp) -> Optional[datetime]:
@@ -80,26 +81,27 @@ class MemoryConsolidator:
 
         Returns summary of actions taken.
         """
-        summary = {
-            "decayed": 0,
-            "strengthened": 0,
-            "merged": 0,
-            "archived": 0,
-        }
+        with txn(self.memory.graph):
+            summary = {
+                "decayed": 0,
+                "strengthened": 0,
+                "merged": 0,
+                "archived": 0,
+            }
 
-        # 1. Decay old, unused memories
-        summary["decayed"] = self._decay_old_memories()
+            # 1. Decay old, unused memories
+            summary["decayed"] = self._decay_old_memories()
 
-        # 2. Strengthen frequently used memories
-        summary["strengthened"] = self._strengthen_used_memories()
+            # 2. Strengthen frequently used memories
+            summary["strengthened"] = self._strengthen_used_memories()
 
-        # 3. Merge similar memories
-        summary["merged"] = self._merge_similar()
+            # 3. Merge similar memories
+            summary["merged"] = self._merge_similar()
 
-        # 4. Archive completed sessions
-        summary["archived"] = self._archive_sessions()
+            # 4. Archive completed sessions
+            summary["archived"] = self._archive_sessions()
 
-        return summary
+            return summary
 
     def _decay_old_memories(self) -> int:
         """Remove or mark memories that are too old"""
