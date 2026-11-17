@@ -179,3 +179,35 @@ def test_recall_events_reach_the_sink(memory):
     memory._retriever.sink = seen.append
     memory.recall(task="payment webhook retry")
     assert seen and memory.storm.id in seen[0].ids
+
+
+def test_pinned_record_that_also_matches_the_query_keeps_its_guarantee(memory):
+    for n in range(60):
+        memory.remember("bug_pattern", {"name": f"hook_{n}",
+                                        "signature": f"webhook retry failure number {n} in handler"})
+    pinned = memory.remember("convention", {"category": "security",
+                                            "rule": "never log secrets from webhook payloads"},
+                             priority="must")
+    result = memory.recall(task="webhook retry", max_tokens=700)
+    hits = [i for i in result.items if i.record.id == pinned.id]
+    assert len(hits) == 1 and hits[0].pinned
+    assert hits[0].channels.get("lexical")      # keeps its real ranking data
+    assert result.items[0].record.id == pinned.id    # pinned group packs first
+
+
+def test_empty_kinds_behaves_like_no_kinds(memory):
+    memory.remember("convention", {"category": "security", "rule": "never log secrets"},
+                    priority="must")
+    a = memory.recall(task="payment webhook retry", kinds=[])
+    b = memory.recall(task="payment webhook retry", kinds=None)
+    assert ids(a) == ids(b) and ids(a)
+    assert any(i.pinned for i in a.items)
+
+
+def test_a_raising_sink_does_not_break_recall(memory):
+    def boom(event):
+        raise ZeroDivisionError("sink bug")
+    memory._retriever.sink = boom
+    result = memory.recall(task="payment webhook retry")
+    assert memory.storm.id in ids(result)
+    assert memory.recall(task="payment webhook retry").items

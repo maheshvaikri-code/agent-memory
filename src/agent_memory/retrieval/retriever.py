@@ -119,6 +119,7 @@ class Retriever:
         self.semantic = semantic
         self.sink = sink
         self._semantic_warned = False
+        self._sink_warned = False
 
     # -- candidates --------------------------------------------------------
 
@@ -257,12 +258,20 @@ class Retriever:
     # -- always-on sets ----------------------------------------------------
 
     @staticmethod
-    def _pinned(cands: Dict[NodeRef, MemoryRecord], taken: set) -> List[ScoredMemory]:
+    def _pinned(cands: Dict[NodeRef, MemoryRecord],
+                ranked: Dict[NodeRef, ScoredMemory]) -> List[ScoredMemory]:
+        """Every must/'*' record. One that also matched the query keeps its ranked data."""
         out = []
         for ref, rec in cands.items():
-            if rec.priority == "must" and rec.scope == ["*"] and ref not in taken:
-                out.append(ScoredMemory(rec, rec.confidence, {"pinned": 1.0}, "unknown",
-                                        rec.tier, rec.text, "always applies", pinned=True))
+            if rec.priority != "must" or rec.scope != ["*"]:
+                continue
+            item = ranked.get(ref)
+            if item is not None:
+                item.pinned = True
+            else:
+                item = ScoredMemory(rec, rec.confidence, {"pinned": 1.0}, "unknown",
+                                    rec.tier, rec.text, "always applies", pinned=True)
+            out.append(item)
         out.sort(key=lambda s: (-s.score, str(s.record.id)))
         return out
 
@@ -286,13 +295,14 @@ class Retriever:
     def recall(self, task: str = "", files: Optional[List[str]] = None,
                symbols: Optional[List[str]] = None, kinds: Optional[List[str]] = None,
                max_tokens: int = 2000, compact: bool = False) -> RecallResult:
+        kinds = kinds or None               # an empty list means "all kinds", like None
         files = [norm_path(f, self.repo_root) for f in (files or [])]
         query = " ".join([task or ""] + list(symbols or []))
         cands = self._candidates(kinds)     # read once per recall
         ranked = self.rank(query, files, kinds, cands=cands)
-        taken = {item.record.ref for item in ranked}
-        pinned = self._pinned(cands, taken) if kinds is None else []
-        taken |= {item.record.ref for item in pinned}
+        pinned = self._pinned(cands, {item.record.ref: item for item in ranked}) if kinds is None else []
+        taken = {item.record.ref for item in ranked} | {item.record.ref for item in pinned}
+        ranked = [item for item in ranked if not item.pinned]   # packed once, in the pinned group
         carried = self._open_session_items(cands, taken) if kinds is None else []
 
         budget = max_tokens - self.counter.count("\n".join(HEADERS.values()) + "\n")
@@ -316,5 +326,10 @@ class Retriever:
             result.items.pop()
         result.tokens = self.counter.count(result.to_prompt())
         if self.sink is not None:
-            self.sink(RecallEvent(result.task, files, [i.record.id for i in result.items]))
+            try:
+                self.sink(RecallEvent(result.task, files, [i.record.id for i in result.items]))
+            except Exception as exc:  # telemetry must never fail a recall
+                if not self._sink_warned:
+                    log.warning("recall sink failed and was skipped: %s", exc)
+                    self._sink_warned = True
         return result
