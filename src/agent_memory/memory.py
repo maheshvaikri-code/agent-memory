@@ -325,20 +325,20 @@ class AgentMemory:
 
     def save(self, path: str) -> None:
         """Save memory to file (atomic). In shared mode, saving to the store's own path is a
-        checkpoint; saving elsewhere writes a full snapshot copy. A plain instance may not
-        overwrite a store that has a journal: open it with AgentMemory.open()."""
+        checkpoint; saving elsewhere writes a full snapshot copy. No instance, shared or plain,
+        may overwrite another store that has a journal: open it with AgentMemory.open()."""
         target = str(path)
         real = os.path.realpath(target)         # a store's journal sits beside its real file
-        own = (self._backend is not None
-               and os.path.normcase(real) == os.path.normcase(self._backend.path))
-        if own:
-            self._backend.checkpoint()
-            return
         if self._backend is not None:
-            self._sync()                  # the copy includes other processes' recent writes
-        if self._backend is None and os.path.exists(real + ".journal"):
+            own_path = os.path.normcase(self._backend.path)
+            if os.path.normcase(real) == own_path:
+                self._backend.checkpoint()
+                return
+        if os.path.exists(real + ".journal"):
             raise StoreInUse(f"{target} is a shared store (it has a journal); use "
                              f"AgentMemory.open({target!r}) or save to another path")
+        if self._backend is not None:
+            self._sync()                  # the copy includes other processes' recent writes
         text = self.graph.to_isonl() if Path(target).suffix == ".isonl" else self.graph.to_ison()
         atomic_write_text(target, text)
 
