@@ -34,6 +34,7 @@ from .lock import FileLock
 from .shared_graph import META_ID, META_TYPE, SharedGraph
 
 _TEMP_MAX_AGE = 60.0       # seconds before a stray temp snapshot is considered abandoned
+_ISONL = ".isonl"          # the line format plain load()/save() pick by suffix
 
 _FileSignature = Optional[Tuple[int, int, int]]
 
@@ -81,6 +82,11 @@ class JournalBackend:
         if durability not in ("flush", "fsync"):
             raise ValueError(f"durability must be 'flush' or 'fsync', got {durability!r}")
         self.path = os.path.abspath(os.fspath(path))
+        if _ISONL in (Path(os.fspath(path)).suffix, Path(self.path).suffix):
+            # The snapshot is ISON text and plain load() reads an .isonl path as ISON lines:
+            # refused before any file is touched.
+            raise ValueError(f"{os.fspath(path)}: a shared store cannot use the {_ISONL} "
+                             f"format; use an ISON path such as project.memory")
         self.journal_path = self.path + ".journal"
         self.lock_path = self.path + ".lock"
         self.agent = agent
