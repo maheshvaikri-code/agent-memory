@@ -27,23 +27,43 @@ Run on 2026-11-16 with `PYTHONPATH=src python -m tests.eval.run`:
 
 ## Latency
 
-`test_p95_latency_at_five_thousand_records`: 5,000 `quirk` records, all of
-which match the query words "misbehaves", "large" and "input", so every recall
-ranks 5,000 survivors. The body of the test was run three times as a one-off
-`python -c` script (outside pytest):
+All figures are at 5,000 `quirk` records, each of which matches the query
+words "misbehaves", "large" and "input", so every recall ranks 5,000
+survivors. Each row is a separate fresh process, and each figure is the
+median of three runs.
 
-| Run | p95 | median |
+| Path | p95 | median |
 |---|---|---|
-| 1 | 35.9 ms | 28.8 ms |
-| 2 | 36.3 ms | 28.9 ms |
-| 3 | 35.4 ms | 29.1 ms |
+| warm and read-only: the gate test's body, 40 recalls, no writes | 36.5, 36.9, 37.6 ms | 30 ms |
+| cold: the first recall after loading (decodes and indexes everything) | 144-147 ms (single sample) | - |
+| one `graph.update_node` before each recall (40 recalls) | 38.8, 40.9, 38.6 ms | 32 ms |
+| one `remember()` before each recall (20 recalls) | 39.6, 42.4, 40.5 ms | 31 ms |
+| `check()`, warm (40 calls) | 27.1, 27.8, 27.7 ms | 19 ms |
 
-Inside pytest the same body measured p95 29.3, 30.0 and 30.6 ms. The bound is
-50 ms. Before the performance work the same test measured p95 5,863 ms
-(pairwise de-duplication over every survivor).
+`test_p95_latency_at_five_thousand_records` measures only the warm,
+read-only path. Its bound is 50 ms. Inside pytest the same body measured p95
+30.6, 38.0 and 33.5 ms.
 
-The numbers are wall-clock times on one Windows 11 development machine with
-CPython 3.12. They will vary with hardware.
+The cold first recall is over 50 ms. A process pays it once.
+
+After a write, the BM25 index is updated in place
+(`BM25.update`, `_Index.refresh`). Before that change, every write forced a
+full rebuild, and a recall after a write measured median about 60 ms and p95
+78-100 ms.
+
+Before the performance work, the gate test measured p95 5,863 ms because of
+pairwise de-duplication over every survivor.
+
+**Measurement caveat.** These are wall-clock times on one Windows 11 laptop
+with CPython 3.12. This machine drops to about a third of its speed after
+roughly 3 seconds of sustained load, and also when the load is intermittent
+(sleeping between recalls tripled every figure). A pure-Python loop with no
+project code shows the same 2.5-3x step. All figures above were taken inside
+that first window. A run that crosses into the slow state reports p95 of
+70-100 ms for code that measures about 37 ms otherwise. While the machine was
+in that state, the gate test also failed inside the full suite. That happened
+both for this code and for the earlier commit bd5544b. The two commits
+measured the same when compared one after the other.
 
 ## Notes
 
@@ -51,8 +71,9 @@ CPython 3.12. They will vary with hardware.
   task "add a dark mode toggle to the settings screen" and the `irrelevant`
   task "adjust editor indentation settings", had one cause: the stemmer
   reduced "settings" to "set", which matched the verb in "http cache headers
-  on landing assets are set immutable". The stemmer no longer undoubles a stem
-  below four letters ("settings" becomes "sett").
+  on landing assets are set immutable". Now a plural "-ings" word drops only
+  its plural ("settings" becomes "setting", a noun). Short roots still collapse
+  ("logging", "logged" and "log" all become "log").
 - All six guardrail scenarios pass on lexical matching plus file scope. The
   open risk in the spec is unchanged: an approach that is a pure paraphrase,
   sharing no words and no file with the stored guardrail, still needs the
