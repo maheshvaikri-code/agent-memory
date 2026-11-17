@@ -120,9 +120,12 @@ class JournalBackend:
 
     def open(self) -> SharedGraph:
         with self._exclusive(), self._lock:
+            snapshot_exists = _exists(self.path)
+            if not snapshot_exists:
+                self._refuse_an_orphaned_journal()
             self._remove_stale_temp_files()
             created = False
-            if _exists(self.path):
+            if snapshot_exists:
                 graph = self._read_snapshot()
                 if self._meta(graph) is None:                  # a legacy file
                     ISONGraph.add_node(graph, META_TYPE, META_ID, generation=_generation(), seq=0)
@@ -141,6 +144,18 @@ class JournalBackend:
                 self._prepare_append()
         graph._backend = self
         return graph
+
+    def _refuse_an_orphaned_journal(self) -> None:
+        """Call with the lock held, when the snapshot is missing. A journal that holds
+        transactions held acknowledged writes (for a store never compacted, all of them), so
+        an empty store must not be started over it. An empty or header-only journal is
+        nothing to keep."""
+        tail = journal.read_tail(self.journal_path, 0)
+        if tail.error is not None or tail.txs or tail.corrupt_at is not None:
+            reason = f" ({tail.error})" if tail.error is not None else ""
+            raise StoreCorrupt(f"journal {self.journal_path} exists without its snapshot "
+                               f"{self.path}{reason}: restore the snapshot from a backup; "
+                               f"nothing was changed")
 
     @staticmethod
     def read_only(path, lock_timeout: float = 10.0) -> SharedGraph:

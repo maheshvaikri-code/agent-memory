@@ -74,17 +74,20 @@ class Tail:
     corrupt_at: Optional[int] = None   # byte offset of a damaged *complete* line
     shrunk: bool = False               # the file is shorter than the offset asked for
     signature: Optional[Tuple[int, int]] = None   # (size, mtime_ns) taken before reading
-    # Set when the file could not be read (OSError: a share lock, a directory, an I/O error).
-    # generation is None then, but the caller must retry
-    # under the lock and never treat it as an absent journal. A missing file is not an error.
+    # Set when the file could not be read (OSError: a share lock, a directory, an I/O error) or
+    # its first line is complete but not a header (the lines after it cannot be trusted to
+    # belong to any generation). generation is None then, but the caller must retry under the
+    # lock and never treat it as an absent journal. A missing file, an empty one, or a single
+    # unterminated line (a crash while the header was written) is absent, not an error.
     error: Optional[str] = None
 
 
 def read_tail(path, offset: int) -> Tail:
     """Read the transactions after byte `offset` (0 = from the start). Takes no lock.
 
-    Never raises: a missing file gives Tail(generation=None) with error None; any other
-    failure to read gives Tail(generation=None, error=...)."""
+    Never raises: a missing or empty file, or one unterminated line, gives
+    Tail(generation=None) with error None; any other failure to read, and a damaged header,
+    gives Tail(generation=None, error=...)."""
     try:
         return _read_tail(path, offset)
     except FileNotFoundError:
@@ -98,9 +101,12 @@ def _read_tail(path, offset: int) -> Tail:
         st = os.fstat(handle.fileno())
         signature = (st.st_size, st.st_mtime_ns)
         first = handle.readline()
-        generation = parse_header(first) if first.endswith(b"\n") else None
-        if generation is None:
+        if not first.endswith(b"\n"):     # empty, or a header cut short by a crash: absent
             return Tail(None, size=st.st_size, signature=signature)
+        generation = parse_header(first)
+        if generation is None:            # a complete line that is not a header: damaged
+            return Tail(None, size=st.st_size, signature=signature,
+                        error="the header on line 1 (byte 0) is damaged")
         start = max(offset, len(first))
         handle.seek(start)
         rest = handle.read()
