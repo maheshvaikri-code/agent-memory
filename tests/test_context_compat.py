@@ -159,3 +159,19 @@ def test_previous_sessions_follow_the_continues_chain():
     sc = m.get_context("anything").session_context
     assert sc["session"]["task"] == "two"
     assert [s["task"] for s in sc["previous_sessions"]] == ["one"]
+
+
+def test_historical_bug_record_keeps_the_bug_risk_shape():
+    # a `bug` record has title/root_cause, not name/signature; consumers index
+    # b["pattern"]["name"], so the entry must carry both
+    m = AgentMemory("t")
+    m.bugs.add_bug("cache stampede on cold start", severity="high", module="src/cache",
+                   root_cause="every miss recomputes the key")
+    ctx = m.get_context("fix the cache stampede", files=["src/cache/lru.py"])
+    risks = [b for b in ctx.bug_risks if b.get("pattern", {}).get("title")]
+    assert risks, "the bug record should still be a bug risk"
+    pattern = risks[0]["pattern"]
+    assert pattern["name"] == "cache stampede on cold start"
+    assert pattern["signature"] == "every miss recomputes the key"
+    assert pattern["title"] == "cache stampede on cold start"  # original fields kept
+    assert "every miss recomputes the key" in ctx.to_prompt()

@@ -278,6 +278,11 @@ class ContextBuilder:
             # {"type", "pattern", "fix"} as before; a fix rides on its pattern's entry and
             # is not an entry of its own (it stays in `items` and the prompt)
             if rec.kind != "fix_pattern":
+                if rec.kind == "bug":
+                    # a historical bug has title/root_cause; give it the name/signature
+                    # fields every bug_risks consumer reads (original fields are kept)
+                    props = {"name": props.get("title", ""),
+                             "signature": props.get("root_cause", ""), **props}
                 context.bug_risks.append({"type": "bug_risk", "pattern": props,
                                           "fix": self._fix_for(rec.ref, ranked)})
         elif bucket == "dependencies":
