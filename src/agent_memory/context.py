@@ -41,8 +41,18 @@ class CodingContext:
     # Metadata
     estimated_tokens: int = 0
 
+    # Ranked items behind the lists above, when built by ContextBuilder
+    items: List[Any] = field(default_factory=list)
+    result: Optional[Any] = None
+
     def to_prompt(self) -> str:
         """Convert context to a prompt-ready string"""
+        if self.result is not None:
+            return self.result.to_prompt()
+        return self._legacy_prompt()
+
+    def _legacy_prompt(self) -> str:
+        """Render the category lists (used for hand-built contexts)"""
         sections = []
 
         # High priority
@@ -127,39 +137,27 @@ class CodingContext:
 
 class ContextBuilder:
     """
-    Builds coding context from memory stores.
+    Builds a CodingContext from AgentMemory.recall().
 
-    Prioritizes information based on relevance and token budget.
+    The category lists on CodingContext are a view over the ranked items,
+    kept so existing callers continue to work.
     """
 
-    # Store names and their priority weights
-    STORES = [
-        ("warnings", 1.0),      # Always include
-        ("constraints", 0.95),  # Almost always
-        ("hot_paths", 0.9),
-        ("conventions", 0.8),
-        ("patterns", 0.75),
-        ("bug_risks", 0.7),
-        ("dependencies", 0.65),
-        ("module_context", 0.5),
-        ("decisions", 0.4),
-        ("team_experts", 0.3),
-    ]
-
-    # Estimated tokens per item type
-    TOKEN_ESTIMATES = {
-        "warning": 50,
-        "constraint": 40,
-        "hot_path": 30,
-        "convention": 25,
-        "pattern": 60,
-        "bug_risk": 80,
-        "dependency": 70,
-        "module": 100,
-        "decision": 60,
-        "expert": 40,
-        "session": 50,
+    # Old store name -> memory kinds it covers. Order is the legacy priority order.
+    STORE_KINDS = {
+        "warnings": ["alternative", "refactoring_attempt"],
+        "constraints": [],            # decisions promoted by a CONSTRAINS edge
+        "hot_paths": ["hot_path", "performance_constraint"],
+        "conventions": ["convention", "idiom", "test_convention", "required_test_case"],
+        "patterns": ["project_pattern", "template", "snippet"],
+        "bug_risks": ["bug_pattern", "fix_pattern", "bug"],
+        "dependencies": ["quirk", "workaround"],
+        "module_context": ["module", "design_pattern", "tech_debt"],
+        "decisions": ["decision"],
+        "team_experts": ["expertise_area"],
     }
+    STORES = [(name, 1.0) for name in STORE_KINDS]
+    SESSION_KINDS = ["session_decision", "open_question", "blocker", "partial_work"]
 
     def __init__(self, memory: "AgentMemory"):
         self.memory = memory
@@ -173,134 +171,60 @@ class ContextBuilder:
         max_tokens: int = 4000,
     ) -> CodingContext:
         """Build context for a task"""
-        context = CodingContext(task=task, files=files)
-        raw_context = {"task": task, "files": files}
-        token_count = 0
-
-        # Determine which stores to query
-        store_names = include or [s[0] for s in self.STORES]
+        names = include or list(self.STORE_KINDS)
         if exclude:
-            store_names = [s for s in store_names if s not in exclude]
+            names = [n for n in names if n not in exclude]
+        filtered = bool(include or exclude)
 
-        # Gather from each store
-        all_items = []
+        kinds = None
+        if filtered:
+            kinds = [k for n in names for k in self.STORE_KINDS.get(n, [])]
+            if "constraints" in names and "decision" not in kinds:
+                kinds.append("decision")
+            kinds += self.SESSION_KINDS
 
-        # Get session context first (always included)
-        session_context = self.memory.sessions.get_relevant(raw_context)
-        if session_context:
-            last_session = self.memory.sessions.get_last_session()
-            if last_session:
-                context.session_context = self.memory.sessions.get_session_context(last_session)
+        result = self.memory.recall(task=task, files=files, kinds=kinds, max_tokens=max_tokens)
+        if filtered:
+            result.items = [i for i in result.items if self._bucket(i) in names + ["session"]]
+            result.tokens = self.memory._retriever.counter.count(result.to_prompt())
 
-        # Gather items from each store
-        for store_name, priority in self.STORES:
-            if store_name not in store_names:
-                continue
-
-            items = self._get_from_store(store_name, raw_context)
-            for item in items:
-                all_items.append((store_name, priority, item))
-
-        # Sort by priority
-        all_items.sort(key=lambda x: x[1], reverse=True)
-
-        # Add items within token budget
-        for store_name, priority, item in all_items:
-            item_tokens = self._estimate_tokens(store_name, item)
-            if token_count + item_tokens > max_tokens:
-                break
-
-            self._add_to_context(context, store_name, item)
-            token_count += item_tokens
-
-        context.estimated_tokens = token_count
+        context = CodingContext(task=task, files=files, items=result.items, result=result,
+                                estimated_tokens=result.tokens)
+        for item in result.items:
+            self._place(context, item)
         return context
 
-    def _get_from_store(self, store_name: str, raw_context: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Get relevant items from a store"""
-        store_map = {
-            "warnings": lambda: self._get_warnings(raw_context),
-            "constraints": lambda: self.memory.decisions.get_relevant(raw_context),
-            "hot_paths": lambda: self.memory.performance.get_relevant(raw_context),
-            "conventions": lambda: self.memory.conventions.get_relevant(raw_context),
-            "patterns": lambda: self.memory.templates.get_relevant(raw_context),
-            "bug_risks": lambda: self.memory.bugs.get_relevant(raw_context),
-            "dependencies": lambda: self.memory.dependencies.get_relevant(raw_context),
-            "module_context": lambda: self.memory.codebase.get_relevant(raw_context),
-            "decisions": lambda: self._get_decision_context(raw_context),
-            "team_experts": lambda: self.memory.team.get_relevant(raw_context),
-        }
+    def _bucket(self, item) -> str:
+        kind = item.record.kind
+        if kind in self.SESSION_KINDS:
+            return "session"
+        if kind == "decision":
+            return "constraints" if item.tier == "guardrail" else "decisions"
+        for name, kinds in self.STORE_KINDS.items():
+            if kind in kinds:
+                return name
+        return "module_context"
 
-        getter = store_map.get(store_name)
-        if getter:
-            return getter()
-        return []
-
-    def _get_warnings(self, raw_context: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Get warnings (combined from multiple sources)"""
-        warnings = []
-
-        # Check for decision conflicts
-        task = raw_context.get("task", "")
-        if task:
-            conflict = self.memory.decisions.check_decision(task)
-            if conflict:
-                warnings.append({
-                    "type": "decision_conflict",
-                    "message": conflict.get("conflict", ""),
-                    **conflict
-                })
-
-        # Check for tech debt warnings
-        for item in self.memory.techdebt.get_relevant(raw_context):
-            if item.get("type") == "refactoring_warning":
-                warnings.append({
-                    "type": "refactoring_failed",
-                    "message": f"Approach already tried: {item.get('attempt', {}).get('approach', '')}",
-                    **item
-                })
-
-        return warnings
-
-    def _get_decision_context(self, raw_context: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Get decision context (non-constraint decisions)"""
-        decisions = []
-        for node in self.memory.graph.nodes():
-            if node.type == "decision":
-                decisions.append({"type": "decision", **node.properties})
-        return decisions[:5]  # Limit to 5
-
-    def _estimate_tokens(self, store_name: str, item: Dict[str, Any]) -> int:
-        """Estimate tokens for an item"""
-        type_map = {
-            "warnings": "warning",
-            "constraints": "constraint",
-            "hot_paths": "hot_path",
-            "conventions": "convention",
-            "patterns": "pattern",
-            "bug_risks": "bug_risk",
-            "dependencies": "dependency",
-            "module_context": "module",
-            "decisions": "decision",
-            "team_experts": "expert",
-        }
-        item_type = type_map.get(store_name, "session")
-        return self.TOKEN_ESTIMATES.get(item_type, 50)
-
-    def _add_to_context(self, context: CodingContext, store_name: str, item: Dict[str, Any]) -> None:
-        """Add an item to the appropriate context list"""
-        attr_map = {
-            "warnings": "warnings",
-            "constraints": "constraints",
-            "hot_paths": "hot_paths",
-            "conventions": "conventions",
-            "patterns": "patterns",
-            "bug_risks": "bug_risks",
-            "dependencies": "dependencies",
-            "module_context": "module_context",
-            "decisions": "decisions",
-            "team_experts": "team_experts",
-        }
-        attr = attr_map.get(store_name)
-        if attr:
-            getattr(context, attr).append(item)
+    def _place(self, context: CodingContext, item) -> None:
+        rec = item.record
+        props = {"id": rec.id, **rec.fields}
+        bucket = self._bucket(item)
+        if bucket == "session":
+            key = {"open_question": "open_questions", "session_decision": "decisions",
+                   "blocker": "blockers", "partial_work": "partial_work"}[rec.kind]
+            context.session_context.setdefault(key, []).append(props)
+        elif bucket == "warnings":
+            context.warnings.append({"type": rec.kind, "message": item.text, **props})
+        elif bucket == "constraints":
+            context.constraints.append({"decision": rec.fields.get("title", ""),
+                                        "how": item.text, **props})
+        elif bucket == "hot_paths":
+            context.hot_paths.append({"warning": item.text, **props})
+        elif bucket == "bug_risks":
+            key = "fix" if rec.kind == "fix_pattern" else "pattern"
+            context.bug_risks.append({"type": "bug_risk", key: props})
+        elif bucket == "dependencies":
+            key = "workaround" if rec.kind == "workaround" else "quirk"
+            context.dependencies.append({key: props})
+        else:
+            getattr(context, bucket).append({"type": rec.kind, **props})
