@@ -133,3 +133,103 @@ def test_nul_byte_path_does_not_raise(tmp_path):
     add_anchor(g, REF, "bad\x00name.py", repo_root=str(tmp_path))
     staleness(g, REF, HashCache(str(tmp_path)))
     assert content_hash(str(tmp_path / "bad\x00name.py")) is None
+
+
+# -- anchors outside the repo, unreadable and oversized files --------------------------
+
+def _edge(g):
+    (edge,) = list(g.edges("ANCHORED_TO", source=REF))
+    return edge, g.get_node(*edge.target).properties["path"]
+
+
+def test_absolute_path_outside_the_repo_is_not_hashed_or_persisted(tmp_path):
+    repo, outside = tmp_path / "repo", tmp_path / "elsewhere"
+    repo.mkdir()
+    secret = write(outside, "secret.py", "token = 1\n")
+    g = graph()
+    add_anchor(g, REF, str(secret), "token", repo_root=str(repo))
+    edge, path = _edge(g)
+    assert path == "outside/secret.py" and edge.properties["hash"] == ""
+    assert str(tmp_path).replace("\\", "/").lower() not in g.to_ison().replace("\\", "/").lower()
+    assert staleness(g, REF, HashCache(str(repo))) == "unknown"
+
+
+def test_absolute_path_without_a_repo_root_is_not_persisted(tmp_path):
+    g = graph()
+    add_anchor(g, REF, str(write(tmp_path, "a.py", "x\n")))
+    _, path = _edge(g)
+    assert path == "outside/a.py"
+
+
+def test_relative_dotdot_path_is_kept_relative_and_not_hashed(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    write(tmp_path, "outside/x.py", "x = 1\n")
+    for rel in ("../outside/x.py", "src/../../outside/x.py"):
+        g = graph()
+        add_anchor(g, REF, rel, repo_root=str(repo))
+        edge, path = _edge(g)
+        assert path == rel and edge.properties["hash"] == ""
+        assert staleness(g, REF, HashCache(str(repo))) == "unknown"
+
+
+def test_dotdot_that_stays_inside_the_repo_is_hashed(tmp_path):
+    write(tmp_path, "src/a.py", "x = 1\n")
+    g = graph()
+    add_anchor(g, REF, "lib/../src/a.py", repo_root=str(tmp_path))
+    edge, _ = _edge(g)
+    assert edge.properties["hash"]
+    assert staleness(g, REF, HashCache(str(tmp_path))) == "fresh"
+
+
+def test_nul_byte_path_is_recorded_without_a_hash(tmp_path):
+    g = graph()
+    add_anchor(g, REF, "src/bad\x00name.py", repo_root=str(tmp_path))
+    edge, _ = _edge(g)
+    assert edge.properties["hash"] == ""
+    assert staleness(g, REF, HashCache(str(tmp_path))) == "unknown"
+
+
+def test_files_over_the_size_cap_are_not_read(tmp_path):
+    from agent_memory.anchors import MAX_HASH_BYTES
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"x" * (MAX_HASH_BYTES + 1))
+    assert content_hash(big) is None
+    assert HashCache(str(tmp_path)).get("big.bin") == ("", "")     # "" = not read
+    g = graph()
+    add_anchor(g, REF, "big.bin", repo_root=str(tmp_path))
+    edge, _ = _edge(g)
+    assert edge.properties["hash"] == ""
+    assert staleness(g, REF, HashCache(str(tmp_path))) == "unknown"
+
+
+def test_a_file_that_grows_past_the_cap_becomes_unknown_not_orphaned(tmp_path):
+    from agent_memory.anchors import MAX_HASH_BYTES
+    f = write(tmp_path, "log.txt", "small\n")
+    g = graph()
+    add_anchor(g, REF, "log.txt", repo_root=str(tmp_path))
+    f.write_bytes(b"x" * (MAX_HASH_BYTES + 1))
+    assert staleness(g, REF, HashCache(str(tmp_path))) == "unknown"
+
+
+def test_memory_anchor_outside_repo_reports_unknown_through_recall(tmp_path):
+    from agent_memory import AgentMemory
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    secret = write(tmp_path, "outside/x.py", "secret = 1\n")
+    m = AgentMemory("t", repo_root=str(repo))
+    r = m.remember("quirk", {"description": "outside file quirk"})
+    m.anchor(r.id, str(secret), "secret")
+    m.anchor(r.id, "../outside/x.py")
+    assert all(e.properties["hash"] == "" for e in m.graph.edges("ANCHORED_TO"))
+    assert [i.staleness for i in m.recall("outside file quirk").items] == ["unknown"]
+
+
+def test_location_field_outside_the_repo_is_not_auto_anchored(tmp_path):
+    from agent_memory import AgentMemory
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    write(tmp_path, "out.py", "x\n")
+    m = AgentMemory("t", repo_root=str(repo))
+    r = m.remember("tech_debt", {"location": "../out.py", "description": "no lock"})
+    assert not list(m.graph.edges("ANCHORED_TO", source=r.ref))

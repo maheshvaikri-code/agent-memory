@@ -255,7 +255,9 @@ class MemoryWriter:
         field_name = KINDS[kind].scope_field
         value = props.get(field_name) if field_name else None
         if self.repo_root and value and "," not in str(value):
-            rel = anchors_mod.norm_path(str(value), self.repo_root)
+            rel, inside = anchors_mod.anchor_path(str(value), self.repo_root)
+            if not inside:      # never auto-anchor a file outside the repo
+                return
             try:
                 is_file = (Path(self.repo_root) / rel).is_file()
             except (OSError, ValueError):
