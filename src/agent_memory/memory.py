@@ -328,14 +328,15 @@ class AgentMemory:
         checkpoint; saving elsewhere writes a full snapshot copy. A plain instance may not
         overwrite a store that has a journal: open it with AgentMemory.open()."""
         target = str(path)
-        if (self._backend is not None
-                and os.path.normcase(os.path.abspath(target))
-                == os.path.normcase(self._backend.path)):
+        real = os.path.realpath(target)         # a store's journal sits beside its real file
+        own = (self._backend is not None
+               and os.path.normcase(real) == os.path.normcase(self._backend.path))
+        if own:
             self._backend.checkpoint()
             return
         if self._backend is not None:
             self._sync()                  # the copy includes other processes' recent writes
-        if self._backend is None and os.path.exists(target + ".journal"):
+        if self._backend is None and os.path.exists(real + ".journal"):
             raise StoreInUse(f"{target} is a shared store (it has a journal); use "
                              f"AgentMemory.open({target!r}) or save to another path")
         text = self.graph.to_isonl() if Path(target).suffix == ".isonl" else self.graph.to_ison()
@@ -348,7 +349,7 @@ class AgentMemory:
         journal replayed; use AgentMemory.open() to keep working on it with other processes."""
         if Path(path).suffix == ".isonl":
             graph = ISONGraph.load(path)
-        elif os.path.exists(str(path) + ".journal"):
+        elif os.path.exists(os.path.realpath(str(path)) + ".journal"):
             graph = JournalBackend.read_only(path)        # snapshot + journal, as a plain graph
         else:
             graph = SharedGraph.from_ison(Path(path).read_text(encoding="utf-8"), Path(path).stem)

@@ -81,12 +81,15 @@ class JournalBackend:
                  replace_retry_seconds: float = 2.0):
         if durability not in ("flush", "fsync"):
             raise ValueError(f"durability must be 'flush' or 'fsync', got {durability!r}")
-        self.path = os.path.abspath(os.fspath(path))
+        # The real path: every name of one store (symlinks, worktrees) shares one journal and
+        # one lock beside the real file.
+        self.path = os.path.realpath(os.fspath(path))
         if _ISONL in (Path(os.fspath(path)).suffix, Path(self.path).suffix):
             # The snapshot is ISON text and plain load() reads an .isonl path as ISON lines:
             # refused before any file is touched.
             raise ValueError(f"{os.fspath(path)}: a shared store cannot use the {_ISONL} "
                              f"format; use an ISON path such as project.memory")
+        self.name = _stem(os.fspath(path))      # the graph's name, from the name given
         self.journal_path = self.path + ".journal"
         self.lock_path = self.path + ".lock"
         self.agent = agent
@@ -138,7 +141,7 @@ class JournalBackend:
                     self._write_snapshot(graph)
                     created = True
             else:
-                graph = SharedGraph(name=_stem(self.path))
+                graph = SharedGraph(name=self.name)
                 ISONGraph.add_node(graph, META_TYPE, META_ID, generation=_generation(), seq=0)
                 self._write_snapshot(graph)
                 created = True
@@ -181,7 +184,7 @@ class JournalBackend:
     def _read_snapshot(self) -> SharedGraph:
         try:
             text = Path(self.path).read_text(encoding="utf-8")
-            return SharedGraph.from_ison(text, _stem(self.path))
+            return SharedGraph.from_ison(text, self.name)
         except Exception as exc:
             raise StoreCorrupt(f"snapshot {self.path} cannot be read: {exc}") from exc
 
