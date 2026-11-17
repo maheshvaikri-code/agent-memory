@@ -13,7 +13,7 @@ from .budget import TokenCounter
 from .channels import graph_neighbours, scope_scores
 from .lexical import BM25
 from .render import HEADERS, render, render_item
-from .tokenize import compound_tokens, tokenize, tokens_for
+from .tokenize import _WORD, compound_tokens, tokenize, tokens_for
 
 log = logging.getLogger(__name__)
 
@@ -109,6 +109,32 @@ def _feedback(rec: MemoryRecord) -> float:
     return (1 + rec.helpful) / (1 + rec.helpful + 2 * rec.harmful)
 
 
+def _camel_groups(text: str) -> List[set]:
+    """Token sets of each camelCase word: its split parts plus the joined form."""
+    groups = []
+    for word in _WORD.findall(text or ""):
+        group = set(tokenize(word)) | set(compound_tokens(word))
+        if len(group) > 1:
+            groups.append(group)
+    return groups
+
+
+def _concepts(matched: FrozenSet[str], groups: List[set]) -> int:
+    """Matched query words, counting a camelCase word once ("MongoDB": mongo, db, mongodb)."""
+    remaining, count = set(matched), 0
+    while remaining:
+        count += 1
+        frontier = [remaining.pop()]
+        while frontier:
+            token = frontier.pop()
+            for group in groups:
+                if token in group:
+                    linked = group & remaining
+                    remaining -= linked
+                    frontier.extend(linked)
+    return count
+
+
 class Retriever:
     def __init__(self, graph, repo_root: Optional[str] = None,
                  counter: Optional[TokenCounter] = None, semantic=None,
@@ -167,7 +193,9 @@ class Retriever:
             return []
 
         stems = " ".join(os.path.splitext(os.path.basename(f))[0] for f in files)
-        query_tokens = tokenize(f"{query} {stems}")
+        query_text = f"{query} {stems}"
+        query_tokens = tokenize(query_text) + list(compound_tokens(query_text))
+        words = _camel_groups(query_text)
         bm25 = BM25({ref: tokens_for(rec.text) + compound_tokens(rec.text)
                      for ref, rec in cands.items()})
         hits = {h.key: h for h in bm25.search(query_tokens)}
@@ -190,7 +218,8 @@ class Retriever:
             in_scope = scope.get(ref, 0.0) >= SCOPE_FLOOR
             if strict:
                 distinctive = any(bm25.df[t] <= DISTINCTIVE_DF for t in matched)
-                return len(matched) >= 2 or (len(matched) == 1 and (in_scope or distinctive))
+                count = _concepts(matched, words)
+                return count >= 2 or (count == 1 and (in_scope or distinctive))
             return bool(matched) or in_scope or ref in semantic
 
         survivors = {ref: score for ref, score in fused.items() if passes(ref)}

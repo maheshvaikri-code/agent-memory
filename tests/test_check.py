@@ -68,3 +68,22 @@ def test_check_suggestion_keeps_its_old_shape_and_adds_guardrails(memory):
     new = [w for w in out if w["type"] == "guardrail"]
     assert old and {"decision", "alternative", "conflict"} <= set(old[0])
     assert new and {"id", "kind", "message", "score"} <= set(new[0])
+
+
+@pytest.mark.parametrize("stored, approach", [
+    ("mongodb", "switch the billing ledger to MongoDB"),
+    ("MongoDB", "switch the billing ledger to mongodb"),
+])
+def test_compound_matching_is_symmetric(tmp_path, stored, approach):
+    m = AgentMemory("t", repo_root=str(tmp_path))
+    m.decisions.add_decision("Use Postgres for billing", "transactions")
+    m.decisions.add_alternative("Use Postgres for billing", stored, "no transactions")
+    warnings = m.check(approach)
+    assert [w.record.kind for w in warnings] == ["alternative"]
+
+
+def test_camel_case_word_counts_once_toward_the_strict_floor(tmp_path):
+    m = AgentMemory("t", repo_root=str(tmp_path))
+    for n in range(4):   # "mongo" and "db" are common, so neither is distinctive
+        m.remember("bug_pattern", {"name": f"p{n}", "signature": f"MongoDB driver {n} leaks"})
+    assert m.check("MongoDB") == []
