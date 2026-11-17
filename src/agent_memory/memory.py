@@ -2,6 +2,7 @@
 Agent Memory - Main memory manager coordinating all stores
 """
 
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ison_graph import ISONGraph
@@ -27,6 +28,7 @@ from .context import ContextBuilder, CodingContext
 from .consolidation import MemoryConsolidator
 from . import anchors as anchors_mod
 from .record import KINDS, MemoryRecord
+from .storage.atomic import atomic_write_text
 from .writer import MemoryWriter, WriteResult
 from .retrieval import RecallResult, Retriever
 
@@ -305,8 +307,10 @@ class AgentMemory:
     # =========================================================================
 
     def save(self, path: str) -> None:
-        """Save memory to file"""
-        self.graph.save(path)
+        """Save memory to file. The write is atomic: a reader never sees half a file."""
+        target = str(path)
+        text = self.graph.to_isonl() if Path(target).suffix == ".isonl" else self.graph.to_ison()
+        atomic_write_text(target, text)
 
     @classmethod
     def load(cls, path: str, repo_root: Optional[str] = None,
