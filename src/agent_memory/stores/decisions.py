@@ -44,6 +44,14 @@ class DecisionStore(BaseStore):
 
         return dec_id
 
+    def _decision_id(self, title: str) -> str:
+        """Id of the decision titled `title` (see BaseStore._resolve)."""
+        return self._resolve("decision", self._make_id("dec", title), title=title)
+
+    def _module_id(self, path: str) -> str:
+        """Id of the module at `path` (see BaseStore._resolve)."""
+        return self._resolve("module", self._make_id("mod", path), path=path)
+
     def add_alternative(
         self,
         decision_title: str,
@@ -51,7 +59,7 @@ class DecisionStore(BaseStore):
         rejected_because: str
     ) -> str:
         """Record an alternative that was considered"""
-        dec_id = self._make_id("dec", decision_title)
+        dec_id = self._decision_id(decision_title)
         alt_id = self._make_id("alt", f"{decision_title}_{option}")
 
         alt_id = self._add_memory(
@@ -81,8 +89,8 @@ class DecisionStore(BaseStore):
         flexibility: str = "medium"
     ) -> None:
         """Record that a decision constrains a module"""
-        dec_id = self._make_id("dec", decision_title)
-        mod_id = self._make_id("mod", module_path)
+        dec_id = self._decision_id(decision_title)
+        mod_id = self._module_id(module_path)
 
         if self.graph.has_node("decision", dec_id) and self.graph.has_node("module", mod_id):
             self.graph.add_edge(
@@ -100,7 +108,7 @@ class DecisionStore(BaseStore):
         correction: str
     ) -> None:
         """Record when agent violated a decision"""
-        dec_id = self._make_id("dec", decision_title)
+        dec_id = self._decision_id(decision_title)
 
         if self.graph.has_node("decision", dec_id):
             self.graph.add_edge(
@@ -114,8 +122,8 @@ class DecisionStore(BaseStore):
 
     def supersede(self, old_title: str, new_title: str, reason: str) -> None:
         """Mark a decision as superseded by another"""
-        old_id = self._make_id("dec", old_title)
-        new_id = self._make_id("dec", new_title)
+        old_id = self._decision_id(old_title)
+        new_id = self._decision_id(new_title)
 
         if self.graph.has_node("decision", old_id):
             self.graph.update_node("decision", old_id, status="superseded")
@@ -155,7 +163,7 @@ class DecisionStore(BaseStore):
 
     def get_constraints_for_module(self, module_path: str) -> List[Dict[str, Any]]:
         """Get all decisions that constrain a module"""
-        mod_id = self._make_id("mod", module_path)
+        mod_id = self._module_id(module_path)
         constraints = []
 
         for edge in self.graph.edges():

@@ -157,7 +157,8 @@ class SessionStore(BaseStore):
         answered_in_session: str
     ) -> None:
         """Mark a question as answered"""
-        q_id = self._make_id("oq", question_text[:30])
+        q_id = self._resolve("open_question", self._make_id("oq", question_text[:30]),
+                             question=self._sanitize(question_text))
 
         if self.graph.has_node("open_question", q_id):
             self.graph.update_node(
@@ -193,7 +194,8 @@ class SessionStore(BaseStore):
         resolution: str
     ) -> None:
         """Mark a blocker as resolved"""
-        bl_id = self._make_id("bl", description[:30])
+        bl_id = self._resolve("blocker", self._make_id("bl", description[:30]),
+                              description=self._sanitize(description))
 
         if self.graph.has_node("blocker", bl_id):
             self.graph.update_node(

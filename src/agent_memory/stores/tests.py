@@ -82,7 +82,7 @@ class TestPatternStore(BaseStore):
         test_name: str
     ) -> None:
         """Link a regression test to a bug"""
-        bug_id = self._make_id("bug", bug_title[:30])
+        bug_id = self._resolve("bug", self._make_id("bug", bug_title[:30]), title=bug_title)
 
         self.graph.add_edge(
             "TEST_FOR_BUG",

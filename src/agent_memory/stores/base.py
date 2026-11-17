@@ -34,6 +34,15 @@ class BaseStore(ABC):
         """
         return self.writer.add(kind, fields, node_id=node_id).id
 
+    def _resolve(self, kind: str, base_id: str, **match) -> str:
+        """The id of the `kind` record a name lookup means.
+
+        `base_id` is the id rebuilt from a name or text prefix with _make_id. When it was
+        taken, the writer stored the record under a suffixed id, so the lookup picks the
+        record whose `match` fields equal the caller's values. See MemoryWriter.resolve.
+        """
+        return self.writer.resolve(kind, base_id, match)
+
     def _get_node_or_none(self, node_type, node_id):
         """
         Return the node, or None when it does not exist.

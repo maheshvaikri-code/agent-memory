@@ -42,6 +42,10 @@ class CodebaseStore(BaseStore):
 
         return module_id
 
+    def _module_id(self, path: str) -> str:
+        """Id of the module at `path` (see BaseStore._resolve)."""
+        return self._resolve("module", self._make_id("mod", path), path=path)
+
     def add_dependency(
         self,
         from_module: str,
@@ -50,8 +54,8 @@ class CodebaseStore(BaseStore):
         critical_path: bool = False
     ) -> None:
         """Record dependency between modules"""
-        from_id = self._make_id("mod", from_module)
-        to_id = self._make_id("mod", to_module)
+        from_id = self._module_id(from_module)
+        to_id = self._module_id(to_module)
 
         if self.graph.has_node("module", from_id) and self.graph.has_node("module", to_id):
             self.graph.add_edge(
@@ -84,7 +88,7 @@ class CodebaseStore(BaseStore):
 
         # Link to modules
         for mod in modules:
-            mod_id = self._make_id("mod", mod)
+            mod_id = self._module_id(mod)
             if self.graph.has_node("module", mod_id):
                 self.graph.add_edge(
                     "ABSTRACTS",
@@ -113,7 +117,7 @@ class CodebaseStore(BaseStore):
 
         # Link to modules
         for mod in modules:
-            mod_id = self._make_id("mod", mod)
+            mod_id = self._module_id(mod)
             if self.graph.has_node("module", mod_id) and not self.graph.has_edge(
                 "IMPLEMENTS", ("module", mod_id), ("design_pattern", pattern_id)
             ):
@@ -132,7 +136,7 @@ class CodebaseStore(BaseStore):
         sessions_built: int = 1
     ) -> None:
         """Update agent's confidence in understanding a module"""
-        mod_id = self._make_id("mod", module_path)
+        mod_id = self._module_id(module_path)
 
         if not self.graph.has_node("module", mod_id):
             return
@@ -153,7 +157,7 @@ class CodebaseStore(BaseStore):
 
         Returns dependencies, patterns, abstractions, and confidence.
         """
-        mod_id = self._make_id("mod", module_path)
+        mod_id = self._module_id(module_path)
         context = {
             "module": None,
             "dependencies": [],

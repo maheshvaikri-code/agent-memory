@@ -65,7 +65,7 @@ class TeamStore(BaseStore):
     ) -> None:
         """Link a member to an expertise area"""
         member_id = self._make_id("tm", member_name)
-        exp_id = self._make_id("ea", domain)
+        exp_id = self._resolve("expertise_area", self._make_id("ea", domain), domain=domain)
 
         if self.graph.has_node("team_member", member_id) and self.graph.has_node("expertise_area", exp_id):
             self.graph.add_edge(
@@ -113,7 +113,7 @@ class TeamStore(BaseStore):
     ) -> None:
         """Link member to a decision they authored"""
         member_id = self._make_id("tm", member_name)
-        dec_id = self._make_id("dec", decision_title)
+        dec_id = self._resolve("decision", self._make_id("dec", decision_title), title=decision_title)
 
         if self.graph.has_node("team_member", member_id) and self.graph.has_node("decision", dec_id):
             self.graph.add_edge(
@@ -131,7 +131,7 @@ class TeamStore(BaseStore):
         best_channel: str = "email"
     ) -> None:
         """Set who to contact for an expertise area"""
-        exp_id = self._make_id("ea", domain)
+        exp_id = self._resolve("expertise_area", self._make_id("ea", domain), domain=domain)
         member_id = self._make_id("tm", member_name)
 
         if self.graph.has_node("expertise_area", exp_id) and self.graph.has_node("team_member", member_id):

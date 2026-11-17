@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from . import anchors as anchors_mod
 from .record import (
-    ENVELOPE_FIELDS, KINDS, PRIORITIES, SESSION_KINDS, MemoryRecord, NodeRef, build_text,
+    ENVELOPE_FIELDS, KINDS, NATURAL_KEY, PRIORITIES, SESSION_KINDS, MemoryRecord, NodeRef, build_text,
     envelope_props, is_closed, make_id, normalize_text, utc_now,
 )
 from .retrieval.tokenize import tokens_for
@@ -68,6 +68,46 @@ class MemoryWriter:
             return None
         return ref
 
+    def named(self, kind: str, base_id: str, match: Dict[str, Any]) -> List[MemoryRecord]:
+        """Records a store's name-built id can mean: the id itself or one the writer suffixed
+        from it (base_<hash>[_n], written when base_id was taken), whose `match` fields equal
+        the given values (whitespace-collapsed, case-insensitive)."""
+        want = {k: normalize_text(str(v)) for k, v in match.items()}
+        prefix = f"{base_id}_"
+        out = []
+        for node in self.graph.nodes(kind):
+            nid = str(node.id)
+            if nid != base_id and not nid.startswith(prefix):
+                continue
+            if all(normalize_text(str(node.properties.get(k) or "")) == v for k, v in want.items()):
+                out.append(MemoryRecord.from_node(node))
+        return out
+
+    def resolve(self, kind: str, base_id: str, match: Dict[str, Any]) -> str:
+        """The id a store means when it rebuilds `base_id` from a name or a text prefix.
+
+        Several records can share a name-built id prefix (two questions with the same first
+        30 characters; a module re-added with a new purpose). The record whose `match` fields
+        equal the caller's wins, preferring active over inactive and open over answered or
+        resolved. When no record matches exactly, `base_id` is returned unchanged (the old
+        behaviour). Raises ValueError when several records match equally well.
+        """
+        if not self.graph.has_node(kind, base_id):
+            return base_id          # a suffixed id is only ever written when base_id is taken
+        named = self.named(kind, base_id, match)
+        if not named:
+            return base_id
+
+        def rank(rec: MemoryRecord) -> Tuple[bool, bool]:
+            return (rec.status != "active", is_closed(kind, rec.fields))
+
+        best = min(rank(r) for r in named)
+        group = [r for r in named if rank(r) == best]
+        if len(group) > 1:
+            raise ValueError(f"{len(group)} {kind} records match {match!r} "
+                             f"({', '.join(str(r.id) for r in group)}); use the record id")
+        return group[0].id
+
     # -- writes ------------------------------------------------------------
 
     def add(self, kind: str, fields: Dict[str, Any], *, node_id=None,
@@ -98,7 +138,13 @@ class MemoryWriter:
         similar = self._similar(kind, text) if node_id is None else []
 
         new_id = node_id if node_id is not None else make_id(kind, text)
+        replaces: List[NodeRef] = []
         if self.graph.has_node(kind, new_id):
+            key = NATURAL_KEY.get(kind)
+            if node_id is not None and key and str(props.get(key) or "").strip():
+                # "add or update": the same key with a new text replaces the active record
+                replaces = [r.ref for r in self.named(kind, node_id, {key: props[key]})
+                            if r.status == "active"]
             base = f"{new_id}_{make_id(kind, text).rsplit('_', 1)[1]}" if node_id is not None else new_id
             new_id, n = base, 2
             while self.graph.has_node(kind, new_id):
@@ -114,6 +160,8 @@ class MemoryWriter:
         if norm:
             self._by_text[(kind, norm)] = ref
         self._anchor_all(ref, kind, props, anchors)
+        for old in replaces:
+            self._replace(old, ref, evidence)
         return WriteResult(ref, created=True, similar=similar)
 
     def supersede(self, old_ref: NodeRef, kind: str, fields: Dict[str, Any], **kw) -> WriteResult:
@@ -140,6 +188,32 @@ class MemoryWriter:
             self.graph.update_node(ref[0], ref[1], harmful=rec.harmful + 1)
 
     # -- helpers -----------------------------------------------------------
+
+    def _replace(self, old: NodeRef, new: NodeRef, evidence: str = "") -> None:
+        """`new` updates `old` (same natural key): supersede it and take over its links, so
+        constraints, fixes, attempts and anchors attached to the old record still apply.
+        Anchors are re-stamped at the current file hash, since the new text is written now."""
+        self._set_status(old, "superseded")
+        if not self.graph.has_edge("SUPERSEDES", new, old):
+            self.graph.add_edge("SUPERSEDES", new, old, reason=evidence, date=utc_now())
+        commit = None
+        for edge in list(self.graph.edges(source=old)):
+            if edge.rel_type == "SUPERSEDES" or edge.target == new:
+                continue
+            if edge.rel_type == anchors_mod.EDGE:
+                if not self.graph.has_edge(edge.rel_type, new, edge.target) and self.graph.has_node(*edge.target):
+                    if commit is None:
+                        commit = anchors_mod.head_commit(self.repo_root)
+                    path = str(self.graph.get_node(*edge.target).properties.get("path") or "")
+                    anchors_mod.add_anchor(self.graph, new, path, str(edge.properties.get("symbol") or ""),
+                                           self.repo_root, commit)
+            elif not self.graph.has_edge(edge.rel_type, new, edge.target):
+                self.graph.add_edge(edge.rel_type, new, edge.target, **dict(edge.properties))
+        for edge in list(self.graph.edges(target=old)):
+            if edge.rel_type == "SUPERSEDES" or edge.source == new:
+                continue
+            if not self.graph.has_edge(edge.rel_type, edge.source, new):
+                self.graph.add_edge(edge.rel_type, edge.source, new, **dict(edge.properties))
 
     def _set_status(self, ref: NodeRef, status: str) -> None:
         now = utc_now()

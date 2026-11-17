@@ -41,6 +41,10 @@ class BugPatternStore(BaseStore):
 
         return bug_id
 
+    def _pattern_id(self, name: str) -> str:
+        """Id of the bug pattern called `name` (see BaseStore._resolve)."""
+        return self._resolve("bug_pattern", self._make_id("bp", name), name=name)
+
     def add_pattern(
         self,
         name: str,
@@ -67,7 +71,7 @@ class BugPatternStore(BaseStore):
         caveats: Optional[str] = None
     ) -> str:
         """Add a fix pattern for a bug type"""
-        pattern_id = self._make_id("bp", bug_pattern_name)
+        pattern_id = self._pattern_id(bug_pattern_name)
         fix_id = self._make_id("fix", bug_pattern_name)
 
         fix_id = self._add_memory(
@@ -91,8 +95,8 @@ class BugPatternStore(BaseStore):
 
     def link_bug_to_pattern(self, bug_title: str, pattern_name: str) -> None:
         """Link a specific bug to a pattern"""
-        bug_id = self._make_id("bug", bug_title[:30])
-        pattern_id = self._make_id("bp", pattern_name)
+        bug_id = self._resolve("bug", self._make_id("bug", bug_title[:30]), title=bug_title)
+        pattern_id = self._pattern_id(pattern_name)
 
         if self.graph.has_node("bug", bug_id) and self.graph.has_node("bug_pattern", pattern_id):
             self.graph.add_edge(
@@ -108,7 +112,7 @@ class BugPatternStore(BaseStore):
         risk: str = "medium"
     ) -> None:
         """Mark that similar risky code exists"""
-        pattern_id = self._make_id("bp", pattern_name)
+        pattern_id = self._pattern_id(pattern_name)
 
         if self.graph.has_node("bug_pattern", pattern_id):
             self.graph.add_edge(
@@ -126,7 +130,7 @@ class BugPatternStore(BaseStore):
         code_location: str
     ) -> None:
         """Record when agent prevented a bug"""
-        pattern_id = self._make_id("bp", pattern_name)
+        pattern_id = self._pattern_id(pattern_name)
 
         if self.graph.has_node("bug_pattern", pattern_id):
             self.graph.add_edge(
@@ -144,7 +148,7 @@ class BugPatternStore(BaseStore):
         post_mortem: str
     ) -> None:
         """Record when agent missed a bug"""
-        pattern_id = self._make_id("bp", pattern_name)
+        pattern_id = self._pattern_id(pattern_name)
 
         if self.graph.has_node("bug_pattern", pattern_id):
             self.graph.add_edge(

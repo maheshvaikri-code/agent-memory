@@ -106,7 +106,7 @@ class PerformanceStore(BaseStore):
         kept: bool
     ) -> None:
         """Record an optimization attempt"""
-        hp_id = self._make_id("hp", hot_path_name)
+        hp_id = self._resolve("hot_path", self._make_id("hp", hot_path_name), name=hot_path_name)
 
         if self.graph.has_node("hot_path", hp_id):
             self.graph.add_edge(

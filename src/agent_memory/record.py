@@ -76,6 +76,13 @@ SESSION_KINDS = ("open_question", "blocker", "partial_work")
 RESOLVED_FIELD = {"open_question": "answered_in", "blocker": "resolved_in"}
 
 
+# Kinds a store adds "or updates" by a natural key: a second write with the same key and a
+# different text replaces the first (it is superseded), so they never both stay active.
+NATURAL_KEY = {"module": "path", "decision": "title", "hot_path": "name",
+               "performance_constraint": "operation", "expertise_area": "domain",
+               "design_pattern": "name", "tech_debt": "location"}
+
+
 def is_closed(kind: str, fields: Mapping[str, Any]) -> bool:
     """True for an answered open_question or a resolved blocker."""
     name = RESOLVED_FIELD.get(kind)

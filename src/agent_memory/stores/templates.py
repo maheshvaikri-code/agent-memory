@@ -37,6 +37,10 @@ class TemplateStore(BaseStore):
 
         return tmpl_id
 
+    def _template_id(self, name: str) -> str:
+        """Id of the template called `name` (see BaseStore._resolve)."""
+        return self._resolve("template", self._make_id("tmpl", name), name=name)
+
     def add_template_component(
         self,
         template_name: str,
@@ -45,7 +49,7 @@ class TemplateStore(BaseStore):
         customizable: Optional[List[str]] = None
     ) -> str:
         """Add a component to a template"""
-        tmpl_id = self._make_id("tmpl", template_name)
+        tmpl_id = self._template_id(template_name)
         comp_id = self._make_id("tc", f"{template_name}_{component_name}")
 
         self.graph.add_node(
@@ -93,8 +97,8 @@ class TemplateStore(BaseStore):
         adaptation_needed: str = ""
     ) -> None:
         """Link a snippet to a template"""
-        tmpl_id = self._make_id("tmpl", template_name)
-        snip_id = self._make_id("snip", snippet_name)
+        tmpl_id = self._template_id(template_name)
+        snip_id = self._resolve("snippet", self._make_id("snip", snippet_name), name=snippet_name)
 
         if self.graph.has_node("template", tmpl_id) and self.graph.has_node("snippet", snip_id):
             self.graph.add_edge(
@@ -107,7 +111,7 @@ class TemplateStore(BaseStore):
 
     def record_template_use(self, template_name: str) -> None:
         """Record template usage"""
-        tmpl_id = self._make_id("tmpl", template_name)
+        tmpl_id = self._template_id(template_name)
 
         if self.graph.has_node("template", tmpl_id):
             node = self._get_node_or_none("template", tmpl_id)
@@ -128,7 +132,7 @@ class TemplateStore(BaseStore):
         deviations_corrected: int = 0
     ) -> None:
         """Record agent learning a template"""
-        tmpl_id = self._make_id("tmpl", template_name)
+        tmpl_id = self._template_id(template_name)
 
         if self.graph.has_node("template", tmpl_id):
             self.graph.add_edge(
@@ -142,7 +146,7 @@ class TemplateStore(BaseStore):
 
     def get_template(self, name: str) -> Optional[Dict[str, Any]]:
         """Get a template with its components and snippets"""
-        tmpl_id = self._make_id("tmpl", name)
+        tmpl_id = self._template_id(name)
 
         if not self.graph.has_node("template", tmpl_id):
             return None

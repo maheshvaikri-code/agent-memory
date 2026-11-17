@@ -78,7 +78,8 @@ class DependencyStore(BaseStore):
         time_to_find: Optional[str] = None
     ) -> str:
         """Add a workaround for a quirk"""
-        quirk_id = self._make_id("quirk", quirk_description[:30])
+        quirk_id = self._resolve("quirk", self._make_id("quirk", quirk_description[:30]),
+                                 description=self._sanitize(quirk_description))
         work_id = self._make_id("work", solution[:30])
 
         work_id = self._add_memory(
@@ -108,7 +109,8 @@ class DependencyStore(BaseStore):
         times_applied: int = 0
     ) -> None:
         """Record that agent knows a workaround"""
-        work_id = self._make_id("work", workaround_solution[:30])
+        work_id = self._resolve("workaround", self._make_id("work", workaround_solution[:30]),
+                                solution=self._sanitize(workaround_solution))
 
         if self.graph.has_node("workaround", work_id):
             self.graph.add_edge(
@@ -128,7 +130,8 @@ class DependencyStore(BaseStore):
         notes: str = ""
     ) -> None:
         """Mark that an upgrade might invalidate a workaround"""
-        work_id = self._make_id("work", workaround_solution[:30])
+        work_id = self._resolve("workaround", self._make_id("work", workaround_solution[:30]),
+                                solution=self._sanitize(workaround_solution))
 
         self.graph.add_edge(
             "UPGRADE_INVALIDATES",

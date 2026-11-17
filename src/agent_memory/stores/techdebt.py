@@ -40,6 +40,10 @@ class TechDebtStore(BaseStore):
 
         return debt_id
 
+    def _debt_id(self, location: str) -> str:
+        """Id of the tech debt at `location` (see BaseStore._resolve)."""
+        return self._resolve("tech_debt", self._make_id("td", location[:30]), location=location)
+
     def add_refactoring_attempt(
         self,
         debt_location: str,
@@ -48,7 +52,7 @@ class TechDebtStore(BaseStore):
         reason_failed: Optional[str] = None
     ) -> str:
         """Record a refactoring attempt"""
-        debt_id = self._make_id("td", debt_location[:30])
+        debt_id = self._debt_id(debt_location)
         attempt_id = self._make_id("ra", f"{debt_location[:15]}_{approach[:15]}")
 
         attempt_id = self._add_memory(
@@ -80,7 +84,7 @@ class TechDebtStore(BaseStore):
         blocked_by: Optional[str] = None
     ) -> str:
         """Add a planned refactoring"""
-        debt_id = self._make_id("td", debt_location[:30])
+        debt_id = self._debt_id(debt_location)
         plan_id = self._make_id("pr", debt_location[:30])
 
         self.graph.add_node(
@@ -101,8 +105,8 @@ class TechDebtStore(BaseStore):
         reason: str
     ) -> None:
         """Record that one debt blocks another's resolution"""
-        blocked_id = self._make_id("td", blocked_debt[:30])
-        blocking_id = self._make_id("td", blocking_debt[:30])
+        blocked_id = self._debt_id(blocked_debt)
+        blocking_id = self._debt_id(blocking_debt)
 
         if (self.graph.has_node("tech_debt", blocked_id) and
             self.graph.has_node("tech_debt", blocking_id)):
@@ -120,7 +124,7 @@ class TechDebtStore(BaseStore):
         response: str
     ) -> None:
         """Record when agent suggests already-tried approach"""
-        debt_id = self._make_id("td", debt_location[:30])
+        debt_id = self._debt_id(debt_location)
 
         if self.graph.has_node("tech_debt", debt_id):
             self.graph.add_edge(
@@ -142,7 +146,7 @@ class TechDebtStore(BaseStore):
 
     def get_failed_attempts(self, debt_location: str) -> List[Dict[str, Any]]:
         """Get failed refactoring attempts for a debt item"""
-        debt_id = self._make_id("td", debt_location[:30])
+        debt_id = self._debt_id(debt_location)
         attempts = []
 
         for edge in self.graph.edges():
