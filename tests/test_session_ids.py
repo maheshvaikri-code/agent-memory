@@ -8,6 +8,9 @@ def test_sessions_from_two_processes_in_one_second_get_distinct_ids(tmp_path, mo
     monkeypatch.setattr(SessionStore, "_now", lambda self: FIXED_NOW)   # the same second
     path = str(tmp_path / "p.memory")
     a, b = AgentMemory.open(path, agent="a"), AgentMemory.open(path, agent="b")
+    # Each process has its own counter, starting at 0. Reset it before both calls, so sessions
+    # that earlier tests started in this pytest process cannot make the ids differ by chance.
+    monkeypatch.setattr(SessionStore, "_session_counter", 0)
     first = a.start_session("first")
     monkeypatch.setattr(SessionStore, "_session_counter", 0)   # another process: its own counter
     second = b.start_session("second")

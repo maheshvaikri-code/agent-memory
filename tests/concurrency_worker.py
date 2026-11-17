@@ -18,6 +18,7 @@ from agent_memory import AgentMemory
 
 SHARED = {"name": "shared", "rule": "every worker records this one fact"}
 ANCHOR_FILE = "shared.py"
+TEMPLATE, SKILL = "shared-template", "shared-skill"     # the test creates both before the run
 MIX = [(0.35, "add"), (0.50, "shared"), (0.65, "helpful"), (0.72, "supersede"),
        (0.80, "anchor"), (0.87, "session"), (1.01, "recall")]
 
@@ -92,10 +93,19 @@ def main(argv):
     rng = random.Random(wid)
     mine = []                       # this worker's own active facts
     for i in range(n_ops):
-        op = "helpful" if mix == "contention" else pick(rng.random())
+        op = "contention" if mix == "contention" else pick(rng.random())
         if op in ("supersede", "anchor") and not mine:
             op = "add"
-        if op == "add":
+        if op == "contention":
+            # every op bumps the shared counters: feedback, template use, skill examples
+            res = memory.remember("convention", SHARED)
+            memory.feedback(res.id, True)
+            done(op="helpful", id=res.id)
+            memory.templates.record_template_use(TEMPLATE)
+            done(op="template", id=TEMPLATE)
+            memory.skills.update_proficiency(SKILL, 0.5, examples_added=1)
+            done(op="skill", id=SKILL)
+        elif op == "add":
             res = memory.remember("convention",
                                   {"name": f"w{wid}-{i}", "rule": f"worker {wid} rule {i}"})
             mine.append(res.id)

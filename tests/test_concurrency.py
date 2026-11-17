@@ -17,6 +17,7 @@ from ison_graph import ISONGraph
 from agent_memory import AgentMemory
 from agent_memory.anchors import EDGE as ANCHOR_EDGE
 from agent_memory.storage import journal
+from concurrency_worker import SKILL, TEMPLATE
 from storage_helpers import TESTS, child_env
 
 WORKER = str(Path(TESTS) / "concurrency_worker.py")
@@ -89,6 +90,8 @@ def check_store(path, ack_dir, crashed=0):
             assert graph.has_node("session", row["id"]), f"acknowledged session lost: {row}"
             session = graph.get_node("session", row["id"]).properties
             assert session.get("ended") and str(session.get("completion")) == "1.0", row
+        elif row["op"] in ("template", "skill"):
+            continue                                  # counters: checked below
         else:
             assert row["id"] in conventions, f"acknowledged write lost: {row}"
         if row["op"] == "anchor":
@@ -116,6 +119,15 @@ def check_store(path, ack_dir, crashed=0):
         assert helpful_acks <= helpful <= helpful_acks + crashed, \
             f"helpful={helpful}, acknowledged={helpful_acks}, crashed={crashed}"
 
+    # counters under contention: every acknowledged increment counted exactly once
+    for op, kind, field in (("template", "template", "usage_count"),
+                            ("skill", "skill", "examples_seen")):
+        acks = sum(1 for r in rows if r["op"] == op)
+        if acks:
+            [node] = [n for n in graph.nodes(kind) if n.properties.get("name") == rows_name(op)]
+            total = int(node.properties.get(field) or 0)
+            assert acks <= total <= acks + crashed, f"{kind} {field}={total}, acknowledged={acks}"
+
     names = [p.get("name") for p in conventions.values() if p.get("name") != "shared"]
     assert len(names) == len(set(names)), "a per-worker fact was duplicated"
 
@@ -129,9 +141,23 @@ def check_store(path, ack_dir, crashed=0):
     mem.close()
 
 
-def run_workers(tmp_path, workers, n_ops, *extra, reads=0, timeout=300):
-    """`workers` writers, plus one lockless reader process doing `reads` reads when > 0."""
+def rows_name(op):
+    return {"template": TEMPLATE, "skill": SKILL}[op]
+
+
+def seed_counters(store):
+    """The template and skill the contention mix counts on, created once before the run."""
+    with AgentMemory.open(str(store)) as mem:
+        mem.templates.add_template(TEMPLATE, "api")
+        mem.skills.add_skill(SKILL, "testing")
+
+
+def run_workers(tmp_path, workers, n_ops, *extra, reads=0, timeout=300, prepare=None):
+    """`workers` writers, plus one lockless reader process doing `reads` reads when > 0.
+    `prepare(store)` runs before any worker starts."""
     store, ack = new_store(tmp_path)
+    if prepare is not None:
+        prepare(store)
     procs = [spawn(store, wid, n_ops, ack, *extra) for wid in range(workers)]
     if reads:
         procs.append(spawn(store, 99, reads, ack, "--mix", "reader"))
@@ -148,9 +174,12 @@ def test_processes_writing_at_once_lose_nothing(tmp_path):
 
 
 def test_the_same_fact_from_every_process_is_one_record_with_every_count(tmp_path):
-    store, ack = run_workers(tmp_path, 4, 15, "--mix", "contention", "--compact-bytes", 3000)
-    check_store(store, ack)
-    assert len(acked(ack)) == 4 * 15
+    store, ack = run_workers(tmp_path, 4, 15, "--mix", "contention", "--compact-bytes", 3000,
+                             prepare=seed_counters)
+    check_store(store, ack)          # helpful, usage_count, examples_seen each == acks exactly
+    rows = acked(ack)
+    for op in ("helpful", "template", "skill"):
+        assert sum(1 for r in rows if r["op"] == op) == 4 * 15, op
 
 
 @pytest.mark.stress
@@ -176,6 +205,7 @@ def test_a_process_killed_at_any_point_leaves_a_usable_store(tmp_path, point, af
                     env={"AGENT_MEMORY_FAULT": point, "AGENT_MEMORY_FAULT_AFTER": str(after)})
     [(code, err)] = finish([crasher], 120)
     assert code == CRASHED, f"the fault never fired: {err}"
+    assert acked(ack), "the crasher died before acknowledging anything"
     check_store(store, ack, crashed=1)
     survivor = spawn(store, 2, 30, ack, "--checkpoint-every", 7)      # the store still works
     [(code, err)] = finish([survivor], 120)
@@ -200,6 +230,13 @@ def test_a_crash_among_live_writers_does_not_hurt_them(tmp_path, point, after, c
     for code, err in results:
         assert code in (0, CRASHED), err
     assert [code for code, _ in results] == [CRASHED, 0, 0, 0, 0]
+    assert (ack / "ack-1.jsonl").read_text(encoding="utf-8").strip(),         "the crasher died before acknowledging anything"
+    # The survivors outlived the crash and never compact, so the journal they leave must carry
+    # the snapshot's generation: after a crash between snapshot replace and journal rewrite,
+    # that proves a survivor followed the moved snapshot and rewrote the journal.
+    meta = ISONGraph.load(str(store)).get_node("store_meta", "journal").properties
+    assert journal.read_tail(str(store) + ".journal", 0).generation == str(meta["generation"]), \
+        "the journal does not continue the snapshot: a survivor kept a stale journal"
     check_store(store, ack, crashed=1)
 
 
@@ -230,6 +267,8 @@ def test_readers_survive_compaction(tmp_path):
         thread.join(timeout=60)
     assert not thread.is_alive()
     assert errors == []
+    assert counts, "the reader never completed a read"
+    assert any(0 < count < 80 for count in counts), "the reader never read during the writes"
     assert counts == sorted(counts), "the reader saw records disappear"
     reader.refresh()
     assert sum(1 for _ in reader.graph.nodes("convention")) == 80
