@@ -1,0 +1,257 @@
+# Concurrency-Safe Storage — Design (sub-project 2)
+
+Status: draft for review · Date: 2026-11-17 · Builds on: `2026-11-16-retrieval-and-record-model-design.md`
+
+## 1. Purpose
+
+Several agents (Claude Code, Codex, Cursor, a CLI, an IDE plugin) will work on one repo at
+the same time and share one memory file. Today that loses data. This sub-project makes the
+shared memory **safe for many processes on one machine**, and leaves a clean seam for a
+single-owner server (sub-project 3's MCP server) — which is just another client of the same
+store.
+
+What a person using it should be able to rely on:
+
+- A write that returned is durable and visible to every other process on its next read.
+- Two agents writing at the same moment never lose each other's writes and never produce a
+  duplicate of the same fact.
+- Killing a process at any instant (including mid-write) never corrupts the memory.
+- A reader never sees a half-written file.
+- Single-process use keeps working exactly as before, with no new required steps.
+
+### Out of scope
+
+- Network filesystems (NFS/SMB) and cross-machine sharing — OS file locks are not reliable
+  there. Documented as unsupported.
+- Git-based sharing / record-level merge between branches (scenario 2; a later spec).
+- The server/MCP surface itself (sub-project 3). This spec only guarantees that one
+  long-lived process and several short-lived ones can share a store safely.
+- `GovernedAgentMemory`, `greenfield`, `integration` internals. They hold an `AgentMemory`
+  and call `save()`, so they gain the atomic `save()` below and nothing else.
+- Per-process state: semantic-search index, `writer.session_id`, caches. Unchanged.
+
+## 2. What breaks today (measured, not assumed)
+
+1. `ISONGraph.save` is `Path.write_text`: not atomic. A crash leaves a truncated file; a
+   concurrent reader can load half a file.
+2. `save()` rewrites the whole file from one process's memory image, so two processes that
+   each loaded, added a record and saved lose one record (last writer wins).
+3. Check-then-act logic (merge on same text, natural-key supersede, counters such as
+   `helpful`, `usage_count`, `examples_seen`) is computed on a stale image.
+4. On Windows `os.replace` over a file that another process has open for reading raises
+   `PermissionError` (verified on this machine), so a naive "write temp, rename" is not
+   enough; and `msvcrt.locking` has no shared mode, so a reader/writer lock is not available
+   from the standard library.
+
+## 3. Approaches considered
+
+**A. Lock, reload, merge, rewrite (optimistic).** Every save takes a lock, re-reads the
+file, three-way merges, rewrites everything. Write cost is O(file); needs a per-field merge
+rule for every kind; counters and removals need special cases. Rejected.
+
+**B. Snapshot + append-only operation journal (recommended).** The existing `.memory` file
+stays the snapshot. Every mutation is appended as one checksummed line to a journal under a
+short exclusive lock; readers replay the journal tail; the journal is folded into a new
+snapshot now and then. Write cost is O(1); history is a serial order, so no merge rules are
+needed; a crash can only lose an unacknowledged tail; and it is exactly what a server
+process also wants.
+
+**C. SQLite as the store.** Strong concurrency for free, but the ISON text file stops being
+the artifact, every store and the retrieval caches would need re-plumbing, and it throws
+away the point of building on ISONGraph. Rejected for now; the backend seam in §6 keeps it
+possible later.
+
+Recommendation: **B**.
+
+## 4. Design
+
+### 4.1 Files
+
+For a store at `project.memory`:
+
+| File | Content |
+|---|---|
+| `project.memory` | The snapshot. Valid ISON, readable by today's `load()`. Contains one extra node (type `store_meta`, id `journal`) carrying `generation` (random id) and `seq` (last journal op folded in). |
+| `project.memory.journal` | UTF-8 lines. Line 1 is a header `{"journal":1,"generation":"<id>"}`. Each later line is one **transaction**: `<crc32 hex8> <json>\n`, json = `{"seq":n,"actor":"<agent>","ts":"<utc>","ops":[...]}`. |
+| `project.memory.lock` | Empty. The OS lock target. |
+
+Ops are `["n",type,id,props]` add node, `["u",type,id,props]` update (absolute values),
+`["e",rel,src,dst,props]` add edge, `["rn",type,id]` remove node, `["re",rel,src,dst]` remove
+edge. One line per transaction means a transaction is all-or-nothing on disk.
+
+The `store_meta` node lives in the snapshot, so generation and sequence change **atomically
+with the snapshot**; no second file has to agree with it.
+
+### 4.2 Locking
+
+One exclusive lock on `project.memory.lock`: `msvcrt.locking` on Windows, `fcntl.flock`
+elsewhere, plus a per-process `threading.RLock` (two threads of one process must not
+contend through the OS). The OS releases the lock when a process dies, so a crashed writer
+never leaves a stale lock. Acquisition has a timeout (default 10 s) raising
+`StoreLockTimeout`. There is no shared mode; snapshot reads happen only at open and after a
+compaction, so contention is negligible.
+
+### 4.3 Transactions — the core idea
+
+`graph.transaction()` is re-entrant. The outermost entry: take the lock, **refresh** (apply
+every journal line past our offset), run the body, append one line with the ops the body
+recorded, flush (fsync if configured), release.
+
+Because every mutation reads the latest state under the lock, the journal is a serial
+history and **absolute values are safe** — no deltas, no merge rules. Two writers with the
+same fact: the second sees the first's record inside its own transaction and the existing
+merge-on-same-text rule reinforces it instead of duplicating.
+
+`SharedGraph` (a subclass of `ISONGraph`) overrides the five mutators. Called outside a
+transaction, each wraps itself in an implicit one. Called inside, it just records. Replay
+of other processes' ops goes through `ISONGraph.<method>(self, …)` so it applies without
+re-recording, and the retrieval caches, which validate against the graph, see it.
+
+Explicit transactions wrap: every `MemoryWriter` mutating method, `anchors.add_anchor` /
+`restamp`, session start/end, consolidation, and the ~4 store sites that derive a value from
+an earlier read (`skills.examples_seen`, `templates.usage_count`, and the writer's
+`feedback` / `_reinforce` / evidence append). Task 1 of the plan is an **audit** of all 49
+`update_node` call sites against this rule. Plain `ISONGraph` gets a no-op `transaction()`
+through a helper, so store code does not care which mode it is in.
+
+If the body raises, the ops already applied are **still appended**, then the error
+propagates. Memory and journal must never disagree, and that matches today's no-rollback
+behaviour.
+
+### 4.4 Reads and freshness
+
+`recall`, `check`, `get_context` call `refresh_if_stale()` first: one `stat` of the journal
+(size and mtime) against the stored offset; only when it changed, read and apply the tail,
+**without** taking the lock. A partial last line fails its checksum and is ignored until it
+completes. An unchanged store costs microseconds. A generation mismatch means a compaction
+happened: reload the snapshot (under the lock) and continue.
+
+### 4.5 Compaction
+
+Triggered by the writer that crosses the threshold (journal larger than 1 MiB **and** larger
+than the snapshot), by `checkpoint()`, and by `close()`. Under the lock: write the snapshot
+(new generation, `seq` = last op) to a temp file in the same directory, `fsync`, `os.replace`
+with bounded retry and backoff (default 2 s) to ride out Windows `PermissionError`, then
+rewrite the journal with the new header. Crash between the replace and the journal rewrite
+is safe: the journal's generation no longer matches the snapshot's, so it is known to be
+already folded in and is discarded. If the replace never succeeds (an antivirus or editor
+holds the file), compaction is skipped and the journal keeps growing; that is a warning, not
+an error.
+
+Readers read the whole snapshot and close it immediately and never keep the file open.
+
+### 4.6 Torn tails and recovery
+
+A crash mid-append leaves a last line without a valid checksum. Readers ignore it. The next
+writer, holding the lock, truncates the journal to the last valid line before appending. A
+stale temp snapshot from a crashed compaction is deleted on the next open. If a *middle*
+line fails its checksum the store is corrupt: raise `StoreCorrupt` naming the line, never
+guess. Replaying an op that is already applied (duplicate node/edge) is idempotent and adds a
+warning to `load_warnings`; it cannot arise from the protocol and indicates outside editing.
+
+### 4.7 Durability
+
+`durability="flush"` (default): the journal line is flushed to the OS before the call
+returns, so it survives the **process** crashing. `"fsync"`: also survives power loss, at
+the cost of a disk sync per transaction. Compaction always fsyncs.
+
+## 5. API
+
+```python
+mem = AgentMemory.open("project.memory", repo_root=".", agent="claude-code")   # shared mode
+mem.remember(...); mem.recall(...)       # durable on return; recall sees other processes
+mem.refresh() -> int                     # ops applied (also automatic before reads)
+mem.checkpoint()                         # fold the journal into the snapshot
+mem.close()                              # checkpoint + release; also a context manager
+```
+
+`open()` creates the store if missing. Everything else in the public API is unchanged.
+
+- `AgentMemory.load(path)` still works. If a journal exists beside the file with a matching
+  generation it is replayed, so data is never silently missed.
+- `AgentMemory.save(path)` is now **atomic** for everyone (temp file, fsync, replace with
+  retry). In shared mode, saving to the store's own path is `checkpoint()`; saving to
+  another path writes a full snapshot copy. A plain (non-shared) instance saving over a path
+  that has a live journal raises `StoreInUse` pointing at `open()`.
+- New exceptions: `StoreLockTimeout`, `StoreCorrupt`, `StoreInUse`, all `AgentMemoryError`.
+
+## 6. Seam for the server (scenario 3)
+
+The persistence logic lives behind a small `Backend` protocol: `transaction()`, `refresh()`,
+`checkpoint()`, `close()`. `JournalBackend` is the implementation. A server (sub-project 3)
+holds one long-lived `AgentMemory.open(...)`; CLI calls from other processes keep working
+against the same files because the server is just another journal client. A future SQLite or
+remote backend replaces `JournalBackend` without touching stores or retrieval.
+
+## 7. Behaviour decisions I made (change any of them)
+
+1. **Journal over merge** (§3). Cost if wrong: replacing the backend, which the seam allows.
+2. **Opt-in `open()`**; `load`/`save` stay as they are. Cost: users must adopt `open()` for
+   sharing. Safer than silently changing semantics.
+3. **One exclusive lock, no shared mode**, because the standard library has none on Windows.
+   Cost: snapshot reads briefly serialise.
+4. **Default `durability="flush"`.** Survives process death, not power loss. Cost: the last
+   write can be lost on power failure; opt in to `"fsync"`.
+5. **Commit partial ops when a transaction body raises**, rather than roll back. Cost: a
+   half-finished compound call leaves its first half, exactly as today.
+6. **`store_meta` node inside the snapshot** for atomic generation. Cost: `get_stats()` node
+   counts include one extra node in shared mode (excluded from the stats).
+7. **Compaction inline** in the writer that crosses the threshold. Cost: that one write is
+   slower (tens of ms for thousands of records).
+8. **No network filesystems.** Cost: documented limitation.
+
+## 8. Failure modes
+
+| Event | Result |
+|---|---|
+| Process killed mid-append | Unacknowledged transaction lost; store intact (§4.6) |
+| Process killed mid-compaction | Old snapshot or new snapshot, never a mix; journal reconciled by generation |
+| Lock holder dies | OS releases the lock; no stale lock |
+| Lock held longer than timeout | `StoreLockTimeout` (the caller decides to retry) |
+| Windows file held open by a third party during replace | Retry, then skip compaction with a warning |
+| Journal edited by hand mid-file | `StoreCorrupt`, naming the line |
+| Disk full on append | Error raised before acknowledgement; the process then re-syncs its in-memory graph from disk, which discards the change that never reached the journal |
+
+## 9. How we will know it works
+
+Everything below is a test, and the stress and crash tests are the acceptance gate:
+
+1. **Multi-process stress.** 8 processes × 200 mixed operations (remember, feedback,
+   supersede, anchor, session start/end), including the *same* fact written by several at
+   once. Pass: no exception, every acknowledged write present, no duplicate of any fact,
+   final state equal to a fresh replay of the journal, every line checksum-valid.
+2. **Crash injection.** A child exits abruptly (`os._exit`) at named points: before append,
+   mid-line, after append, mid-compaction, between replace and journal rewrite. Pass: reopen
+   yields a state that contains every acknowledged write and is a prefix-consistent history;
+   no truncated snapshot ever.
+3. **Torn tail** and **corrupt middle line** handled as in §4.6.
+4. **Readers during compaction** in a loop never see a partial store or an exception.
+5. **Counters under contention.** N processes each call `feedback` / template use M times;
+   total is exactly N×M.
+6. **Serial equivalence.** The full existing test suite passes unchanged, and the evaluation
+   suite run through `open()` produces results identical to the in-memory run.
+7. **Cache visibility.** A record written in process A is returned by `recall` in process B
+   without any explicit call.
+8. **Performance** (opt-in `pytest -m perf`, plus a loose always-on guard): write p95 under
+   15 ms with 4 contending processes, no-op `refresh_if_stale` under 0.2 ms, open of a
+   5,000-record store under 1.5 s.
+
+## 10. Risks that remain
+
+- `ISONGraph.from_ison` must construct the subclass. Verified in Task 1; if it does not, a
+  small factory replaces it. Nothing else in the design depends on this.
+- The audit of write sites can miss a read-modify-write. Test 5 and a generated concurrency
+  test that calls every public store mutator from two processes are the net.
+- Sessions: `start_session` links to the "last session" of *any* agent. With several agents
+  that is arguably right (shared memory) but it is a behaviour change worth knowing about; it
+  is not altered here.
+- Power-loss durability is opt-in (§4.7).
+
+## 11. Plan shape (for the next step)
+
+About 10 tasks: (0) audit + `from_ison` check + atomic `save()`; (1) lock + journal codec;
+(2) `SharedGraph` recording/replay; (3) `JournalBackend` open/refresh/transaction;
+(4) compaction + recovery; (5) writer/anchors/sessions/consolidation transactions;
+(6) counter-site fixes; (7) `AgentMemory.open`/`load`/`save` integration + exceptions;
+(8) multi-process stress + crash-injection harness; (9) perf gates, docs, README/DESCRIBE.
+Each task: implementer + reviewer subagents, as before.
