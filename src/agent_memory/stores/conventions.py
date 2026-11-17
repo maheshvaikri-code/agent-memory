@@ -28,7 +28,7 @@ class ConventionStore(BaseStore):
         """Add a code convention"""
         conv_id = self._make_id("conv", f"{category}_{rule[:20]}")
 
-        self.graph.add_node(
+        conv_id = self._add_memory(
             "convention",
             conv_id,
             category=category,
@@ -49,7 +49,7 @@ class ConventionStore(BaseStore):
         """Add a code idiom"""
         idiom_id = self._make_id("idiom", pattern[:30])
 
-        self.graph.add_node(
+        idiom_id = self._add_memory(
             "idiom",
             idiom_id,
             pattern=pattern,
@@ -68,7 +68,7 @@ class ConventionStore(BaseStore):
         """Add a project-specific pattern"""
         pattern_id = self._make_id("proj_pattern", name)
 
-        self.graph.add_node(
+        pattern_id = self._add_memory(
             "project_pattern",
             pattern_id,
             name=name,

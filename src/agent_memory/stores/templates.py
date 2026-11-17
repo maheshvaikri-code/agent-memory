@@ -25,7 +25,7 @@ class TemplateStore(BaseStore):
         """Add a code template"""
         tmpl_id = self._make_id("tmpl", name)
 
-        self.graph.add_node(
+        tmpl_id = self._add_memory(
             "template",
             tmpl_id,
             name=name,
@@ -75,7 +75,7 @@ class TemplateStore(BaseStore):
         """Add a reusable code snippet"""
         snip_id = self._make_id("snip", name)
 
-        self.graph.add_node(
+        snip_id = self._add_memory(
             "snippet",
             snip_id,
             name=name,

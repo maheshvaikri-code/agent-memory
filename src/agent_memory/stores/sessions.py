@@ -72,7 +72,7 @@ class SessionStore(BaseStore):
         """Record partial/incomplete work"""
         pw_id = self._make_id("pw", location[:30])
 
-        self.graph.add_node(
+        pw_id = self._add_memory(
             "partial_work",
             pw_id,
             session_id=session_id,
@@ -81,7 +81,9 @@ class SessionStore(BaseStore):
             state=self._sanitize(state),
         )
 
-        if self.graph.has_node("session", session_id):
+        if self.graph.has_node("session", session_id) and not self.graph.has_edge(
+            "HAS_PARTIAL_WORK", ("session", session_id), ("partial_work", pw_id)
+        ):
             self.graph.add_edge(
                 "HAS_PARTIAL_WORK",
                 ("session", session_id),
@@ -100,7 +102,7 @@ class SessionStore(BaseStore):
         """Record a decision made during session"""
         dec_id = self._make_id("sd", decision[:30])
 
-        self.graph.add_node(
+        dec_id = self._add_memory(
             "session_decision",
             dec_id,
             session_id=session_id,
@@ -109,7 +111,9 @@ class SessionStore(BaseStore):
             sticky=str(sticky),
         )
 
-        if self.graph.has_node("session", session_id):
+        if self.graph.has_node("session", session_id) and not self.graph.has_edge(
+            "DECIDED_IN", ("session_decision", dec_id), ("session", session_id)
+        ):
             self.graph.add_edge(
                 "DECIDED_IN",
                 ("session_decision", dec_id),
@@ -126,7 +130,7 @@ class SessionStore(BaseStore):
         """Record an open question"""
         q_id = self._make_id("oq", question[:30])
 
-        self.graph.add_node(
+        q_id = self._add_memory(
             "open_question",
             q_id,
             session_id=session_id,
@@ -135,7 +139,9 @@ class SessionStore(BaseStore):
             answer="",
         )
 
-        if self.graph.has_node("session", session_id):
+        if self.graph.has_node("session", session_id) and not self.graph.has_edge(
+            "QUESTION_FROM", ("open_question", q_id), ("session", session_id)
+        ):
             self.graph.add_edge(
                 "QUESTION_FROM",
                 ("open_question", q_id),
@@ -169,7 +175,7 @@ class SessionStore(BaseStore):
         """Record a blocker"""
         bl_id = self._make_id("bl", description[:30])
 
-        self.graph.add_node(
+        bl_id = self._add_memory(
             "blocker",
             bl_id,
             session_id=session_id,

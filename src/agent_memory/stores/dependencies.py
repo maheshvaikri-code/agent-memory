@@ -49,7 +49,7 @@ class DependencyStore(BaseStore):
         dep_id = self._make_id("dep", dependency_name)
         quirk_id = self._make_id("quirk", description[:30])
 
-        self.graph.add_node(
+        quirk_id = self._add_memory(
             "quirk",
             quirk_id,
             dependency_id=dep_id,
@@ -59,7 +59,9 @@ class DependencyStore(BaseStore):
             discovered=self._now(),
         )
 
-        if self.graph.has_node("dependency", dep_id):
+        if self.graph.has_node("dependency", dep_id) and not self.graph.has_edge(
+            "HAS_QUIRK", ("dependency", dep_id), ("quirk", quirk_id)
+        ):
             self.graph.add_edge(
                 "HAS_QUIRK",
                 ("dependency", dep_id),
@@ -79,7 +81,7 @@ class DependencyStore(BaseStore):
         quirk_id = self._make_id("quirk", quirk_description[:30])
         work_id = self._make_id("work", solution[:30])
 
-        self.graph.add_node(
+        work_id = self._add_memory(
             "workaround",
             work_id,
             quirk_id=quirk_id,
@@ -88,7 +90,9 @@ class DependencyStore(BaseStore):
             time_to_find=time_to_find or "",
         )
 
-        if self.graph.has_node("quirk", quirk_id):
+        if self.graph.has_node("quirk", quirk_id) and not self.graph.has_edge(
+            "WORKAROUND_FOR", ("workaround", work_id), ("quirk", quirk_id)
+        ):
             self.graph.add_edge(
                 "WORKAROUND_FOR",
                 ("workaround", work_id),

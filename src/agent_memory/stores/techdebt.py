@@ -27,7 +27,7 @@ class TechDebtStore(BaseStore):
         """Add a technical debt item"""
         debt_id = self._make_id("td", location[:30])
 
-        self.graph.add_node(
+        debt_id = self._add_memory(
             "tech_debt",
             debt_id,
             location=location,
@@ -51,7 +51,7 @@ class TechDebtStore(BaseStore):
         debt_id = self._make_id("td", debt_location[:30])
         attempt_id = self._make_id("ra", f"{debt_location[:15]}_{approach[:15]}")
 
-        self.graph.add_node(
+        attempt_id = self._add_memory(
             "refactoring_attempt",
             attempt_id,
             debt_id=debt_id,
@@ -61,7 +61,9 @@ class TechDebtStore(BaseStore):
             reason_failed=self._sanitize(reason_failed or ""),
         )
 
-        if self.graph.has_node("tech_debt", debt_id):
+        if self.graph.has_node("tech_debt", debt_id) and not self.graph.has_edge(
+            "ATTEMPTED_ON", ("refactoring_attempt", attempt_id), ("tech_debt", debt_id)
+        ):
             self.graph.add_edge(
                 "ATTEMPTED_ON",
                 ("refactoring_attempt", attempt_id),

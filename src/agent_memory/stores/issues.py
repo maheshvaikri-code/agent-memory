@@ -376,7 +376,7 @@ class IssueStore(BaseStore):
         """Add a workaround for an issue"""
         workaround_id = self._make_id("wa", f"{issue_id[:10]}")
 
-        self.graph.add_node(
+        workaround_id = self._add_memory(
             "workaround",
             workaround_id,
             issue_id=issue_id,
@@ -385,7 +385,9 @@ class IssueStore(BaseStore):
             verified="False"
         )
 
-        if self.graph.has_node("issue", issue_id):
+        if self.graph.has_node("issue", issue_id) and not self.graph.has_edge(
+            "HAS_WORKAROUND", ("issue", issue_id), ("workaround", workaround_id)
+        ):
             self.graph.add_edge(
                 "HAS_WORKAROUND",
                 ("issue", issue_id),

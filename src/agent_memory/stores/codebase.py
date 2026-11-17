@@ -29,7 +29,7 @@ class CodebaseStore(BaseStore):
         """Add or update a module in the mental model"""
         module_id = self._make_id("mod", path)
 
-        self.graph.add_node(
+        module_id = self._add_memory(
             "module",
             module_id,
             path=path,
@@ -103,7 +103,7 @@ class CodebaseStore(BaseStore):
         """Record a design pattern usage"""
         pattern_id = self._make_id("dp", name)
 
-        self.graph.add_node(
+        pattern_id = self._add_memory(
             "design_pattern",
             pattern_id,
             name=name,
@@ -114,7 +114,9 @@ class CodebaseStore(BaseStore):
         # Link to modules
         for mod in modules:
             mod_id = self._make_id("mod", mod)
-            if self.graph.has_node("module", mod_id):
+            if self.graph.has_node("module", mod_id) and not self.graph.has_edge(
+                "IMPLEMENTS", ("module", mod_id), ("design_pattern", pattern_id)
+            ):
                 self.graph.add_edge(
                     "IMPLEMENTS",
                     ("module", mod_id),

@@ -47,7 +47,7 @@ class TeamStore(BaseStore):
         """Add an expertise area"""
         exp_id = self._make_id("ea", domain)
 
-        self.graph.add_node(
+        exp_id = self._add_memory(
             "expertise_area",
             exp_id,
             domain=domain,

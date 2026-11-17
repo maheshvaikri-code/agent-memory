@@ -26,7 +26,7 @@ class TestPatternStore(BaseStore):
         """Add a testing convention"""
         conv_id = self._make_id("tc", f"{category}_{pattern[:20]}")
 
-        self.graph.add_node(
+        conv_id = self._add_memory(
             "test_convention",
             conv_id,
             category=category,
@@ -45,7 +45,7 @@ class TestPatternStore(BaseStore):
         """Add required test cases for a pattern"""
         req_id = self._make_id("rtc", for_pattern[:20])
 
-        self.graph.add_node(
+        req_id = self._add_memory(
             "required_test_case",
             req_id,
             for_pattern=for_pattern,

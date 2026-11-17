@@ -49,7 +49,7 @@ class PerformanceStore(BaseStore):
         """Add a hot path"""
         hp_id = self._make_id("hp", name)
 
-        self.graph.add_node(
+        hp_id = self._add_memory(
             "hot_path",
             hp_id,
             name=name,
@@ -69,7 +69,7 @@ class PerformanceStore(BaseStore):
         """Add a performance constraint"""
         const_id = self._make_id("pc", operation[:20])
 
-        self.graph.add_node(
+        const_id = self._add_memory(
             "performance_constraint",
             const_id,
             operation=operation,

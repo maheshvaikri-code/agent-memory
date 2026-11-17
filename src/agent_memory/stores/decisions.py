@@ -30,7 +30,7 @@ class DecisionStore(BaseStore):
         """Record an architectural decision"""
         dec_id = self._make_id("dec", title)
 
-        self.graph.add_node(
+        dec_id = self._add_memory(
             "decision",
             dec_id,
             title=title,
@@ -54,7 +54,7 @@ class DecisionStore(BaseStore):
         dec_id = self._make_id("dec", decision_title)
         alt_id = self._make_id("alt", f"{decision_title}_{option}")
 
-        self.graph.add_node(
+        alt_id = self._add_memory(
             "alternative",
             alt_id,
             decision_id=dec_id,
@@ -62,7 +62,9 @@ class DecisionStore(BaseStore):
             rejected_because=self._sanitize(rejected_because),
         )
 
-        if self.graph.has_node("decision", dec_id):
+        if self.graph.has_node("decision", dec_id) and not self.graph.has_edge(
+            "CONSIDERED_FOR", ("alternative", alt_id), ("decision", dec_id)
+        ):
             self.graph.add_edge(
                 "CONSIDERED_FOR",
                 ("alternative", alt_id),

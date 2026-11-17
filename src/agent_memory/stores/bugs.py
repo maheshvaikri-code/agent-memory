@@ -27,7 +27,7 @@ class BugPatternStore(BaseStore):
         """Record a historical bug"""
         bug_id = self._make_id("bug", title[:30])
 
-        self.graph.add_node(
+        bug_id = self._add_memory(
             "bug",
             bug_id,
             title=title,
@@ -50,7 +50,7 @@ class BugPatternStore(BaseStore):
         """Add a recurring bug pattern"""
         pattern_id = self._make_id("bp", name)
 
-        self.graph.add_node(
+        pattern_id = self._add_memory(
             "bug_pattern",
             pattern_id,
             name=name,
@@ -70,7 +70,7 @@ class BugPatternStore(BaseStore):
         pattern_id = self._make_id("bp", bug_pattern_name)
         fix_id = self._make_id("fix", bug_pattern_name)
 
-        self.graph.add_node(
+        fix_id = self._add_memory(
             "fix_pattern",
             fix_id,
             bug_pattern_id=pattern_id,
@@ -78,7 +78,9 @@ class BugPatternStore(BaseStore):
             caveats=self._sanitize(caveats or ""),
         )
 
-        if self.graph.has_node("bug_pattern", pattern_id):
+        if self.graph.has_node("bug_pattern", pattern_id) and not self.graph.has_edge(
+            "FIX_FOR", ("fix_pattern", fix_id), ("bug_pattern", pattern_id)
+        ):
             self.graph.add_edge(
                 "FIX_FOR",
                 ("fix_pattern", fix_id),
