@@ -27,6 +27,15 @@ def proximity(query_file: str, anchored_file: str) -> float:
     return 0.3 if shared >= 2 else 0.0
 
 
+def _norm(path: str) -> str:
+    """Forward slashes, no leading './' or surrounding '/'. '.' normalises to ''."""
+    path = path.replace("\\", "/")
+    while path.startswith("./"):
+        path = path[2:]
+    path = path.strip("/")
+    return "" if path == "." else path
+
+
 def scope_scores(graph, records: Dict[NodeRef, MemoryRecord],
                  files: List[str]) -> Tuple[Dict[NodeRef, float], Dict[NodeRef, str]]:
     scores: Dict[NodeRef, float] = {}
@@ -50,12 +59,12 @@ def scope_scores(graph, records: Dict[NodeRef, MemoryRecord],
         if best:
             scores[ref] = best
 
+    norm_files = [_norm(f) for f in files]
     for edge in graph.edges("CONSTRAINS"):
         if edge.source not in records or not graph.has_node(*edge.target):
             continue
-        module_path = str(graph.get_node(*edge.target).properties.get("path") or "")
-        module_path = module_path.replace("\\", "/").strip("/")
-        if module_path and any(f.startswith(module_path) for f in files):
+        module_path = _norm(str(graph.get_node(*edge.target).properties.get("path") or ""))
+        if module_path and any(f == module_path or f.startswith(module_path + "/") for f in norm_files):
             scores[edge.source] = 1.0
             promoted[edge.source] = str(edge.properties.get("how") or "")
     return scores, promoted

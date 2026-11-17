@@ -81,3 +81,32 @@ def test_render_groups_by_tier_and_flags_stale_items():
 def test_render_compact_and_empty():
     assert render([]) == ""
     assert "why:" not in render_item(item("c1", "x", GUIDANCE, why="matched: x"), compact=True)
+
+
+def _constrained_memory():
+    m = AgentMemory("t")
+    m.codebase.add_module("src/api", "HTTP layer")
+    m.decisions.add_decision("Use async", "concurrency")
+    m.decisions.add_constraint("Use async", "src/api", "all handlers must be async")
+    return m
+
+
+def test_promotion_respects_path_boundaries():
+    m = _constrained_memory()
+    scores, promoted = scope_scores(m.graph, records(m), ["src/api_old/x.py"])
+    decision = ("decision", "dec_use_async")
+    assert promoted == {} and decision not in scores
+
+
+def test_promotion_accepts_windows_style_query_paths():
+    m = _constrained_memory()
+    scores, promoted = scope_scores(m.graph, records(m), ["src\\api\\orders.py"])
+    assert len(promoted) == 1 and list(scores.values()) == [1.0]
+
+
+def test_decision_without_constraint_is_not_promoted():
+    m = AgentMemory("t")
+    m.codebase.add_module("src/api", "HTTP layer")
+    m.decisions.add_decision("Use async", "concurrency")
+    scores, promoted = scope_scores(m.graph, records(m), ["src/api/orders.py"])
+    assert promoted == {}
