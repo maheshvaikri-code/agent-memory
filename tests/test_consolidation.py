@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from agent_memory import AgentMemory
 from agent_memory.record import MemoryRecord
@@ -48,3 +48,30 @@ def test_archived_records_are_not_recalled():
                      answered_in="", answer="", added=old(60))
     m._consolidator.consolidate()
     assert m.recall(task="max batch size").items == []
+
+
+def test_writer_record_decays_via_created_at():
+    m = AgentMemory("t")
+    res = m.writer.add("open_question", {"session_id": "s", "question": "q?",
+                                         "answered_in": "", "answer": ""})
+    aged = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+    m.graph.update_node("open_question", res.id, created_at=aged)
+    assert m._consolidator.consolidate()["decayed"] == 1
+    assert MemoryRecord.from_node(m.graph.get_node("open_question", res.id)).status == "archived"
+    assert m._consolidator.consolidate()["decayed"] == 0
+
+
+def test_legacy_naive_added_still_decays():
+    m = AgentMemory("t")
+    m.graph.add_node("open_question", "q_legacy", session_id="s", question="legacy?",
+                     answered_in="", answer="", added=old(60))
+    assert m._consolidator.consolidate()["decayed"] == 1
+    assert m._consolidator.consolidate()["decayed"] == 0
+
+
+def test_decay_only_touches_active_records():
+    m = AgentMemory("t")
+    m.graph.add_node("partial_work", "pw_sup", session_id="s", work_type="fn",
+                     location="a.py", state="half", added=old(30), status="superseded")
+    assert m._consolidator.consolidate()["decayed"] == 0
+    assert MemoryRecord.from_node(m.graph.get_node("partial_work", "pw_sup")).status == "superseded"

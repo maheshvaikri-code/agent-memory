@@ -8,13 +8,26 @@ Handles:
 - Importance scoring
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .memory import AgentMemory
 
 from .record import KINDS, MemoryRecord, normalize_text, utc_now
+
+
+def _parse_utc(timestamp) -> Optional[datetime]:
+    """Parse an ISO timestamp to an aware UTC datetime; naive strings are taken as UTC."""
+    if not timestamp or not isinstance(timestamp, str):
+        return None
+    try:
+        when = datetime.fromisoformat(timestamp)
+    except (ValueError, TypeError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when
 
 
 class MemoryConsolidator:
@@ -91,7 +104,7 @@ class MemoryConsolidator:
     def _decay_old_memories(self) -> int:
         """Remove or mark memories that are too old"""
         decayed = 0
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
 
         nodes_to_remove = []
 
@@ -106,15 +119,24 @@ class MemoryConsolidator:
             if max_age is None:
                 continue  # Keep indefinitely
 
-            # Get node age
-            created = node.properties.get("added") or node.properties.get("started") or node.properties.get("when")
-            if not created:
+            # Only active records decay; archived/superseded/retracted keep their state.
+            # (types outside KINDS, e.g. session, have no record model: read the raw property)
+            if node_type in KINDS:
+                status = MemoryRecord.from_node(node).status
+            else:
+                status = node.properties.get("status") or "active"
+            if status != "active":
                 continue
 
+            # Get node age: envelope created_at first, then legacy properties
+            created = (node.properties.get("created_at") or node.properties.get("added")
+                       or node.properties.get("started") or node.properties.get("when"))
+            created_dt = _parse_utc(created)
+            if created_dt is None:
+                continue
             try:
-                created_dt = datetime.fromisoformat(created)
                 age_days = (now - created_dt).days
-            except:
+            except (ValueError, TypeError):
                 continue
 
             # Check if should decay
@@ -124,9 +146,6 @@ class MemoryConsolidator:
 
                 # High importance items get extended retention
                 if importance >= 1.2 and age_days < max_age * 1.5:
-                    continue
-
-                if node.properties.get("status") == "archived":
                     continue
 
                 nodes_to_remove.append((node.type, node.id))
