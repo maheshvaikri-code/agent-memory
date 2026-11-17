@@ -29,7 +29,10 @@ class SharedGraph(ISONGraph):
             return contextlib.nullcontext()
         return self._backend.transaction()
 
-    def node_count(self) -> int:
+    def node_count(self, node_type: Optional[str] = None) -> int:
+        """ISONGraph.node_count; the untyped count leaves out the internal store_meta node."""
+        if node_type:
+            return super().node_count(node_type)
         count = super().node_count()
         return count - 1 if self.has_node(META_TYPE, META_ID) else count
 
