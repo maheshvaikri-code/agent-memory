@@ -117,6 +117,12 @@ def _recency(rec: MemoryRecord) -> float:
     return max(RECENCY_FLOOR, 0.5 ** (age / half_life))
 
 
+def _one_line(text: str) -> str:
+    """Whitespace collapsed, as build_text does for record text, so a stored string can
+    never start a line (or a fake section) of its own in the rendered prompt."""
+    return " ".join(str(text).split())
+
+
 def _feedback(rec: MemoryRecord) -> float:
     return (1 + rec.helpful) / (1 + rec.helpful + 2 * rec.harmful)
 
@@ -343,6 +349,8 @@ class Retriever:
               strict: bool = False, extra_refs: Iterable[NodeRef] = (),
               cands: Optional[Dict[NodeRef, MemoryRecord]] = None,
               role: Any = None) -> "_Ranking":
+        if kinds is not None:
+            kinds = list(kinds)         # a generator would be spent by the role below
         if role is None:
             role = tuple(kinds) if kinds else None
         cands = dict(cands) if cands is not None else self._candidates(kinds)
@@ -428,7 +436,7 @@ class Retriever:
                 channels["graph"] = round(inherited_scores[ref], 6)
             text = rec.text
             if promoted.get(ref):
-                text = f"{text} (constraint: {promoted[ref]})"
+                text = f"{text} (constraint: {_one_line(promoted[ref])})"
             matched = hits.get(ref, _NONE)
             return ScoredMemory(rec, final[ref], channels, states[ref],
                                 GUARDRAIL if ref in promoted else rec.tier, text,
@@ -449,7 +457,7 @@ class Retriever:
         if seed is not None:
             parts.append(f"linked to {seed[1]}")
         if rec.agent and rec.agent != "unknown":
-            parts.append(f"{rec.agent}, {rec.created_at[:10]}")
+            parts.append(f"{_one_line(rec.agent)}, {rec.created_at[:10]}")
         return " · ".join(parts)
 
     @staticmethod

@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from . import anchors as anchors_mod
 from .record import (
-    ENVELOPE_FIELDS, KINDS, NATURAL_KEY, PRIORITIES, SESSION_KINDS, MemoryRecord, NodeRef, build_text,
+    KINDS, NATURAL_KEY, PRIORITIES, SESSION_KINDS, MemoryRecord, NodeRef, build_text,
     envelope_props, is_closed, make_id, normalize_text, utc_now,
 )
 from .retrieval.tokenize import tokens_for

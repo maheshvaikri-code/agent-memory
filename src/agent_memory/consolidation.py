@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from .memory import AgentMemory
 
-from .record import KINDS, MemoryRecord, normalize_text, utc_now
+from .record import GUARDRAIL, KINDS, MemoryRecord, normalize_text, utc_now
 
 
 def _parse_utc(timestamp) -> Optional[datetime]:
@@ -122,15 +122,20 @@ class MemoryConsolidator:
             # Only active records decay; archived/superseded/retracted keep their state.
             # (types outside KINDS, e.g. session, have no record model: read the raw property)
             if node_type in KINDS:
-                status = MemoryRecord.from_node(node).status
+                rec = MemoryRecord.from_node(node)
+                status = rec.status
+                # guardrails have no half-life, and must-priority rules always apply
+                if rec.tier == GUARDRAIL or rec.priority == "must":
+                    continue
             else:
                 status = node.properties.get("status") or "active"
             if status != "active":
                 continue
 
             # Get node age: envelope created_at first, then legacy properties
-            created = (node.properties.get("created_at") or node.properties.get("added")
-                       or node.properties.get("started") or node.properties.get("when"))
+            props = node.properties
+            created = (props.get("created_at") or props.get("added")
+                       or props.get("started") or props.get("when"))
             created_dt = _parse_utc(created)
             if created_dt is None:
                 continue

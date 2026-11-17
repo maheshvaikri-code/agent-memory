@@ -75,3 +75,23 @@ def test_decay_only_touches_active_records():
                      location="a.py", state="half", added=old(30), status="superseded")
     assert m._consolidator.consolidate()["decayed"] == 0
     assert MemoryRecord.from_node(m.graph.get_node("partial_work", "pw_sup")).status == "superseded"
+
+
+def _aged(days):
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
+def test_guardrail_kinds_never_decay():
+    m = AgentMemory("t")
+    m.graph.add_node("bug_pattern", "bp_old", name="storm", signature="unbounded retry",
+                     created_at=_aged(5000), updated_at=_aged(5000))
+    assert m._consolidator.consolidate()["decayed"] == 0
+    assert MemoryRecord.from_node(m.graph.get_node("bug_pattern", "bp_old")).status == "active"
+
+
+def test_must_priority_records_never_decay():
+    m = AgentMemory("t")
+    res = m.remember("open_question", {"session_id": "s", "question": "who signs off releases?",
+                                       "answered_in": "", "answer": ""}, priority="must")
+    m.graph.update_node("open_question", res.id, created_at=_aged(60), updated_at=_aged(60))
+    assert m._consolidator.consolidate()["decayed"] == 0

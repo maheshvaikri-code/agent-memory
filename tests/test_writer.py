@@ -108,3 +108,14 @@ def test_save_and_load_keeps_actor_settings_and_reports_warnings(tmp_path):
     assert loaded.writer.agent == "cursor" and loaded.repo_root == str(tmp_path)
     assert loaded.conventions.writer is loaded.writer
     assert any("bad" in w for w in loaded.load_warnings)
+
+
+def test_set_actor_keeps_the_session_unless_given():
+    m = AgentMemory("t")
+    sid = m.start_session("work")
+    m.set_actor("codex")
+    assert (m.writer.agent, m.writer.session_id) == ("codex", sid)
+    m.set_actor("cursor", "s_other")
+    assert m.writer.session_id == "s_other"
+    m.set_actor("cursor", "")
+    assert m.writer.session_id == ""

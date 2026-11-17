@@ -3,7 +3,6 @@ Agent Memory - Main memory manager coordinating all stores
 """
 
 from typing import Any, Dict, List, Optional
-from pathlib import Path as FilePath
 
 from ison_graph import ISONGraph
 
@@ -246,10 +245,15 @@ class AgentMemory:
     # Record operations
     # =========================================================================
 
-    def set_actor(self, agent: str, session_id: str = "") -> None:
-        """Set who is stamped as the author of subsequent writes."""
+    def set_actor(self, agent: str, session_id: Optional[str] = None) -> None:
+        """Set who is stamped as the author of subsequent writes.
+
+        `session_id` None keeps the current session; "" clears it; any other value
+        stamps later writes with that session (and makes its open items the carried ones).
+        """
         self.writer.agent = agent
-        self.writer.session_id = session_id
+        if session_id is not None:
+            self.writer.session_id = session_id
 
     def recall(self, task: str = "", files: Optional[List[str]] = None,
                symbols: Optional[List[str]] = None, kinds: Optional[List[str]] = None,
