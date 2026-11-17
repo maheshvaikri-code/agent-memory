@@ -15,6 +15,14 @@ _WORD = re.compile(r"[A-Za-z0-9]+")
 _VOWELS = "aeiou"
 
 
+def _undouble(w: str) -> str:
+    """planning -> plann -> plan. Never below four letters: "settings" must not become
+    "set", nor "logging" "log" -- a short root is a different, common word."""
+    if len(w) > 4 and w[-1] == w[-2] and w[-1] not in _VOWELS + "ls":
+        return w[:-1]
+    return w
+
+
 def _stem(w: str) -> str:
     if len(w) > 4 and w.endswith("ies"):
         w = w[:-3] + "y"
@@ -26,12 +34,10 @@ def _stem(w: str) -> str:
         w = w[:-1]
     if len(w) > 5 and w.endswith("ing"):
         w = w[:-3]
-        if len(w) > 2 and w[-1] == w[-2] and w[-1] not in _VOWELS + "ls":
-            w = w[:-1]
+        w = _undouble(w)
     elif len(w) > 4 and w.endswith("ed") and not w.endswith("eed"):
         w = w[:-2]
-        if len(w) > 2 and w[-1] == w[-2] and w[-1] not in _VOWELS + "ls":
-            w = w[:-1]
+        w = _undouble(w)
     if len(w) > 4 and w.endswith("e"):
         w = w[:-1]
     return w

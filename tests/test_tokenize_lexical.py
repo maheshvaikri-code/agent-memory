@@ -18,6 +18,13 @@ def test_stems_inflections_to_a_common_form():
     assert tokenize("migrations migration") == ["migration"] * 2
 
 
+def test_undoubling_keeps_short_roots_apart():
+    assert tokenize("planned planning") == ["plan"] * 2
+    assert tokenize("settings setting") == ["sett"] * 2
+    assert tokenize("set") == ["set"]          # "are set immutable" is not about settings
+    assert tokenize("logging logged log") == ["logg", "logg", "log"]
+
+
 def test_drops_stopwords_and_single_characters():
     assert tokenize("add the a fix to we must x") == []
 
