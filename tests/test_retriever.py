@@ -380,3 +380,27 @@ def test_alternating_recall_and_check_keep_one_index_each(tmp_path):
         m.recall(task="webhook misbehaves"), m.check("webhook misbehaves")
     # one write: each role refreshes once, removing and re-adding the one changed record
     assert r.index_stats == {"builds": 2, "refreshes": 2, "removed": 2}
+
+
+def test_the_describe_md_example(tmp_path):
+    (tmp_path / "webhooks").mkdir()
+    (tmp_path / "webhooks" / "payment.py").write_text("def handle():\n    pass\n", encoding="utf-8")
+
+    from agent_memory import AgentMemory
+    memory = AgentMemory("checkout-service", repo_root=str(tmp_path), agent="claude-code")
+    session = memory.start_session("Add retry logic to payment webhook")
+    memory.remember(
+        "bug_pattern",
+        {"name": "webhook_storm", "signature": "unbounded retry on external webhook"},
+        anchors=["webhooks/payment.py"], evidence="INC-2026-03")
+    context = memory.recall(task="add retry logic", files=["webhooks/payment.py"])
+    assert "webhook_storm" in context.to_prompt()
+    warnings = memory.check("Retry indefinitely with exponential backoff",
+                            files=["webhooks/payment.py"])
+    assert warnings and "webhook_storm" in warnings[0].text
+    memory.decisions.add_decision("Cap payment webhook retries at 5 attempts",
+                                  "Unbounded retry caused INC-2026-03")
+    memory.end_session(session, completion=1.0)
+    memory.save(str(tmp_path / "project.memory"))
+    again = AgentMemory.load(str(tmp_path / "project.memory"), repo_root=str(tmp_path))
+    assert "Cap payment webhook retries" in again.recall(task="payment webhook retries").to_prompt()

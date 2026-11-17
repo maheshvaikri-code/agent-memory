@@ -63,7 +63,7 @@ Every retrievable node carries a common set of properties, the envelope, alongsi
 
 | Field | Type | Meaning |
 |---|---|---|
-| `text` | str | Canonical one-statement form of the memory, derived from kind fields (4.3). This is what gets searched and rendered. |
+| `text` | str | Canonical one-statement form of the memory, derived from kind fields at read time (4.3). Not persisted. |
 | `created_at`, `updated_at` | ISO-8601 UTC | Ingestion time. |
 | `agent` | str | Who wrote it: `claude-code`, `codex`, `cursor`, `devin`, `human`, `bootstrap`, `unknown`. Free string. |
 | `session_id` | str | Session that produced it, empty if none. |
@@ -90,13 +90,15 @@ One codec, `record.py`, owns conversion between a `MemoryRecord` dataclass and n
 
 ### 4.3 Kind registry
 
-A single table replaces `INDEXABLE_TYPES` (two copies), `TOKEN_ESTIMATES`, `THRESHOLDS` and `IMPORTANCE`.
+A single table replaces `TOKEN_ESTIMATES` and the `INDEXABLE_TYPES` table in `embeddings_integration.py`.
 
 | Tier | Kinds | Default priority | Half-life |
 |---|---|---|---|
-| Guardrail | `alternative`, `bug_pattern`, `refactoring_attempt`, `quirk`, `hot_path`, `performance_constraint`, decision constraints (`CONSTRAINS` edges) | `must` | none |
+| Guardrail | `alternative`, `bug_pattern`, `refactoring_attempt`, `quirk`, `hot_path`, `performance_constraint`, decision constraints (`CONSTRAINS` edges) | `should` | none |
 | Guidance | `convention`, `idiom`, `project_pattern`, `decision`, `fix_pattern`, `workaround`, `test_convention`, `required_test_case`, `template`, `snippet` | `should` | 365 days |
 | Background | `module`, `design_pattern`, `tech_debt`, `bug`, `session_decision`, `open_question`, `blocker`, `partial_work`, `expertise_area` | `info` | 30 days for session kinds, 180 otherwise |
+
+`must` is never a default; it is set explicitly.
 
 A `decision` is promoted to the guardrail tier for a query when it has a `CONSTRAINS` edge to a module containing one of the query files; the edge's `how` property is appended to its rendered text.
 
@@ -118,6 +120,7 @@ Added to `AgentMemory`; existing store methods are rerouted through the same pat
 - `supersede(old_id, new_record)`: writes the new record, adds `SUPERSEDES`, sets the old record's `status=superseded` and `invalid_at=now`.
 - `retract(id, reason)`: `status=retracted`, `invalid_at=now`, reason appended to `evidence`.
 - `feedback(id, helpful: bool)`: increments a counter.
+- `anchor(id, path, symbol)`: adds an `ANCHORED_TO` edge to an existing record.
 - `set_actor(agent, session_id)`: sets the author stamped on subsequent writes. `start_session` calls it.
 
 `AgentMemory.__init__` gains optional `repo_root` and `agent` arguments. Both default to unset, which preserves current behaviour.
@@ -179,14 +182,14 @@ All steps are deterministic and run in-process.
 2. **Channels.** Each produces a ranked list.
    - *Lexical.* BM25 over `text`. The tokeniser splits on non-alphanumerics, `snake_case`, `camelCase` and path separators, lowercases, drops a small stopword list, and applies light suffix stripping (`-s`, `-es`, `-ies`, `-ing`, `-ed`). The query is task text plus symbol names plus file basename stems.
    - *Scope.* Records whose `scope` glob matches a query file or which are `ANCHORED_TO` one. Score is 1.0 for the same file, 0.6 for the same directory, 0.3 for a shared ancestor two or more levels deep. `["*"]` does not match in this channel.
-   - *Graph.* One hop from the top lexical and scope hits along a whitelist: `FIX_FOR`, `WORKAROUND_FOR`, `HAS_QUIRK`, `CONSIDERED_FOR`, `CONSTRAINS`, `ATTEMPTED_ON`, `INSTANCE_OF`, `TEST_FOR_BUG`. A neighbour inherits half the seed's score. This is how a bug pattern brings its fix along.
+   - *Graph.* One hop from the top lexical and scope hits along a whitelist: `FIX_FOR`, `WORKAROUND_FOR`, `HAS_QUIRK`, `CONSIDERED_FOR`, `CONSTRAINS`, `ATTEMPTED_ON`, `INSTANCE_OF`, `TEST_FOR_BUG`. A neighbour inherits half the seed's fused score directly; it does not enter rank fusion. This is how a bug pattern brings its fix along.
    - *Semantic.* Optional. Used when `ison-graph-embeddings` is installed and an index exists. Absent otherwise; nothing else changes.
-3. **Fusion.** Weighted reciprocal rank fusion. Initial weights: lexical 1.0, scope 1.0, semantic 1.0, graph 0.5. These are constants in one place, tuned against the evaluation set.
+3. **Fusion.** Weighted reciprocal rank fusion. Initial weights: lexical 1.0, scope 1.0, semantic 1.0. These are constants in one place, tuned against the evaluation set.
 4. **Modifiers.** Multiply the fused score by: `confidence`; the staleness factor (section 5); recency `0.5 ** (age / half_life)` floored at 0.3; tier boost (guardrail 1.3, guidance 1.0, background 0.8); feedback `(1 + helpful) / (1 + helpful + 2 × harmful)`.
 5. **Relevance floor.** A record survives only if it has a lexical hit on at least one non-stopword query term, or a scope score ≥ 0.6, or a semantic score above threshold, or it arrived by graph hop from a survivor. Everything else is dropped. An empty result is a valid result.
 6. **Pinned set.** Records with `priority=must` and `scope=["*"]` bypass the floor, capped at 15% of the budget and ordered by confidence. This is the only always-on path, and it is small by construction.
 7. **De-duplication.** Records with token Jaccard ≥ 0.8 collapse to the highest-scored one.
-8. **Budget packing.** Greedy by score. Token cost is measured on the rendered line by a pluggable `TokenCounter` (`tiktoken` if importable, otherwise `ceil(chars / 4)`). An item that does not fit is skipped and packing continues.
+8. **Budget packing.** Greedy by score. Token cost is measured on the rendered line by a pluggable `TokenCounter` (`ceil(chars / 4)` by default; `tiktoken` is opt-in because loading an encoding can require a download). An item that does not fit is skipped and packing continues.
 9. **Session continuity.** Open questions, blockers and partial work from the most recent unfinished session go through the same pipeline as background kinds; they are no longer appended outside the budget.
 
 ### 6.3 Rendering
@@ -212,7 +215,7 @@ warnings = memory.check(approach="Retry indefinitely with exponential backoff",
                         files=["webhooks/payment.py"])
 ```
 
-`check()` is `recall()` restricted to guardrail kinds, with the approach text as the query, a stricter floor (two matching terms, or one term plus a scope hit), and orphaned records excluded. It returns the same `ScoredMemory` objects.
+`check()` is `recall()` restricted to guardrail kinds, with the approach text as the query, a stricter floor (two matching terms, or one term plus a scope hit, or one term that appears in at most two guardrail records), and orphaned records excluded. It returns the same `ScoredMemory` objects.
 
 It reports *relevant prior negative experience*. It does not claim to detect contradiction; that needs a model and belongs to the calling agent. `check_suggestion()` stays as a thin wrapper that returns the old dict shape.
 
@@ -236,7 +239,7 @@ There is no persistent index. `recall()` tokenises on demand with a per-process 
 | `memory.py` | `recall`, `check`, `remember`, `supersede`, `retract`, `feedback`, `verify`, `set_actor` | all |
 | `stores/base.py` | `_add_memory()` helper | `record.py` |
 
-Stores that create registry kinds switch their `graph.add_node` calls to `_add_memory()`. Their public signatures do not change. `embeddings_integration.py` and `cache_integration.py` read field lists from the registry.
+Stores that create registry kinds switch their `graph.add_node` calls to `_add_memory()`. Their public signatures do not change. `embeddings_integration.py` reads its field lists from the registry.
 
 ## 8. Compatibility
 
@@ -293,3 +296,15 @@ End-to-end comparison against other products, with a real agent solving tasks me
 - **Fusion weights are guesses** until the evaluation set exists. They are isolated in one place for that reason.
 - **An MCP server already exists** at `../isongraph/tools/mcp-servers/agent-memory-mcp`, exposing 37 tools that map one-to-one onto store methods. It is not touched here. Spec 3 decides whether to reduce it to the handful of verbs defined in this spec (`recall`, `check`, `remember`, `supersede`, `feedback`, `verify`) or replace it.
 - **Two copies of this package exist** (`../isongraph/tools/agent-memory` is the one pip currently has installed, and 13 files differ). This spec targets the copy in this directory. Which one is canonical needs deciding before implementation.
+
+## 12. Implementation notes
+
+What changed during implementation that the sections above do not state:
+
+- **Record cache.** The retriever uses a snapshot-validated record cache, not the writer revision counter mentioned in 6.5. Stores call `graph.update_node` directly, so a revision counter bumped by the writer would serve stale records.
+- **Lexical indexes.** BM25 indexes are kept per candidate-set role (an LRU of 4) and updated incrementally in place.
+- **Detached copies.** Records returned from `recall()` and `check()` are detached copies; mutating them does not touch the graph.
+- **Tokeniser.** `compound_tokens` adds the camelCase-joined form on both the document and the query side. Stemmer rules: un-doubling is restored (`running` -> `run`), and a plural `-ings` keeps `-ing` when the stem is three letters or fewer.
+- **Decay.** Recency decay reads `created_at` as aware UTC and applies only to active records.
+- **Latency gate.** The strict 50 ms gate is opt-in (`pytest -m perf`). A loose always-on guard stays in the default suite, because wall-clock gates are flaky on a throttled machine.
+- **Store ids.** `BaseStore._make_id` replaces every character outside `[A-Za-z0-9_-]` with `_`, so ids are always valid ISONGraph identifiers. Ids of already-valid names are unchanged.

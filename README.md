@@ -50,12 +50,17 @@ memory.bugs.add_pattern(
     modules_affected=["cache", "storage"]
 )
 
-# Get coding context before a task
-context = memory.get_context(
+# Recall what matters for a task
+result = memory.recall(
     task="modify the cache module",
-    files=["src/cache.py"]
+    files=["src/cache.py"],
+    max_tokens=2000,
 )
-print(context.to_prompt())
+print(result.to_prompt())
+
+# Check an approach against prior experience
+for warning in memory.check("add a global lock around the cache", files=["src/cache.py"]):
+    print(warning.text, "-", warning.why)
 
 # Save memory
 memory.save("project.memory")
@@ -219,39 +224,31 @@ summary = memory._consolidator.consolidate()
 health = memory._consolidator.get_memory_health()
 ```
 
-Consolidation strategies:
-- **Frequency-based**: Keep frequently accessed memories
-- **Recency-based**: Decay old unused memories
-- **Importance-based**: Keep high-impact memories longer
-- **Reinforcement-based**: Strengthen memories that prove useful
+Consolidation archives old session items, merges exact duplicates, and never
+deletes a record.
 
 ## Context Building
 
-Get relevant context before coding:
+`get_context()` still works and returns a `CodingContext` whose lists are a
+view over `recall()`; new code should call `recall()`.
+
+## Records
+
+Every memory carries who recorded it, the evidence, a confidence, a scope
+and a status.
 
 ```python
-context = memory.get_context(
-    task="modify the cache module",
-    files=["src/cache.py"],
-    max_tokens=4000
+r = memory.remember(
+    "bug_pattern",
+    {"name": "cache_stampede", "signature": "concurrent misses recompute the key"},
+    anchors=["src/cache.py"],
+    evidence="PR 412",
 )
-
-# High priority (always included)
-context.warnings      # Decision conflicts, failed refactoring warnings
-context.constraints   # Decisions constraining files
-context.hot_paths     # Performance-critical paths
-
-# Medium priority
-context.conventions   # Applicable conventions
-context.patterns      # Project patterns
-context.bug_risks     # Relevant bug patterns
-context.dependencies  # Dependency quirks
-
-# Session continuity
-context.session_context  # Open questions, prior decisions
-
-# Generate prompt
-prompt = context.to_prompt()
+memory.supersede(r.id, "bug_pattern",
+                 {"name": "cache_stampede", "signature": "concurrent misses recompute the key; fixed by per-key lock"})
+memory.feedback(r.id, helpful=True)
+memory.verify(r.id)      # the anchored file changed and the memory still holds
+memory.retract(r.id, "no longer true")
 ```
 
 ## ISONQL Queries
@@ -278,6 +275,13 @@ result = engine.execute("""
     TRAVERSE team_member:sarah -> HAS_EXPERTISE -> expertise_area
 """)
 ```
+
+## Evaluation
+
+`PYTHONPATH=src python -m tests.eval.run` prints the retrieval scorecard.
+The baseline and the current results are recorded in `tests/eval/BASELINE.md`
+and `tests/eval/RESULTS.md`. The strict latency gates are opt-in:
+`pytest -m perf`.
 
 ## License
 

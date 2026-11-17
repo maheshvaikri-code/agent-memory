@@ -73,6 +73,9 @@ from .stores import (
     IssueType,
 )
 from .context import CodingContext, ContextBuilder
+from .record import MemoryRecord
+from .writer import WriteResult
+from .retrieval import RecallResult, ScoredMemory, TokenCounter
 from .integration import AgentIntegration, prepare_for_project, quick_context
 from .code_flow_integration import CodeFlowIntegration, enrich_memory_with_code_flow
 from .greenfield import (
@@ -172,6 +175,11 @@ __all__ = [
     "IssueType",
     "CodingContext",
     "ContextBuilder",
+    "MemoryRecord",
+    "WriteResult",
+    "RecallResult",
+    "ScoredMemory",
+    "TokenCounter",
     # ISONCache integration (optional)
     "CachedAgentMemory",
     "SemanticMemory",
