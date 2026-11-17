@@ -47,7 +47,7 @@ def _normalised_bytes(data: bytes) -> bytes:
 def content_hash(abs_path) -> Optional[str]:
     try:
         data = Path(abs_path).read_bytes()
-    except OSError:
+    except (OSError, ValueError):
         return None
     return hashlib.sha1(_normalised_bytes(data)).hexdigest()
 
@@ -112,11 +112,20 @@ def anchor_paths(graph, ref: NodeRef) -> List[str]:
 
 
 def restamp(graph, ref: NodeRef, repo_root: Optional[str]) -> int:
-    """Re-record every anchor of `ref` at the current file hash. Returns the count."""
-    anchors = _anchors(graph, ref)
-    for path, symbol, _ in anchors:
-        add_anchor(graph, ref, path, symbol, repo_root, head_commit(repo_root))
-    return len(anchors)
+    """Re-record every anchor of `ref` at the current file hash. Returns the count re-stamped.
+
+    Anchors whose file is missing or unreadable are left untouched, so they stay orphaned.
+    """
+    if not repo_root:
+        return 0
+    commit = head_commit(repo_root)
+    count = 0
+    for path, symbol, _ in _anchors(graph, ref):
+        if content_hash(_abs(path, repo_root)) is None:
+            continue
+        add_anchor(graph, ref, path, symbol, repo_root, commit)
+        count += 1
+    return count
 
 
 class HashCache:
@@ -133,7 +142,7 @@ class HashCache:
                 data = _abs(path, self.repo_root).read_bytes()
                 digest = hashlib.sha1(_normalised_bytes(data)).hexdigest()
                 text = data.decode("utf-8", errors="replace")
-            except OSError:
+            except (OSError, ValueError):
                 pass
             self._seen[path] = (digest, text)
         return self._seen[path]

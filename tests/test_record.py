@@ -81,3 +81,9 @@ def test_tiers_and_registry_shape():
     assert KINDS["open_question"].tier == BACKGROUND
     assert "session" not in KINDS and "task" not in KINDS
     assert normalize_text("  Use   Postgres ") == "use postgres"
+
+
+def test_workaround_text_has_a_separator():
+    assert build_text("workaround", {"solution": "chunk batches"}) == "Workaround: chunk batches"
+    assert build_text("workaround", {"description": "details"}) == "Workaround: details"
+    assert build_text("workaround", {"solution": "use X", "description": "details"}) == "Workaround: use X details"

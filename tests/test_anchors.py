@@ -111,3 +111,25 @@ def test_head_commit_reads_git_without_a_subprocess(tmp_path):
     (git / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     (git / "refs" / "heads" / "main").write_text("abc123\n", encoding="utf-8")
     assert head_commit(str(tmp_path)) == "abc123"
+
+
+def test_restamp_keeps_hash_of_a_deleted_file_so_it_stays_orphaned(tmp_path):
+    g = graph()
+    write(tmp_path, "a.py", "x = 1\n")
+    add_anchor(g, REF, "a.py", repo_root=str(tmp_path))
+    (tmp_path / "a.py").unlink()
+    assert restamp(g, REF, str(tmp_path)) == 0
+    assert staleness(g, REF, HashCache(str(tmp_path))) == "orphaned"
+
+
+def test_restamp_without_repo_root_changes_nothing():
+    g = graph()
+    add_anchor(g, REF, "a.py")
+    assert restamp(g, REF, None) == 0
+
+
+def test_nul_byte_path_does_not_raise(tmp_path):
+    g = graph()
+    add_anchor(g, REF, "bad\x00name.py", repo_root=str(tmp_path))
+    staleness(g, REF, HashCache(str(tmp_path)))
+    assert content_hash(str(tmp_path / "bad\x00name.py")) is None

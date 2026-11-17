@@ -52,7 +52,7 @@ KINDS: Dict[str, KindSpec] = {
     "project_pattern": KindSpec(GUIDANCE, "{name}: {template} — {usage_context}", 365),
     "decision": KindSpec(GUIDANCE, "{title} — {context}", 365),
     "fix_pattern": KindSpec(GUIDANCE, "Fix: {fix_template} — {caveats}", 365),
-    "workaround": KindSpec(GUIDANCE, "Workaround: {solution}{description}", 365),
+    "workaround": KindSpec(GUIDANCE, "Workaround: {solution} {description}", 365),
     "test_convention": KindSpec(GUIDANCE, "[test:{category}] {pattern}", 365),
     "required_test_case": KindSpec(GUIDANCE, "Tests for {for_pattern} must cover: {cases_required}", 365),
     "template": KindSpec(GUIDANCE, "Template {name} ({category})", 365),
