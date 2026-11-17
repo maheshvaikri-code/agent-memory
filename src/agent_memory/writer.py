@@ -7,8 +7,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from . import anchors as anchors_mod
 from .record import (
-    ENVELOPE_FIELDS, KINDS, PRIORITIES, MemoryRecord, NodeRef, build_text,
-    envelope_props, make_id, normalize_text, utc_now,
+    ENVELOPE_FIELDS, KINDS, PRIORITIES, SESSION_KINDS, MemoryRecord, NodeRef, build_text,
+    envelope_props, is_closed, make_id, normalize_text, utc_now,
 )
 from .retrieval.tokenize import tokens_for
 
@@ -47,17 +47,23 @@ class MemoryWriter:
         raise KeyError(f"No memory with id {memory_id!r}")
 
     def _active_with_text(self, kind: str, norm: str) -> Optional[NodeRef]:
+        """The active record of `kind` with this text that a write may merge into.
+
+        An answered question or a resolved blocker is still active (it is history) but is
+        never a merge target: asking the same question again is a new open question.
+        """
         if kind not in self._indexed:
             for node in self.graph.nodes(kind):
                 rec = MemoryRecord.from_node(node)
-                if rec.status == "active":
+                if rec.status == "active" and not is_closed(kind, rec.fields):
                     self._by_text.setdefault((kind, normalize_text(rec.text)), rec.ref)
             self._indexed.add(kind)
         ref = self._by_text.get((kind, norm))
         if ref is None or not self.graph.has_node(*ref):
             return None
         rec = MemoryRecord.from_node(self.graph.get_node(*ref))
-        if rec.status != "active" or normalize_text(rec.text) != norm:
+        if (rec.status != "active" or normalize_text(rec.text) != norm
+                or is_closed(kind, rec.fields)):
             self._by_text.pop((kind, norm), None)
             return None
         return ref
@@ -80,6 +86,11 @@ class MemoryWriter:
 
         existing = self._active_with_text(kind, norm) if norm else None
         if existing is not None:
+            if kind in SESSION_KINDS:
+                # the open item now belongs to the session that recorded it again
+                sid = str(props.get("session_id") or self.session_id or "")
+                if sid and self.graph.get_node(*existing).properties.get("session_id") != sid:
+                    self.graph.update_node(existing[0], existing[1], session_id=sid)
             self._reinforce(existing, evidence)
             self._anchor_all(existing, kind, props, anchors)
             return WriteResult(existing, created=False, merged=True)

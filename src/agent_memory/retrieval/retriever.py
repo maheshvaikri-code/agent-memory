@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 
 from ..anchors import STALENESS_FACTOR, HashCache, norm_path, staleness
-from ..record import BACKGROUND, GUARDRAIL, GUIDANCE, KINDS, MemoryRecord, NodeRef
+from ..record import (BACKGROUND, GUARDRAIL, GUIDANCE, KINDS, RESOLVED_FIELD, SESSION_KINDS,
+                      MemoryRecord, NodeRef)
 from .budget import TokenCounter
 from .channels import graph_neighbours, scope_scores
 from .lexical import BM25
@@ -35,9 +36,8 @@ GRAPH_SEEDS = 10
 DISTINCTIVE_DF = 2
 INDEX_CACHE = 4          # BM25 indexes kept, one per candidate-set role (recall, check, ...)
 INDEX_REFRESH_MIN = 64   # changed records an index absorbs in place (or a tenth, if larger)
-SESSION_KINDS = ("open_question", "blocker", "partial_work")
 _NONE: FrozenSet[str] = frozenset()
-_RESOLVED_FIELD = {"open_question": "answered_in", "blocker": "resolved_in"}
+_RESOLVED_FIELD = RESOLVED_FIELD
 
 
 @dataclass

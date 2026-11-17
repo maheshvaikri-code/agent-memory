@@ -70,6 +70,18 @@ KINDS: Dict[str, KindSpec] = {
 }
 
 
+# Kinds that belong to a session (their envelope session_id names it), and the field that
+# closes one: an answered question or a resolved blocker stays active but is no longer open.
+SESSION_KINDS = ("open_question", "blocker", "partial_work")
+RESOLVED_FIELD = {"open_question": "answered_in", "blocker": "resolved_in"}
+
+
+def is_closed(kind: str, fields: Mapping[str, Any]) -> bool:
+    """True for an answered open_question or a resolved blocker."""
+    name = RESOLVED_FIELD.get(kind)
+    return bool(name and fields.get(name))
+
+
 class _Blank(dict):
     def __missing__(self, key):
         return ""
