@@ -103,3 +103,35 @@ def test_missing_file_unfinished_header_and_shrunk(tmp_path):
     assert journal.read_tail(path, 0).generation is None
     data = make(path)
     assert journal.read_tail(path, len(data) + 500).shrunk
+
+
+def test_decoders_return_none_on_pathologically_nested_json():
+    import zlib
+    body = b"[" * 100000
+    line = b"%08x " % (zlib.crc32(body) & 0xFFFFFFFF) + body
+    assert journal.decode_tx(line) is None
+    assert journal.parse_header(b"[" * 100000 + b"\n") is None
+
+
+def test_read_tail_reports_unreadable_file_as_error_not_exception(tmp_path):
+    tail = journal.read_tail(tmp_path, 0)           # a directory cannot be read as a journal
+    assert tail.generation is None and tail.error
+
+
+def test_read_tail_error_is_none_for_missing_and_normal_files(tmp_path):
+    assert journal.read_tail(tmp_path / "nope", 0).error is None
+    path = tmp_path / "j"
+    make(path)
+    assert journal.read_tail(path, 0).error is None
+
+
+def test_read_tail_survives_nested_json_in_header_and_line(tmp_path):
+    import zlib
+    path = tmp_path / "j"
+    path.write_bytes(b"[" * 100000 + b"\n")
+    assert journal.read_tail(path, 0).generation is None
+    body = b"[" * 100000
+    path.write_bytes(journal.encode_header("g1") + tx(1)
+                     + b"%08x " % (zlib.crc32(body) & 0xFFFFFFFF) + body + b"\n")
+    tail = journal.read_tail(path, 0)
+    assert [t["seq"] for t in tail.txs] == [1] and tail.corrupt_at is not None

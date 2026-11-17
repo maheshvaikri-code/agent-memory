@@ -18,7 +18,7 @@ def encode_header(generation: str) -> bytes:
 def parse_header(line: bytes) -> Optional[str]:
     try:
         data = json.loads(line.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
         return None
     if (isinstance(data, dict) and data.get("journal") == 1
             and isinstance(data.get("generation"), str)):
@@ -56,7 +56,7 @@ def decode_tx(line: bytes) -> Optional[dict]:
         return None
     try:
         tx = json.loads(body.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
         return None
     if not (isinstance(tx, dict) and isinstance(tx.get("seq"), int)
             and isinstance(tx.get("ops"), list)):
@@ -74,15 +74,27 @@ class Tail:
     corrupt_at: Optional[int] = None   # byte offset of a damaged *complete* line
     shrunk: bool = False               # the file is shorter than the offset asked for
     signature: Optional[Tuple[int, int]] = None   # (size, mtime_ns) taken before reading
+    # Set when the file could not be read (OSError: a share lock, a directory, an I/O error).
+    # generation is None then, but the caller must retry
+    # under the lock and never treat it as an absent journal. A missing file is not an error.
+    error: Optional[str] = None
 
 
 def read_tail(path, offset: int) -> Tail:
-    """Read the transactions after byte `offset` (0 = from the start). Takes no lock."""
+    """Read the transactions after byte `offset` (0 = from the start). Takes no lock.
+
+    Never raises: a missing file gives Tail(generation=None) with error None; any other
+    failure to read gives Tail(generation=None, error=...)."""
     try:
-        handle = open(path, "rb")
+        return _read_tail(path, offset)
     except FileNotFoundError:
         return Tail(generation=None)
-    with handle:
+    except (OSError, RecursionError) as exc:
+        return Tail(generation=None, error=f"{type(exc).__name__}: {exc}")
+
+
+def _read_tail(path, offset: int) -> Tail:
+    with open(path, "rb") as handle:
         st = os.fstat(handle.fileno())
         signature = (st.st_size, st.st_mtime_ns)
         first = handle.readline()
