@@ -38,6 +38,8 @@ INDEX_CACHE = 4          # BM25 indexes kept, one per candidate-set role (recall
 INDEX_REFRESH_MIN = 64   # changed records an index absorbs in place (or a tenth, if larger)
 _NONE: FrozenSet[str] = frozenset()
 _RESOLVED_FIELD = RESOLVED_FIELD
+CARRY_DAYS = 14          # an unended session older than this is a crashed one: not carried
+CARRY_MAX = 10
 
 
 @dataclass
@@ -248,6 +250,8 @@ class Retriever:
         self.counter = counter or TokenCounter.heuristic()
         self.semantic = semantic
         self.sink = sink
+        # The writer's current session id; AgentMemory binds it. Its open items are carried.
+        self.current_session: Callable[[], str] = lambda: ""
         self._semantic_warned = False
         self._sink_warned = False
         # ref -> (snapshot of the node's properties, their types, record). Decoding is the main
@@ -524,20 +528,36 @@ class Retriever:
         out.sort(key=lambda s: (-s.score, str(s.record.id), s.record.kind))
         return out
 
-    def _open_session_items(self, cands: Dict[NodeRef, MemoryRecord], taken: set) -> List[ScoredMemory]:
+    def _carried_session(self) -> Optional[str]:
+        """The session whose open items are carried: the writer's current session unless it
+        has ended, else the most recently started unended session if it started within
+        CARRY_DAYS. A session a crashed agent never ended stops being carried after that."""
+        current = self.current_session() or ""
+        if current:
+            node = (self.graph.get_node("session", current)
+                    if self.graph.has_node("session", current) else None)
+            if node is None or not node.properties.get("ended"):
+                return current
         latest, started = None, ""
         for node in self.graph.nodes("session"):
             if not node.properties.get("ended") and str(node.properties.get("started") or "") >= started:
                 latest, started = node.id, str(node.properties.get("started") or "")
-        if latest is None:
+        age = _age_days(started)
+        if latest is None or age is None or age > CARRY_DAYS:
+            return None
+        return latest
+
+    def _open_session_items(self, cands: Dict[NodeRef, MemoryRecord], taken: set) -> List[ScoredMemory]:
+        session = self._carried_session()
+        if session is None:
             return []
-        out = []
-        for ref, rec in cands.items():
-            # session kinds carry their session in the envelope's session_id
-            if ref[0] in SESSION_KINDS and rec.session_id == latest and ref not in taken:
-                out.append(ScoredMemory(rec, 0.0, {"session": 1.0}, "unknown", BACKGROUND,
-                                        rec.text, "open from the current session"))
-        return out
+        recs = [rec for ref, rec in cands.items()
+                # session kinds carry their session in the envelope's session_id
+                if ref[0] in SESSION_KINDS and rec.session_id == session and ref not in taken]
+        recs.sort(key=lambda r: (r.updated_at or r.created_at, str(r.id)), reverse=True)
+        return [ScoredMemory(rec, 0.0, {"session": 1.0}, "unknown", BACKGROUND,
+                             rec.text, "open from the current session")
+                for rec in recs[:CARRY_MAX]]
 
     # -- public ------------------------------------------------------------
 

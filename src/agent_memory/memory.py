@@ -79,6 +79,7 @@ class AgentMemory:
         self.graph = graph
         self.writer = MemoryWriter(graph, self.repo_root, agent)
         self._retriever = Retriever(graph, self.repo_root)
+        self._retriever.current_session = lambda: self.writer.session_id
         for attr, cls in self._STORES:
             store = cls(graph)
             store.writer = self.writer
