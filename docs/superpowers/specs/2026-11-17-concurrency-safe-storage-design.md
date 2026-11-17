@@ -354,6 +354,12 @@ places where the code differs from it or adds to it, and what the final checks f
 - Warnings recorded after `open()` (a skipped compaction, a skipped checkpoint at close,
   replay notes) go to the backend's `warnings` list; `load_warnings` is a copy taken at open,
   so they are not on a public attribute.
+- The way back from a shared store to a plain file (12.5) was run in a temp directory. After
+  open, write and close, the steps removed the journal and the lock, and a plain `load()` +
+  `save()` kept every record. With a child that wrote and then exited through `os._exit`
+  without closing, open + `checkpoint()` + close kept its record, and open + close alone did
+  not. With the `after_append` fault point (record durable, call not returned) the record was
+  kept; with `mid_append` (torn line, never acknowledged) it was dropped, as in §4.6.
 
 ### 12.5 Open decisions (not resolved here)
 
@@ -363,3 +369,13 @@ places where the code differs from it or adds to it, and what the final checks f
 - The CLI and the greenfield, governed and integration modules still use plain
   `load()`/`save()`. On a shared store the CLI's read commands work and its write commands
   raise `StoreInUse`. Sub-project 3 moves the CLI to `open()`.
+- A path once opened with `open()` stays shared after every process has closed it: its
+  `.journal` remains, and any plain `save()` to it (`load()` then `save()`, `AgentMemory(...)`
+  then `save()`, every `amem` write command) raises `StoreInUse`. The refusal stays as
+  designed: a plain save over a store that has a journal can write a snapshot whose recorded
+  sequence number is stale relative to its content, so the next opener would re-apply journal
+  ops. The way back to plain mode (verified, 12.4): with no other process using the store,
+  `AgentMemory.open(path)`, `checkpoint()` (returns `True`), `close()`, then delete
+  `<path>.journal` and `<path>.lock`. The explicit `checkpoint()` is required, because
+  `close()` checkpoints only when that instance wrote: open-and-close alone left a crashed
+  writer's acknowledged record outside the snapshot, and deleting the journal then lost it.

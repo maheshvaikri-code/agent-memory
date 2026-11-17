@@ -64,9 +64,10 @@ decision that created it, a skill linked to the bug pattern that taught it).
 
 **Shared memory** — `AgentMemory.open("project.memory", agent="codex")`
 lets several agents on one machine use one memory at the same time. Every
-write is durable when the call returns and seen by the other processes on
-their next read; two agents writing the same fact get one record; a process
-killed mid-write never corrupts the store.
+write is durable when the call returns, against the process dying
+(`durability="fsync"` also covers power loss), and seen by the other
+processes on their next read; two agents writing the same fact get one
+record; a process killed mid-write never corrupts the store.
 
 **Cache integration** — `cache_integration.py` wraps `ison-cache` so memory
 retrieval respects a token budget instead of dumping the whole history.
@@ -125,5 +126,14 @@ print(again.recall(task="payment webhook retries").to_prompt())
   `AgentMemory.open()`. Plain `AgentMemory(...)`, `load()` and `save()` stay
   single-process: two processes that each load and save the same plain file
   still overwrite each other. Network filesystems (NFS, SMB) and FAT/exFAT
-  are not supported, and the `amem` CLI does not use `open()` yet (its write
-  commands refuse a shared store).
+  are not supported.
+- A path once opened with `open()` stays a shared store after every process
+  has closed it: its `.journal` file remains, and a plain `save()` to it
+  (including every `amem` write command, since the CLI does not use `open()`
+  yet) raises `StoreInUse`, because a plain save there could write a snapshot
+  whose recorded sequence number is stale and make the next opener re-apply
+  journal operations. To return it to a plain file, with no other process
+  using it: `AgentMemory.open(path)`, `checkpoint()`, `close()`, then delete
+  `<path>.journal` and `<path>.lock`. Deleting the journal without that
+  checkpoint can lose acknowledged writes (`close()` alone checkpoints only
+  when that instance wrote).

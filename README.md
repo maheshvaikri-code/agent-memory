@@ -136,16 +136,19 @@ other.close()          # checkpoints if this process wrote, then refuses further
 
 What you can rely on:
 
-- A write that returned is durable and every other process sees it on its next read, with no
-  explicit refresh.
+- A write that returned is durable against the process dying (`durability="fsync"` also
+  covers power loss), and every other process sees it on its next read, with no explicit
+  refresh.
 - Two agents writing at the same moment never lose each other's writes. The same fact written
   by both is merged into one record, and counters (feedback, template use, skill examples)
   add up exactly.
 - Killing a process at any instant, mid-write included, never corrupts the store: an
   unfinished write is dropped and every acknowledged one is kept.
 - A reader never sees a half-written file.
-- Single-process use is unchanged: `AgentMemory(...)`, `load()` and `save()` work as before,
-  and `save()` is now atomic (temp file, then replace).
+- On files never opened with `open()`, `AgentMemory(...)`, `load()` and `save()` work as
+  before, with two differences: `save()` is now atomic (temp file, then replace), and it
+  writes LF line endings (on Windows it used to write CRLF, so a saved file changes its bytes
+  once).
 
 A shared store is three files:
 
@@ -177,10 +180,40 @@ Limits:
   writes to the graph mid-loop.
 - After `close()`, store methods and writes raise `ValueError("this store is closed")`;
   `recall()` and `check()` answer from the state the instance last saw.
+- `close()` never raises because the lock is busy: if it cannot take the lock within
+  `lock_timeout`, it skips its checkpoint (every write is already in the journal) and records
+  a note only in the internal `memory._backend.warnings`; no public attribute shows it.
+  Call `checkpoint()` yourself when you need to know the snapshot is current (it returns
+  `True` when it folded the journal).
 - `export_json()` and `save()` to another path include the internal `store_meta` node.
-- The `amem` CLI still uses `load()`/`save()` (moving it and the server onto `open()` is the
-  next sub-project). On a shared store its read commands work, since `load()` replays the
-  journal, and its write commands refuse with `StoreInUse` rather than overwrite the store.
+- A store stays shared after every process has closed it: once a path has been opened with
+  `open()`, its `.journal` file remains, and a plain `save()` to that path (from `load()`,
+  from `AgentMemory(...)`, or from any `amem` write command) raises `StoreInUse`. This is
+  deliberate: a plain save over a store that has a journal can write a snapshot whose
+  recorded sequence number is stale relative to its content, so the next opener would
+  re-apply journal operations. `load()` and the CLI's read commands keep working (`load()`
+  replays the journal). The `amem` CLI moves onto `open()` in the next sub-project.
+
+To turn a shared store back into a plain file: make sure no other process is using it, then
+open it once, checkpoint, close, and delete the journal and the lock file. After that plain
+`load()`/`save()` work again.
+
+```python
+import os
+from agent_memory import AgentMemory
+
+path = "project.memory"
+memory = AgentMemory.open(path)   # replays whatever is left in the journal
+assert memory.checkpoint()        # folds all of it into the snapshot
+memory.close()
+os.remove(path + ".journal")
+os.remove(path + ".lock")
+```
+
+The explicit `checkpoint()` matters: `close()` checkpoints only when that instance wrote
+something, so open-and-close alone can leave journal content outside the snapshot (for
+example the writes of a process that crashed without closing). Deleting the journal without
+the checkpoint can lose acknowledged writes.
 
 ## Memory Types
 
@@ -362,7 +395,8 @@ print(result.data)   # [('module', 'mod_src_cache')]
 `PYTHONPATH=src python -m tests.eval.run` prints the retrieval scorecard.
 The baseline and the current results are recorded in `tests/eval/BASELINE.md`
 and `tests/eval/RESULTS.md`. The strict latency gates are opt-in:
-`pytest -m perf`.
+`pytest -m perf`. It takes about 2 minutes, because the 5,000-record open test
+first builds its store (about 105 s).
 
 ## License
 
