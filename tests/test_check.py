@@ -87,3 +87,34 @@ def test_camel_case_word_counts_once_toward_the_strict_floor(tmp_path):
     for n in range(4):   # "mongo" and "db" are common, so neither is distinctive
         m.remember("bug_pattern", {"name": f"p{n}", "signature": f"MongoDB driver {n} leaks"})
     assert m.check("MongoDB") == []
+
+
+def _constrained(tmp_path):
+    m = AgentMemory("t", repo_root=str(tmp_path))
+    m.codebase.add_module("src/payments", "card payments")
+    m.decisions.add_decision("Use Postgres", "for billing ledger")
+    m.decisions.add_constraint("Use Postgres", "src/payments",
+                               "never write raw SQL strings; use the query builder")
+    return m
+
+
+def test_check_matches_a_decision_by_its_constraint_text(tmp_path):
+    m = _constrained(tmp_path)
+    warnings = m.check("write raw SQL strings in the charge handler",
+                       files=["src/payments/charge.py"])
+    assert [w.record.id for w in warnings] == ["dec_use_postgres"]
+    assert "matched:" in warnings[0].why and "sql" in warnings[0].why
+
+
+def test_constraint_text_only_counts_where_the_constraint_applies(tmp_path):
+    m = _constrained(tmp_path)
+    assert m.check("write raw SQL strings in the report job", files=["src/reports/job.py"]) == []
+
+
+def test_recall_ranks_a_decision_by_its_constraint_text(tmp_path):
+    m = _constrained(tmp_path)
+    m.remember("convention", {"category": "style", "rule": "charge handler names end in _handler",
+                              "applies_to": "src/payments"})
+    result = m.recall("write raw SQL strings", files=["src/payments/charge.py"])
+    item = next(i for i in result.items if i.record.id == "dec_use_postgres")
+    assert "lexical" in item.channels

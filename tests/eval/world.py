@@ -36,6 +36,7 @@ MARKERS: Dict[str, str] = {
     "fixation": "fixation",
     "reindex_window": "reindex window",
     "secrets": "never log secrets",
+    "query_builder": "query builder",
 }
 PINNED = {"secrets"}
 
@@ -83,6 +84,9 @@ def build_world(memory, root: Path) -> None:
     m.decisions.add_decision("Use Postgres for the billing ledger", "needs serializable transactions")
     m.decisions.add_alternative("Use Postgres for the billing ledger", "MongoDB",
                                 "no multi-document transactions at the time")
+    m.codebase.add_module("services/payments", "payment provider integration and refunds")
+    m.decisions.add_constraint("Use Postgres for the billing ledger", "services/payments",
+                               "never format SQL strings by hand; go through the query builder")
 
     # --- cache
     m.bugs.add_pattern("cache_stampede",

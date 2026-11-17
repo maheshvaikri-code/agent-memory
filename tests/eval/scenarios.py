@@ -88,4 +88,9 @@ SCENARIOS: List[Scenario] = [
       include=["stampede"], check=True),
     S("guardrail", "skip the leeway and compare expiry timestamps exactly", [T],
       include=["leeway"], check=True),
+    # guardrail check, matched by a decision's constraint text (added in the final fix wave)
+    S("guardrail", "format the refund SQL with an f-string", ["services/payments/refunds.py"],
+      include=["query_builder"], check=True),
+    S("guardrail", "build the webhook insert by concatenating SQL strings", [W],
+      include=["query_builder"], check=True),
 ]

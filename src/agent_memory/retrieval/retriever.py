@@ -358,6 +358,14 @@ class Retriever:
         bm25 = index.bm25
         lexical, hits = bm25.match(query_tokens)     # scores; matched terms
         scope, promoted = scope_scores(self.graph, cands, files)
+        for ref, how in promoted.items():
+            # a decision promoted by a CONSTRAINS edge is also matched by its constraint
+            # text (`how`): it is part of the record's document for this query
+            extra = tokens_for(how) + compound_tokens(how) if how else ()
+            if extra and ref in cands:
+                score, matched = bm25.match_extended(ref, extra, query_tokens)
+                if matched:
+                    lexical[ref], hits[ref] = score, matched
         semantic = self._semantic_scores(query, cands)
 
         fused: Dict[NodeRef, float] = {}

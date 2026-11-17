@@ -70,6 +70,22 @@ class BM25:
             sets[mask] = frozenset(t for bit, t in enumerate(terms) if mask >> bit & 1)
         return scores, {key: sets[mask] for key, mask in masks.items()}
 
+    def match_extended(self, key: Hashable, extra: Sequence[str], query_tokens: Sequence[str]
+                       ) -> Tuple[float, FrozenSet[str]]:
+        """Score and matched terms of document `key` with `extra` tokens appended to it,
+        under this corpus's statistics. The index itself is not changed."""
+        counts = Counter(self.tf.get(key, ()))
+        counts.update(extra)
+        length = self.length.get(key, 0) + len(extra)
+        norm = self.k1 * (1 - self.b + self.b * length / self.avg) if self.avg else self.k1
+        score, matched = 0.0, []
+        for term in dict.fromkeys(query_tokens):
+            tf = counts.get(term, 0)
+            if tf:
+                score += self.idf(term) * tf * (self.k1 + 1) / (tf + norm)
+                matched.append(term)
+        return score, frozenset(matched)
+
     def search(self, query_tokens: Sequence[str]) -> List[Hit]:
         scores, matched = self.match(query_tokens)
         hits = [Hit(key, score, matched[key]) for key, score in scores.items()]
