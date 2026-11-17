@@ -2,6 +2,7 @@
 Base Store - Abstract base class for memory stores
 """
 
+import re
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
@@ -69,6 +70,8 @@ class BaseStore(ABC):
     def _make_id(self, prefix: str, name: str) -> str:
         """Create a unique ID from prefix and name"""
         clean = name.replace(" ", "_").replace("/", "_").replace(".", "_").lower()
+        # ISONGraph node ids must not contain whitespace, ':' or '|'; keep only safe characters.
+        clean = re.sub(r"[^A-Za-z0-9_-]", "_", clean)
         return f"{prefix}_{clean}"
 
     def _sanitize(self, s: str) -> str:

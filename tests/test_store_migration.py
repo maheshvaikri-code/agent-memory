@@ -69,3 +69,22 @@ def test_fix_pattern_for_an_existing_fix_text_does_not_raise():
     m.bugs.add_fix_pattern("race_a", "use asyncio.Lock", "")
     m.bugs.add_fix_pattern("race_b", "use asyncio.Lock", "")
     m.bugs.add_fix_pattern("race_a", "use asyncio.Lock", "")
+
+
+def test_store_ids_are_valid_graph_identifiers():
+    m = AgentMemory("t")
+    ids = [
+        m.decisions.add_decision("Architecture: layered", "ctx"),
+        m.decisions.add_decision("Pick A | B", "ctx"),
+        m.conventions.add_convention("style: x", "use a|b everywhere", "ruff"),
+        m.bugs.add_pattern("race: a|b", "shared state"),
+    ]
+    for node_id in ids:
+        assert node_id and not any(ch in node_id for ch in " :|"), node_id
+
+
+def test_make_id_keeps_already_valid_ids_unchanged():
+    m = AgentMemory("t")
+    name = "naming snake_case/a.b-c"
+    old = f"conv_{name.replace(' ', '_').replace('/', '_').replace('.', '_').lower()}"
+    assert m.conventions._make_id("conv", name) == old
