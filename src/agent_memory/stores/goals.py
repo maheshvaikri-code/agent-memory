@@ -74,8 +74,8 @@ class GoalStore(BaseStore):
         Returns:
             Goal ID
         """
-        GoalStore._goal_counter += 1
-        goal_id = self._make_id("goal", f"{name[:20]}_{GoalStore._goal_counter}")
+        goal_id = self._counter_id(GoalStore, "_goal_counter", "goal",
+                                   lambda n: self._make_id("goal", f"{name[:20]}_{n}"))
 
         self.graph.add_node(
             "goal",

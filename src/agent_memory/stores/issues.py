@@ -96,8 +96,8 @@ class IssueStore(BaseStore):
         Returns:
             Issue ID
         """
-        IssueStore._issue_counter += 1
-        issue_id = self._make_id("issue", f"{title[:20]}_{IssueStore._issue_counter}")
+        issue_id = self._counter_id(IssueStore, "_issue_counter", "issue",
+                                    lambda n: self._make_id("issue", f"{title[:20]}_{n}"))
 
         severity_val = severity.value if isinstance(severity, IssueSeverity) else severity
         type_val = issue_type.value if isinstance(issue_type, IssueType) else issue_type
@@ -209,8 +209,9 @@ class IssueStore(BaseStore):
         author: str = "agent"
     ) -> str:
         """Add a comment to an issue"""
-        IssueStore._comment_counter += 1
-        comment_id = self._make_id("comment", f"{issue_id[:10]}_{IssueStore._comment_counter}")
+        comment_id = self._counter_id(
+            IssueStore, "_comment_counter", "issue_comment",
+            lambda n: self._make_id("comment", f"{issue_id[:10]}_{n}"))
 
         self.graph.add_node(
             "issue_comment",

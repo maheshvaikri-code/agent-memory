@@ -72,8 +72,8 @@ class TodoStore(BaseStore):
         Returns:
             Task ID
         """
-        TodoStore._task_counter += 1
-        task_id = self._make_id("task", f"{title[:20]}_{TodoStore._task_counter}")
+        task_id = self._counter_id(TodoStore, "_task_counter", "task",
+                                   lambda n: self._make_id("task", f"{title[:20]}_{n}"))
 
         priority_val = priority.value if isinstance(priority, TaskPriority) else priority
 

@@ -5,7 +5,7 @@ Base Store - Abstract base class for memory stores
 import inspect
 import re
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from datetime import datetime
 
 from ison_graph import ISONGraph
@@ -98,6 +98,20 @@ class BaseStore(ABC):
         # replace exactly those so ids of already-valid names never change.
         clean = re.sub(r"[ \t\n\r:|]", "_", clean)
         return f"{prefix}_{clean}"
+
+    def _counter_id(self, owner: type, counter: str, node_type: str,
+                    build: Callable[[int], str]) -> str:
+        """Bump the class-level `owner.<counter>` and return `build(count)`, bumping again
+        while that id is taken. The counter is per process, so another process sharing the
+        store can have used the same count; every public store method is one transaction,
+        so the check sees every node already written. Without a collision the id is the one
+        the counter alone gives."""
+        while True:
+            count = getattr(owner, counter) + 1
+            setattr(owner, counter, count)
+            node_id = build(count)
+            if not self.graph.has_node(node_type, node_id):
+                return node_id
 
     def _sanitize(self, s: str) -> str:
         """Sanitize string for storage"""

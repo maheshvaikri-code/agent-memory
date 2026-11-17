@@ -70,9 +70,9 @@ class SkillStore(BaseStore):
         lesson: Optional[str] = None
     ) -> str:
         """Record a learning event"""
-        SkillStore._event_counter += 1
         skill_id = self._make_id("skill", skill_name)
-        event_id = self._make_id("le", f"{skill_name}_{SkillStore._event_counter}")
+        event_id = self._counter_id(SkillStore, "_event_counter", "learning_event",
+                                    lambda n: self._make_id("le", f"{skill_name}_{n}"))
 
         self.graph.add_node(
             "learning_event",
