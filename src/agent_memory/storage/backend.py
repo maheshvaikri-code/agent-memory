@@ -97,6 +97,7 @@ class JournalBackend:
         self.seq = 0
         self.offset = 0
         self._signature: Optional[Tuple[_FileSignature, _FileSignature]] = None
+        self._snapshot_signature: _FileSignature = None   # of the snapshot we are based on
         self._needs_reset = False
         self._diverged = False     # memory may differ from disk; rebuild before the next use
         self._dirty = False
@@ -180,6 +181,7 @@ class JournalBackend:
         self.graph = graph
         self.generation, self.seq = self._meta(graph)
         self.offset = 0
+        self._snapshot_signature = _file_signature(self.path)   # just read or written, locked
 
     def _remove_stale_temp_files(self) -> None:
         base = Path(self.path)
@@ -209,9 +211,28 @@ class JournalBackend:
 
     def _catch_up(self) -> int:
         """Apply what other processes appended. Call with the lock held."""
-        applied = self._apply_tail(journal.read_tail(self.journal_path, self.offset), True)
+        applied = self._follow_a_moved_snapshot()
+        if applied is None:
+            applied = self._apply_tail(journal.read_tail(self.journal_path, self.offset), True)
         self._signature = self._stat()        # exact: nobody writes while we hold the lock
         return applied
+
+    def _follow_a_moved_snapshot(self) -> Optional[int]:
+        """Call with the lock held. A journal that carries our generation is ours to extend
+        only while the snapshot carries it too: a compaction that replaced the snapshot but
+        never rewrote the journal (it crashed, or the rewrite failed) leaves a journal that
+        looks like ours but is already folded into the new snapshot, and anything appended to
+        it would be discarded as stale. One stat when the snapshot is unchanged; when it
+        changed, its generation decides. Returns None when we are still on it."""
+        current = _file_signature(self.path)
+        if current is not None and current == self._snapshot_signature:
+            return None
+        fresh = self._read_snapshot()          # missing or unreadable: StoreCorrupt
+        meta = self._meta(fresh)
+        if meta is not None and meta[0] == self.generation:
+            self._snapshot_signature = current
+            return None
+        return self._reload(fresh)             # resets the journal when it does not continue it
 
     def _apply_tail(self, tail: journal.Tail, authoritative: bool) -> Optional[int]:
         """Apply `tail`. Returns the number of transactions applied, or None when a lockless
@@ -276,6 +297,7 @@ class JournalBackend:
         it. Otherwise another process compacted, perhaps more than once: reload."""
         fresh = self._read_snapshot()
         if self._meta(fresh) == (self.generation, self.seq):
+            self._snapshot_signature = _file_signature(self.path)
             self._needs_reset = True
             self.offset = 0
             return 0
@@ -300,6 +322,7 @@ class JournalBackend:
         self.graph._replace_contents(fresh)
         self.generation, self.seq = meta
         self.offset = 0
+        self._snapshot_signature = _file_signature(self.path)   # unchanged since read: locked
         if tail.generation != self.generation:
             self._needs_reset = True
             return 0
@@ -477,6 +500,7 @@ class JournalBackend:
             # a third party holds the snapshot open (antivirus, editor), or the disk is full
             self.warnings.append(f"compaction skipped: {exc}")
             return False
+        self._snapshot_signature = _file_signature(self.path)
         faults.hit("after_snapshot_replace")
         self.generation = new_generation
         self._reset_journal(new_generation)

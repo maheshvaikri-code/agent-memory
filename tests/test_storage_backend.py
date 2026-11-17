@@ -410,3 +410,69 @@ def test_another_thread_reading_waits_for_an_in_flight_transaction(tmp_path):
     reader.join(10)
     assert blocked
     assert g1.has_node("note", "a") and g1.has_node("note", "b") and b1.warnings == []
+
+
+# -- review fix round 1: a live writer behind a half-finished compaction ---------------------
+
+
+def note_ids(graph):
+    return {node.id for node in graph.nodes() if node.type == "note"}
+
+
+def test_a_live_writer_behind_a_stale_journal_follows_the_snapshot(tmp_path):
+    path = tmp_path / "p.memory"
+    b1, g1 = opened(path)
+    b2, g2 = opened(path)
+    g1.add_node("note", "a")
+    old = open(b1.journal_path, "rb").read()
+    b1.checkpoint()
+    open(b1.journal_path, "wb").write(old)      # crash after the snapshot replace, before the rewrite
+    g2.add_node("note", "c")                    # the live instance, still at the old generation
+    assert b2.generation == b1.generation
+    assert note_ids(opened(path)[1]) == {"a", "c"}
+    b2.refresh()
+    assert note_ids(g2) == {"a", "c"}
+    b1.refresh()
+    assert note_ids(g1) == {"a", "c"}
+
+
+def test_a_live_writer_follows_a_compaction_whose_journal_rewrite_failed(tmp_path, monkeypatch):
+    path = tmp_path / "p.memory"
+    b1, g1 = opened(path, compact_min_bytes=0)
+    b2, g2 = opened(path)
+
+    def denied(generation):
+        raise PermissionError(13, "the journal is held open")
+
+    monkeypatch.setattr(b1, "_reset_journal", denied)
+    g1.add_node("note", "a", text="x" * 400)    # snapshot replaced, journal rewrite failed
+    monkeypatch.undo()
+    g2.add_node("note", "c")                    # the other live instance writes first
+    g1.add_node("note", "d")
+    assert note_ids(opened(path)[1]) == {"a", "c", "d"}
+    b2.refresh()
+    assert note_ids(g2) == {"a", "c", "d"}
+
+
+CRASHING_CHECKPOINT = """
+import sys
+from agent_memory.storage import JournalBackend
+backend = JournalBackend(sys.argv[1], agent="child")
+graph = backend.open()
+graph.add_node("note", "from-child")
+backend.checkpoint()
+"""
+
+
+def test_a_live_writer_follows_a_compaction_that_crashed_in_another_process(tmp_path):
+    path = tmp_path / "p.memory"
+    backend, graph = opened(path)
+    graph.add_node("note", "before")
+    result = run_py(CRASHING_CHECKPOINT, path, env={"AGENT_MEMORY_FAULT": "after_snapshot_replace"})
+    assert result.returncode == 86, result.stderr
+    graph.add_node("note", "after")
+    fresh_backend, fresh = opened(path)
+    assert note_ids(fresh) == {"before", "from-child", "after"}
+    assert fresh_backend.seq == 3 and fresh_backend.warnings == []     # nothing replayed twice
+    backend.refresh()
+    assert note_ids(graph) == {"before", "from-child", "after"} and backend.seq == 3
