@@ -1,6 +1,7 @@
 """Ranks memories for a task: channels, fusion, modifiers, floor, de-duplication, budget."""
 from __future__ import annotations
 
+import copy
 import heapq
 import logging
 import math
@@ -149,6 +150,30 @@ def _prefix(tokens: FrozenSet[str], order: Dict[str, int]) -> Tuple[str, ...]:
     return tuple(ordered[:len(ordered) - math.ceil(DEDUP_JACCARD * len(ordered) - 1e-9) + 1])
 
 
+_ATOMIC = (str, int, float, bool, type(None))
+
+
+def _snapshot(props: Dict[str, Any]) -> Dict[str, Any]:
+    """A copy of node properties that an in-place change to a list value cannot reach."""
+    return {k: v if isinstance(v, _ATOMIC) else copy.deepcopy(v) for k, v in props.items()}
+
+
+def _types(props: Dict[str, Any]) -> Tuple[Tuple[str, type], ...]:
+    """Types of the non-string values. Only those can equal a value of another type
+    (1 == True == 1.0); a string never equals a non-string."""
+    return tuple((k, type(v)) for k, v in props.items() if type(v) is not str)
+
+
+def _detach(item: ScoredMemory) -> ScoredMemory:
+    """Give a returned item its own record, so a caller who changes it cannot change
+    the cached record that later recalls are built from."""
+    rec = copy.copy(item.record)
+    rec.fields = _snapshot(rec.fields)
+    rec.scope = list(rec.scope)
+    item.record = rec
+    return item
+
+
 class _Index:
     """BM25 over one candidate set, plus the de-duplication prefixes it implies."""
 
@@ -188,9 +213,10 @@ class Retriever:
         self.sink = sink
         self._semantic_warned = False
         self._sink_warned = False
-        # ref -> (copy of the node's properties, record). Decoding is the main per-recall cost at
-        # thousands of records; a snapshot comparison catches every update_node, whoever
-        # makes it, so no write path has to remember to invalidate anything.
+        # ref -> (snapshot of the node's properties, their types, record). Decoding is the main
+        # per-recall cost at thousands of records; comparing with the snapshot catches every
+        # change to the node, whoever makes it, so no write path has to invalidate anything.
+        # Cached records are shared between recalls and never handed out (see _detach).
         self._records: Dict[NodeRef, tuple] = {}
         self._indexes: List[_Index] = []    # most recent first
 
@@ -217,11 +243,14 @@ class Retriever:
 
     def _record(self, node) -> MemoryRecord:
         ref = (node.type, node.id)
+        props = node.properties
         hit = self._records.get(ref)
-        if hit is not None and hit[0] == node.properties:   # dict comparison, no allocation
-            return hit[1]
+        # equal values of another type (1 -> True, 1 -> 1.0) compare equal, so check types too
+        if (hit is not None and hit[0] == props
+                and (not hit[1] or all(type(props[k]) is t for k, t in hit[1]))):
+            return hit[2]
         rec = MemoryRecord.from_node(node)
-        self._records[ref] = (dict(node.properties), rec)
+        self._records[ref] = (_snapshot(props), _types(props), rec)
         return rec
 
     def _index(self, cands: Dict[NodeRef, MemoryRecord]) -> "_Index":
@@ -258,7 +287,7 @@ class Retriever:
              cands: Optional[Dict[NodeRef, MemoryRecord]] = None) -> List[ScoredMemory]:
         """Ranked survivors of the relevance floor. `strict` applies the guardrail-check floor."""
         ranking = self._rank(query, files, kinds, strict, extra_refs, cands)
-        return [ranking.item(ref) for ref in ranking.refs]
+        return [_detach(ranking.item(ref)) for ref in ranking.refs]
 
     def _rank(self, query: str, files: List[str], kinds: Optional[Iterable[str]] = None,
               strict: bool = False, extra_refs: Iterable[NodeRef] = (),
@@ -465,7 +494,7 @@ class Retriever:
         guardrails = [kind for kind, spec in KINDS.items() if spec.tier == GUARDRAIL]
         _, promoted = scope_scores(self.graph, self._candidates(["decision"]), files)
         ranking = self._rank(approach or "", files, guardrails, strict=True, extra_refs=promoted)
-        return [ranking.item(ref) for ref in ranking.refs[:limit]]
+        return [_detach(ranking.item(ref)) for ref in ranking.refs[:limit]]
 
     def recall(self, task: str = "", files: Optional[List[str]] = None,
                symbols: Optional[List[str]] = None, kinds: Optional[List[str]] = None,
@@ -516,6 +545,8 @@ class Retriever:
         while result.items and self.counter.count(result.to_prompt()) > max_tokens:
             result.items.pop()
         result.tokens = self.counter.count(result.to_prompt())
+        for item in result.items:
+            _detach(item)
         if self.sink is not None:
             try:
                 self.sink(RecallEvent(result.task, files, [i.record.id for i in result.items]))

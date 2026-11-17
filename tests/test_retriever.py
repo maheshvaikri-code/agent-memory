@@ -272,3 +272,52 @@ def test_record_cache_sees_direct_graph_updates(memory):
     assert any(i.record.ref == ref for i in memory.recall(task="cache key naming").items)
     memory.graph.update_node(*ref, status="superseded")      # bypasses the writer
     assert all(i.record.ref != ref for i in memory.recall(task="cache key naming").items)
+
+
+def test_caller_mutation_of_a_returned_record_never_reaches_a_later_recall(memory):
+    task = "cache key naming namespaces"
+
+    def naming(result):
+        return next((i for i in result.items if i.record.id == memory.naming.id), None)
+
+    record = naming(memory.recall(task=task)).record
+    for attempt in (lambda: setattr(record, "status", "retracted"),
+                    lambda: setattr(record, "confidence", 0.0),
+                    lambda: record.fields.__setitem__("rule", "POISON"),
+                    lambda: record.scope.append("nowhere/**")):
+        try:
+            attempt()
+        except (AttributeError, TypeError):
+            pass
+    again = naming(memory.recall(task=task))
+    assert again is not None
+    assert again.record.status == "active"
+    assert again.record.confidence > 0.0
+    assert again.record.fields["rule"] == "cache keys use colon namespaces"
+    assert "nowhere/**" not in again.record.scope
+
+
+def test_record_cache_sees_in_place_list_mutation(memory):
+    memory.graph.add_node("quirk", "lst", dependency_id="d", description="webhook list scope quirk",
+                          scope=["services/a/**"])
+
+    def scope():
+        item = next(i for i in memory.recall(task="webhook list scope quirk").items
+                    if i.record.id == "lst")
+        return list(item.record.scope)
+
+    assert scope() == ["services/a/**"]
+    memory.graph.get_node("quirk", "lst").properties["scope"].append("services/b/**")
+    assert scope() == ["services/a/**", "services/b/**"]
+
+
+def test_record_cache_sees_an_equal_value_of_another_type(memory):
+    memory.graph.add_node("hot_path", "hp", name="webhook dispatcher", frequency=1)
+
+    def text():
+        return next(i for i in memory.recall(task="webhook dispatcher").items
+                    if i.record.id == "hp").record.text
+
+    assert text() == "Hot path webhook dispatcher (1)"
+    memory.graph.update_node("hot_path", "hp", frequency=True)     # 1 == True
+    assert text() == "Hot path webhook dispatcher (True)"
