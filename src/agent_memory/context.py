@@ -183,9 +183,22 @@ class ContextBuilder:
                 kinds.append("decision")
             kinds += self.SESSION_KINDS
 
-        result = self.memory.recall(task=task, files=files, kinds=kinds, max_tokens=max_tokens)
-        if filtered:
-            result.items = [i for i in result.items if self._bucket(i) in names + ["session"]]
+        if not filtered:
+            result = self.memory.recall(task=task, files=files, max_tokens=max_tokens)
+        else:
+            # Pinned (must/"*") and carried session items are always-on: they are kept
+            # whatever `exclude` says, and dropped only when `include` is given and names
+            # none of their buckets (carried items are in the "session" bucket).
+            result = self.memory._retriever.recall(task=task, files=files, kinds=kinds,
+                                                   max_tokens=max_tokens, always_on=True)
+
+            def keep(item) -> bool:
+                bucket = self._bucket(item)
+                if item.pinned or "session" in item.channels:
+                    return include is None or bucket in include
+                return bucket in names + ["session"]
+
+            result.items = [i for i in result.items if keep(i)]
             result.tokens = self.memory._retriever.counter.count(result.to_prompt())
 
         context = CodingContext(task=task, files=files, items=result.items, result=result,

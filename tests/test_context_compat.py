@@ -62,3 +62,43 @@ def test_hand_built_context_still_renders_the_old_way():
 
 def test_quick_context_returns_a_string():
     assert isinstance(build().get_quick_context("fix the cache stampede"), str)
+
+
+# -- filtered contexts keep the always-on sets -----------------------------------------
+
+def build_with_rule():
+    m = AgentMemory("t")
+    m.remember("convention", {"category": "security", "rule": "never log secrets or tokens",
+                              "applies_to": "*"}, priority="must")
+    m.remember("bug_pattern", {"name": "webhook_storm", "signature": "unbounded retry on webhook"})
+    return m
+
+
+def test_excluding_an_unrelated_category_keeps_the_pinned_rule():
+    m = build_with_rule()
+    full = m.get_context("add retry to payment webhook")
+    excl = m.get_context("add retry to payment webhook", exclude=["team_experts"])
+    assert "secrets" in full.to_prompt()
+    assert "secrets" in excl.to_prompt()
+    assert any(c.get("rule") == "never log secrets or tokens" for c in excl.conventions)
+
+
+def test_include_naming_none_of_the_pinned_buckets_drops_the_pinned_rule():
+    ctx = build_with_rule().get_context("add retry to payment webhook", include=["bug_risks"])
+    assert "secrets" not in ctx.to_prompt() and ctx.bug_risks
+
+
+def test_include_naming_the_pinned_rules_bucket_keeps_it():
+    ctx = build_with_rule().get_context("add retry to payment webhook",
+                                        include=["bug_risks", "conventions"])
+    assert "secrets" in ctx.to_prompt()
+
+
+def test_excluding_an_unrelated_category_keeps_carried_session_items():
+    m = build_with_rule()
+    sid = m.start_session("refund worker")
+    m.sessions.add_open_question(sid, "max batch size for the refund worker?")
+    ctx = m.get_context("add a dark mode toggle", exclude=["team_experts"])
+    assert any("max batch size" in q["question"] for q in ctx.session_context["open_questions"])
+    only = m.get_context("add a dark mode toggle", include=["bug_risks"])
+    assert "max batch size" not in only.to_prompt()

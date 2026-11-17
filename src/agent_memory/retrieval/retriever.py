@@ -551,19 +551,26 @@ class Retriever:
 
     def recall(self, task: str = "", files: Optional[List[str]] = None,
                symbols: Optional[List[str]] = None, kinds: Optional[List[str]] = None,
-               max_tokens: int = 2000, compact: bool = False) -> RecallResult:
+               max_tokens: int = 2000, compact: bool = False,
+               always_on: Optional[bool] = None) -> RecallResult:
+        """`always_on` adds the pinned (must/"*") and carried session items; by default
+        only when `kinds` is not restricted. They are drawn from every kind."""
+        kinds = list(kinds) if kinds is not None else None
         kinds = kinds or None               # an empty list means "all kinds", like None
         files = [norm_path(f, self.repo_root) for f in (files or [])]
         query = " ".join([task or ""] + list(symbols or []))
         cands = self._candidates(kinds)     # read once per recall
         ranking = self._rank(query, files, kinds, cands=cands)
         ranked_refs = set(ranking.refs)
+        if always_on is None:
+            always_on = kinds is None
+        every = cands if kinds is None or not always_on else self._candidates(None)
         # must/"*" records that also ranked keep their ranked item (and its identity)
         prebuilt = {ref: ranking.item(ref) for ref, rec in cands.items()
                     if rec.priority == "must" and rec.scope == ["*"] and ref in ranked_refs}
-        pinned = self._pinned(cands, prebuilt) if kinds is None else []
+        pinned = self._pinned(every, prebuilt) if always_on else []
         taken = ranked_refs | {item.record.ref for item in pinned}
-        carried = self._open_session_items(cands, taken) if kinds is None else []
+        carried = self._open_session_items(every, taken) if always_on else []
 
         budget = max_tokens - self.counter.count("\n".join(HEADERS.values()) + "\n")
         pinned_cap = int(max_tokens * PINNED_BUDGET_SHARE)
