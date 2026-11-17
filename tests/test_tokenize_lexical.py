@@ -23,9 +23,16 @@ def test_short_roots_collapse_but_plural_ing_nouns_keep_their_ing():
     assert tokenize("logging logged log") == ["log"] * 3
     assert tokenize("mapping mapped map") == ["map"] * 3
     assert tokenize("running run") == ["run"] * 2
+    assert tokenize("getting get") == ["get"] * 2
+    assert tokenize("tagged tag") == ["tag"] * 2
     # "settings" is a noun: it must not meet the verb in "are set immutable"
     assert tokenize("settings") == ["setting"]
     assert tokenize("set") == ["set"]
+    # a plural -ings word on a longer stem still collapses with its singular
+    for plural, singular, root in (("warnings", "warning", "warn"), ("bindings", "binding", "bind"),
+                                   ("findings", "finding", "find"), ("headings", "heading", "head"),
+                                   ("embeddings", "embedding", "embed")):
+        assert tokenize(f"{plural} {singular}") == [root, root]
 
 
 def test_drops_stopwords_and_single_characters():

@@ -23,9 +23,10 @@ def _undouble(w: str) -> str:
 
 
 def _stem(w: str) -> str:
-    if len(w) > 5 and w.endswith("ings"):
-        # A plural "-ings" word is a noun ("settings", "warnings"): drop only the plural,
-        # so "settings" does not meet the verb "set". "setting" still stems to "set".
+    if len(w) > 5 and w.endswith("ings") and len(_undouble(w[:-4])) <= 3:
+        # A plural "-ings" noun on a short root keeps its "-ing" ("settings" -> "setting"),
+        # so it does not meet the short, common verb ("set"). Longer roots collapse as
+        # usual ("warnings" -> "warn", like "warning"). "setting" still stems to "set".
         return w[:-1]
     if len(w) > 4 and w.endswith("ies"):
         w = w[:-3] + "y"
