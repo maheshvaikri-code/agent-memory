@@ -254,15 +254,13 @@ def test_dedup_matches_the_pairwise_definition():
 
 def test_dedup_with_corpus_prefixes_matches_without():
     import random
-    from agent_memory.retrieval.lexical import BM25
     from agent_memory.retrieval.retriever import Retriever, _Index
-    from agent_memory.retrieval.tokenize import tokens_for
 
     rng = random.Random(11)
     vocab = [f"term{n}" for n in range(10)]
     for _ in range(100):
         texts = [" ".join(rng.sample(vocab, rng.randint(0, 7))) for _ in range(30)]
-        index = _Index((), BM25({n: tokens_for(t) for n, t in enumerate(texts)}))
+        index = _Index({n: SimpleNamespace(text=t) for n, t in enumerate(texts)})
         items = [SimpleNamespace(record=SimpleNamespace(text=t)) for t in texts[:20]]
         assert Retriever._dedup(items, index.prefix) == Retriever._dedup(items)
 
@@ -321,3 +319,22 @@ def test_record_cache_sees_an_equal_value_of_another_type(memory):
     assert text() == "Hot path webhook dispatcher (1)"
     memory.graph.update_node("hot_path", "hp", frequency=True)     # 1 == True
     assert text() == "Hot path webhook dispatcher (True)"
+
+
+def test_index_absorbs_a_write_in_place_and_ranks_like_a_fresh_retriever(memory):
+    from agent_memory.retrieval.retriever import Retriever
+    for n in range(30):
+        memory.remember("quirk", {"description": f"webhook retry quirk {n} on queue {n % 4}",
+                                  "dependency_id": "d"})
+    task = "webhook retry queue"
+    memory.recall(task=task)
+    index = memory._retriever._indexes[0]
+    memory.remember("quirk", {"description": "webhook retry storm on queue 9", "dependency_id": "d"})
+    memory.graph.update_node(*memory.naming.ref, rule="cache keys and webhook retry names")
+    got = memory.recall(task=task)
+    assert memory._retriever._indexes[0] is index           # updated, not rebuilt
+    fresh = Retriever(memory.graph, memory.repo_root).recall(task=task)
+    # scores may differ in the last digits through recency only (time passes between recalls)
+    assert [(i.record.id, i.channels, i.why) for i in got.items] == \
+        [(i.record.id, i.channels, i.why) for i in fresh.items]
+    assert [i.score for i in got.items] == pytest.approx([i.score for i in fresh.items], rel=1e-6)

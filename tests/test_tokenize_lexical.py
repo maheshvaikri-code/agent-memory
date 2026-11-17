@@ -57,3 +57,23 @@ def test_equal_docs_get_equal_scores():
     docs = {"a": ["indexer", "alpha", "bulk"], "b": ["indexer", "beta", "bulk"]}
     hits = BM25(docs).search(["indexer", "bulk"])
     assert hits[0].score == hits[1].score
+
+
+def test_bm25_update_scores_like_a_fresh_build():
+    import random
+    rng = random.Random(3)
+    vocab = [f"w{n}" for n in range(15)]
+    docs = {n: [rng.choice(vocab) for _ in range(rng.randint(1, 8))] for n in range(40)}
+    bm25 = BM25(docs)
+    for _ in range(30):
+        remove = rng.sample(sorted(docs), 3)
+        for key in remove:
+            del docs[key]
+        add = {rng.randint(0, 60): [rng.choice(vocab) for _ in range(rng.randint(1, 8))]
+               for _ in range(4)}
+        bm25.update([k for k in remove] + [k for k in add if k in docs], add)
+        docs.update(add)
+        fresh = BM25(docs)
+        query = rng.sample(vocab, 4)
+        assert bm25.match(query) == fresh.match(query)
+        assert bm25.df == fresh.df and bm25.norm == fresh.norm and bm25.n == fresh.n

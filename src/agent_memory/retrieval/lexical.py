@@ -1,7 +1,8 @@
 """BM25 over short texts, in memory."""
 import math
 from collections import Counter
-from typing import Dict, FrozenSet, Hashable, List, Mapping, NamedTuple, Sequence, Tuple
+from typing import (Dict, FrozenSet, Hashable, Iterable, List, Mapping, NamedTuple, Sequence,
+                    Tuple)
 
 
 class Hit(NamedTuple):
@@ -13,18 +14,41 @@ class Hit(NamedTuple):
 class BM25:
     def __init__(self, docs: Mapping[Hashable, Sequence[str]], k1: float = 1.2, b: float = 0.75):
         self.k1, self.b = k1, b
-        self.tf = {key: Counter(tokens) for key, tokens in docs.items()}
-        self.length = {key: len(tokens) for key, tokens in docs.items()}
-        self.n = len(self.tf)
-        self.avg = (sum(self.length.values()) / self.n) if self.n else 0.0
-        self.norm = {key: (k1 * (1 - b + b * n / self.avg) if self.avg else k1)
-                     for key, n in self.length.items()}
+        self.tf: Dict[Hashable, Counter] = {}
+        self.length: Dict[Hashable, int] = {}
         self.df: Counter = Counter()
         self.postings: Dict[str, List[Tuple[Hashable, int]]] = {}
-        for key, counts in self.tf.items():
+        self.total = 0
+        self.update((), docs)
+
+    def update(self, remove: Iterable[Hashable], add: Mapping[Hashable, Sequence[str]]) -> None:
+        """Drop the documents in `remove`, then add (or re-add) those in `add`.
+
+        Leaves the index exactly as a fresh build over the resulting documents would
+        score it; only the order of keys inside a posting list can differ.
+        """
+        for key in remove:
+            for term in self.tf.pop(key):
+                self.df[term] -= 1
+                postings = self.postings[term]
+                if self.df[term]:
+                    postings[:] = [p for p in postings if p[0] != key]
+                else:
+                    del self.df[term], self.postings[term]
+            self.total -= self.length.pop(key)
+        for key, tokens in add.items():
+            counts = Counter(tokens)
+            self.tf[key] = counts
+            self.length[key] = len(tokens)
+            self.total += len(tokens)
             self.df.update(counts.keys())
             for term, n in counts.items():
                 self.postings.setdefault(term, []).append((key, n))
+        self.n = len(self.tf)
+        self.avg = self.total / self.n if self.n else 0.0
+        k1, b, avg = self.k1, self.b, self.avg
+        self.norm = {key: (k1 * (1 - b + b * n / avg) if avg else k1)
+                     for key, n in self.length.items()}
 
     def idf(self, term: str) -> float:
         df = self.df.get(term, 0)

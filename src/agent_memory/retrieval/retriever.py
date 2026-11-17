@@ -34,6 +34,7 @@ PINNED_BUDGET_SHARE = 0.15
 GRAPH_SEEDS = 10
 DISTINCTIVE_DF = 2
 INDEX_CACHE = 4          # BM25 indexes kept (recall and check use different candidate sets)
+INDEX_REFRESH_MIN = 64   # changed records an index absorbs in place (or a tenth, if larger)
 SESSION_KINDS = ("open_question", "blocker", "partial_work")
 _NONE: FrozenSet[str] = frozenset()
 _RESOLVED_FIELD = {"open_question": "answered_in", "blocker": "resolved_in"}
@@ -174,14 +175,49 @@ def _detach(item: ScoredMemory) -> ScoredMemory:
     return item
 
 
+def _doc(rec: MemoryRecord) -> Tuple[str, ...]:
+    return tokens_for(rec.text) + compound_tokens(rec.text)
+
+
 class _Index:
     """BM25 over one candidate set, plus the de-duplication prefixes it implies."""
 
-    def __init__(self, records: Tuple[MemoryRecord, ...], bm25: BM25):
-        self.records = records
-        self.bm25 = bm25
+    def __init__(self, cands: Dict[NodeRef, MemoryRecord]):
+        self.records = tuple(cands.values())    # holds the records, so identity stays meaningful
+        self.by_ref = dict(cands)
+        self.bm25 = BM25({ref: _doc(rec) for ref, rec in cands.items()})
         self._order: Optional[Dict[str, int]] = None
         self._prefixes: Dict[str, Tuple[str, ...]] = {}
+        self._next_rare = -1
+
+    def same(self, records: Tuple[MemoryRecord, ...]) -> bool:
+        seen = self.records
+        return len(seen) == len(records) and all(a is b for a, b in zip(seen, records))
+
+    def refresh(self, cands: Dict[NodeRef, MemoryRecord], limit: int) -> bool:
+        """Bring the index up to `cands` in place when at most `limit` records differ."""
+        changed = {}
+        for ref, rec in cands.items():
+            if self.by_ref.get(ref) is not rec:
+                changed[ref] = rec
+                if len(changed) > limit:
+                    return False
+        gone = [ref for ref in self.by_ref if ref not in cands]
+        if len(changed) + len(gone) > limit:
+            return False
+        self.bm25.update([ref for ref in changed if ref in self.by_ref] + gone,
+                         {ref: _doc(rec) for ref, rec in changed.items()})
+        if self._order is not None:
+            # Prefix filtering needs one fixed total order, not an exact one: existing
+            # tokens keep their place (so cached prefixes stay valid), new ones go first.
+            for rec in changed.values():
+                for t in tokens_for(rec.text):
+                    if t not in self._order:
+                        self._order[t] = self._next_rare
+                        self._next_rare -= 1
+        self.records = tuple(cands.values())
+        self.by_ref = dict(cands)
+        return True
 
     def prefix(self, text: str) -> Tuple[str, ...]:
         hit = self._prefixes.get(text)
@@ -254,18 +290,23 @@ class Retriever:
         return rec
 
     def _index(self, cands: Dict[NodeRef, MemoryRecord]) -> "_Index":
-        """Index over `cands`, reused while the candidate records are the same objects."""
-        records = tuple(cands.values())     # holds the records, so identity stays meaningful
-        for i, index in enumerate(self._indexes):
-            seen = index.records
-            if len(seen) == len(records) and all(a is b for a, b in zip(seen, records)):
-                if i:
-                    self._indexes.insert(0, self._indexes.pop(i))
-                return index
-        index = _Index(records, BM25({ref: tokens_for(rec.text) + compound_tokens(rec.text)
-                                      for ref, rec in cands.items()}))
-        self._indexes = [index] + self._indexes[:INDEX_CACHE - 1]
-        return index
+        """Index over `cands`: reused while the candidate records are the same objects,
+        updated in place when only a few changed, rebuilt otherwise."""
+        records = tuple(cands.values())
+        found = next((i for i, index in enumerate(self._indexes) if index.same(records)), None)
+        if found is None:
+            limit = max(INDEX_REFRESH_MIN, len(cands) // 10)
+            # closest in size first, so recall's and check()'s indexes do not swap roles
+            nearest = sorted(range(len(self._indexes)),
+                             key=lambda i: abs(len(self._indexes[i].records) - len(records)))
+            found = next((i for i in nearest
+                          if abs(len(self._indexes[i].records) - len(records)) <= limit
+                          and self._indexes[i].refresh(cands, limit)), None)
+        if found is None:
+            self._indexes = [_Index(cands)] + self._indexes[:INDEX_CACHE - 1]
+        elif found:
+            self._indexes.insert(0, self._indexes.pop(found))
+        return self._indexes[0]
 
     def _semantic_scores(self, query: str, cands) -> Dict[NodeRef, float]:
         if self.semantic is None or not query.strip():
@@ -333,7 +374,10 @@ class Retriever:
         linked: Dict[NodeRef, NodeRef] = {}
         inherited_scores: Dict[NodeRef, float] = {}
         if not strict and survivors:
-            seeds = dict(heapq.nlargest(GRAPH_SEEDS, survivors.items(), key=lambda kv: kv[1]))
+            # the top GRAPH_SEEDS, ties broken by ref so the result never depends on dict order
+            floor = heapq.nlargest(GRAPH_SEEDS, survivors.values())[-1]
+            seeds = dict(sorted(((ref, v) for ref, v in survivors.items() if v >= floor),
+                                key=lambda kv: (-kv[1], str(kv[0])))[:GRAPH_SEEDS])
             for ref, (inherited, seed) in graph_neighbours(self.graph, seeds, cands).items():
                 if ref not in survivors:
                     survivors[ref] = inherited_scores[ref] = inherited
