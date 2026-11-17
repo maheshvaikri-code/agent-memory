@@ -146,9 +146,20 @@ What you can rely on:
   unfinished write is dropped and every acknowledged one is kept.
 - A reader never sees a half-written file.
 - On files never opened with `open()`, `AgentMemory(...)`, `load()` and `save()` work as
-  before, with two differences: `save()` is now atomic (temp file, then replace), and it
-  writes LF line endings (on Windows it used to write CRLF, so a saved file changes its bytes
-  once).
+  before, with these differences:
+  - `save()` is atomic: it writes a temp file beside the target and replaces the target with
+    it. Through a symlink it writes the link's target and keeps the link, and on POSIX it
+    keeps the file's permission bits, as before. A new file does replace the old one, though:
+    a hard link to it keeps the old content, and on Windows attributes or permissions set on
+    the file itself are not carried over. When the file cannot be replaced (on Windows,
+    another program has it open), `save()` retries for up to 2 s before raising.
+  - `save()` writes LF line endings (on Windows it used to write CRLF, so a saved file
+    changes its bytes once).
+  - Ids built from a per-process counter (sessions, tasks, goals, issues, issue comments,
+    learning events) skip a number that is already taken in the memory; they used to raise
+    `DuplicateNodeError`, for example in a fresh process working on a loaded file.
+  - `load()` gives `memory.graph` as a `SharedGraph`, a subclass of `ISONGraph` that behaves
+    like it when no shared store is attached.
 
 A shared store is three files:
 
@@ -163,8 +174,26 @@ dying but not a power loss; `durability="fsync"` also survives power loss, at th
 disk sync per write. `lock_timeout` (default 10 s) is how long a call waits for the lock
 before raising `StoreLockTimeout`. The journal is folded into the snapshot automatically when
 it passes `compact_min_bytes` (default 1 MiB) and is larger than the snapshot, and by
-`checkpoint()` and `close()`. `AgentMemory.load()` on a shared store gives a plain,
-single-process copy with the journal replayed.
+`checkpoint()` and `close()`. If the snapshot cannot be replaced (on Windows, another program
+has it open), the compaction is skipped with one warning in `memory._backend.warnings`, and
+automatic compaction is tried again once the journal has doubled or 60 s have passed;
+`checkpoint()` and `close()` always try. `AgentMemory.load()` on a shared store gives a plain,
+single-process copy with the journal replayed; it takes the store's lock to read it, so it can
+raise `StoreLockTimeout`, and it creates `<path>.lock` if it is missing.
+
+The store is identified by its real path: symlinked names of one file (for example the same
+memory linked into several git worktrees) share one journal and one lock, beside the real
+file. Two hard links to one file are two separate stores; do not share a store that way.
+`open()` refuses a path ending in `.isonl` with `ValueError`, before touching any file: a
+shared store keeps its snapshot in ISON text. Plain `load()`/`save()` of `.isonl` work as
+before.
+
+If a call raises `StoreCorrupt`, the store's files are damaged (edited by hand, a disk
+error), and the message names the file and the byte or line. Nothing is repaired or guessed
+and nothing is rewritten. Restore the snapshot from a backup (or the last checkpointed copy),
+or inspect the journal at the named line; do not delete the journal to make the error go
+away, since it holds every write since the last checkpoint. A journal without its snapshot
+is reported the same way.
 
 Limits:
 
@@ -173,6 +202,9 @@ Limits:
   unstable file ids).
 - The lock is not fair: a process writing in a tight loop can starve others, which then
   raise `StoreLockTimeout` after `lock_timeout`.
+- Writes hold the lock while they scan the records of their kind for a duplicate (about
+  20 ms per `remember` at 5,000 records), and `end_session()` holds it for the whole
+  consolidation scan, so other processes wait that long.
 - One `AgentMemory` instance must not be used from several threads at once; give each thread
   its own instance, or serialise the calls.
 - Code that iterates `memory.graph.nodes()` or `edges()` while calling store methods should
@@ -187,16 +219,17 @@ Limits:
   `True` when it folded the journal).
 - `export_json()` and `save()` to another path include the internal `store_meta` node.
 - A store stays shared after every process has closed it: once a path has been opened with
-  `open()`, its `.journal` file remains, and a plain `save()` to that path (from `load()`,
-  from `AgentMemory(...)`, or from any `amem` write command) raises `StoreInUse`. This is
+  `open()`, its `.journal` file remains, and a `save()` to that path from any other memory
+  (from `load()`, from `AgentMemory(...)`, from another shared store, or from any `amem`
+  write command) raises `StoreInUse`. This is
   deliberate: a plain save over a store that has a journal can write a snapshot whose
   recorded sequence number is stale relative to its content, so the next opener would
   re-apply journal operations. `load()` and the CLI's read commands keep working (`load()`
   replays the journal). The `amem` CLI moves onto `open()` in the next sub-project.
 
 To turn a shared store back into a plain file: make sure no other process is using it, then
-open it once, checkpoint, close, and delete the journal and the lock file. After that plain
-`load()`/`save()` work again.
+open it once, checkpoint, close, and delete the journal. After that plain `load()`/`save()`
+work again.
 
 ```python
 import os
@@ -204,16 +237,18 @@ from agent_memory import AgentMemory
 
 path = "project.memory"
 memory = AgentMemory.open(path)   # replays whatever is left in the journal
-assert memory.checkpoint()        # folds all of it into the snapshot
+if not memory.checkpoint():       # folds all of it into the snapshot
+    raise RuntimeError("checkpoint skipped (see memory._backend.warnings); keep the journal")
 memory.close()
 os.remove(path + ".journal")
-os.remove(path + ".lock")
 ```
 
 The explicit `checkpoint()` matters: `close()` checkpoints only when that instance wrote
 something, so open-and-close alone can leave journal content outside the snapshot (for
 example the writes of a process that crashed without closing). Deleting the journal without
-the checkpoint can lose acknowledged writes.
+the checkpoint can lose acknowledged writes. Leave `<path>.lock` where it is: plain mode
+ignores it, and deleting it while some process still holds it would let a new process take
+the lock beside it on POSIX.
 
 ## Memory Types
 

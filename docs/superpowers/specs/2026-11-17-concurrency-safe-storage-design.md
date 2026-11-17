@@ -283,8 +283,30 @@ places where the code differs from it or adds to it, and what the final checks f
   it retry under the lock, and only there is `StoreCorrupt` raised, when the journal read from
   its start is damaged.
 - **An unreadable journal is never treated as absent.** `journal.Tail.error` carries the
-  reason (a sharing violation, a directory, an I/O error); under the lock it raises
-  `StoreCorrupt`, and a lockless read retries under the lock.
+  reason (a sharing violation, a directory, an I/O error, or a first line that is complete
+  but not a header); under the lock it raises `StoreCorrupt`, and a lockless read retries
+  under the lock. A journal counts as absent only when it is missing, empty, or a single
+  unterminated line (a crash while the header was written); a damaged header with lines
+  after it is never reset over, and `load()` raises too.
+- **A journal without its snapshot is refused.** When the snapshot is missing and the journal
+  holds a transaction (or cannot be read), `open()` raises `StoreCorrupt` and touches nothing;
+  for a store never compacted, the journal held every write. An empty or header-only journal
+  beside a missing snapshot still gives a fresh store.
+- **A store is keyed by its real path.** `JournalBackend` resolves the path with
+  `os.path.realpath`, so symlinked names of one snapshot share one journal and one lock
+  beside the real file. `atomic_write_text` writes through a symlink to its target and, on
+  POSIX, copies the existing target's permission bits onto the temp file before writing to
+  it (Windows chmod only sets the read-only flag, so it is not copied there). The graph keeps
+  the name the caller gave.
+- **`.isonl` paths are refused by `open()`** (`ValueError`, raised before any file is
+  touched, for the given name and for the resolved one): the snapshot is ISON text, and plain
+  `load()` reads an `.isonl` path as ISON lines. Plain `load()`/`save()` of `.isonl` are
+  unchanged.
+- **Automatic compaction backs off after a skip.** When the snapshot cannot be replaced, the
+  writer records the attempt and does not try again automatically until the journal has
+  doubled or 60 s have passed; `checkpoint()` and `close()` always try. The skip is warned
+  once per run of skips, so `warnings` stays bounded. Without this, every commit past the
+  threshold paid the 2 s replace retry inside the lock.
 - **A live writer follows a moved snapshot.** A compaction that replaced the snapshot and then
   crashed (or failed) before rewriting the journal leaves a journal that still carries the old
   generation. A process that was behind it must not append to that stale journal, because the
@@ -320,8 +342,19 @@ places where the code differs from it or adds to it, and what the final checks f
   apply other processes' writes; iterate a list copy (as `check_suggestion` now does).
 - In shared mode `export_json()` and `save()` to another path include the internal
   `store_meta` node.
-- Two processes that start a session in the same second get distinct session ids (the
-  per-process counter is checked against the graph inside the session's transaction).
+- Two processes that start a session in the same second get distinct session ids, and the
+  same holds for every id built from a per-process counter (tasks, goals, issues, issue
+  comments, learning events): `BaseStore._counter_id` bumps the counter while the id is taken,
+  inside the store method's transaction. Without a collision the id is unchanged; in plain
+  mode a collision (a fresh process on a loaded file) now gets the next number instead of
+  raising `DuplicateNodeError`.
+- A `save()` to a path that has a journal raises `StoreInUse` from any instance whose own
+  store it is not, shared ones included; before, a shared instance could overwrite another
+  live store, whose next opener then reset its journal.
+- `load()` of a shared store takes the store's lock to read it, so it can raise
+  `StoreLockTimeout`, and it creates `<path>.lock` when missing.
+- `SharedGraph.node_count(node_type)` keeps `ISONGraph`'s optional type; only the untyped
+  count leaves out the `store_meta` node. `load()` returns its graph as a `SharedGraph`.
 
 ### 12.3 Limits
 
@@ -334,6 +367,17 @@ places where the code differs from it or adds to it, and what the final checks f
   sync per transaction.
 - The strict performance gates are opt-in (`pytest -m perf`) because they fail on a
   throttled laptop; two loose guards always run.
+- A lockless reader that read a journal line which was later rolled back (its append failed
+  and was cut off) and replaced by a different transaction of exactly the same byte length
+  cannot tell the two apart and diverges from disk. It needs a failed flush or fsync; every
+  other length is detected and rebuilt from disk.
+- Two hard links to one snapshot are two stores (each with its own journal and lock), and a
+  compaction through one name detaches the other. Symlinks are resolved (12.1).
+- A damaged byte inside the header's generation id still parses as a header, of another
+  generation, and is taken for a stale journal: its lines are discarded as already folded in.
+  Only a header that no longer parses is reported.
+- Writes hold the lock while they scan the records of their kind (about 20 ms per `remember`
+  at 5,000 records), and `end_session()` holds it for the whole consolidation scan.
 
 ### 12.4 What the final checks found (Task 9)
 
@@ -375,7 +419,31 @@ places where the code differs from it or adds to it, and what the final checks f
   designed: a plain save over a store that has a journal can write a snapshot whose recorded
   sequence number is stale relative to its content, so the next opener would re-apply journal
   ops. The way back to plain mode (verified, 12.4): with no other process using the store,
-  `AgentMemory.open(path)`, `checkpoint()` (returns `True`), `close()`, then delete
-  `<path>.journal` and `<path>.lock`. The explicit `checkpoint()` is required, because
-  `close()` checkpoints only when that instance wrote: open-and-close alone left a crashed
-  writer's acknowledged record outside the snapshot, and deleting the journal then lost it.
+  `AgentMemory.open(path)`, `checkpoint()` (stop unless it returns `True`; the README's
+  snippet raises instead of using `assert`, which `python -O` strips), `close()`, then delete
+  `<path>.journal`. The explicit `checkpoint()` is required, because `close()` checkpoints
+  only when that instance wrote: open-and-close alone left a crashed writer's acknowledged
+  record outside the snapshot, and deleting the journal then lost it. `<path>.lock` is left
+  in place: the plain-mode guard looks only at the journal, and deleting the lock file while
+  a process still holds it would let a new process lock a fresh file beside it on POSIX.
+- `close()` checkpoints only when this instance wrote (`_dirty`), so a store whose only
+  content is a leftover journal is not folded by open and close. Whether `close()` should
+  also checkpoint after replaying leftover ops is a product decision, left as is.
+- After `close()`, `checkpoint()`, `refresh()` and `save()` to the store's own path still
+  work, and `save()` to another path writes a copy of the state last seen (M1).
+
+Known limits found by the final review and recorded for a follow-up (not fixed):
+
+- A `KeyboardInterrupt` between `apply()` and `record()` in `SharedGraph._journaled` leaves
+  a change in memory that never reached the journal; a later update of that node makes other
+  processes raise `StoreCorrupt` on replay. Needs a mark-diverged-and-rebuild design (M3).
+- No directory fsync on POSIX after `os.replace`, so a power loss right after a compaction
+  can lose the rename (M4).
+- The lock file is created with mode 0o777 (less the umask), and any `OSError` from the lock
+  call is treated as "busy" until the timeout (M5).
+- A shared `save()` to another path copies the origin's generation and its `store_meta`
+  sequence into the copy (M6).
+- `load()` of a shared store drops replay warnings: its `load_warnings` does not include them
+  (M7).
+- Test gaps: a lockless reader compared against the authoritative state under contention, and
+  replay performance of a large journal (M8).

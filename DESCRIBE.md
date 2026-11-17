@@ -133,7 +133,15 @@ print(again.recall(task="payment webhook retries").to_prompt())
   yet) raises `StoreInUse`, because a plain save there could write a snapshot
   whose recorded sequence number is stale and make the next opener re-apply
   journal operations. To return it to a plain file, with no other process
-  using it: `AgentMemory.open(path)`, `checkpoint()`, `close()`, then delete
-  `<path>.journal` and `<path>.lock`. Deleting the journal without that
-  checkpoint can lose acknowledged writes (`close()` alone checkpoints only
-  when that instance wrote).
+  using it: `AgentMemory.open(path)`, `checkpoint()` (go on only if it
+  returns `True`), `close()`, then delete `<path>.journal`. Deleting the
+  journal without that checkpoint can lose acknowledged writes (`close()`
+  alone checkpoints only when that instance wrote). Leave `<path>.lock`
+  alone: plain mode ignores it.
+- `open()` refuses `.isonl` paths (`ValueError`, no file touched); plain
+  `load()`/`save()` of `.isonl` work as before. A store is identified by its
+  real path, so symlinked names share it; hard links do not.
+- `StoreCorrupt` means the store's files are damaged; the message names the
+  file and the byte or line, and nothing is rewritten. Restore the snapshot
+  from a backup or inspect the journal; do not delete the journal, which
+  holds every write since the last checkpoint.
