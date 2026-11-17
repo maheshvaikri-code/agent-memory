@@ -416,6 +416,7 @@ class AgentMemory:
     def export_json(self, path: str) -> None:
         """Export memory as JSON"""
         import json
+        self._sync()
         data = self.graph.to_dict()
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)

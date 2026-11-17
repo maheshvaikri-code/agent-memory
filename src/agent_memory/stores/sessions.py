@@ -25,6 +25,12 @@ class SessionStore(BaseStore):
         SessionStore._session_counter += 1
         timestamp = self._now().replace(':', '').replace('-', '').replace('.', '').replace('T', '')[:14]
         session_id = f"s_{timestamp}_{SessionStore._session_counter}"
+        # The counter is per process: another process sharing the store can start a session
+        # in the same second with the same count. This method is one transaction, so the
+        # check sees every session already written.
+        while self.graph.has_node("session", session_id):
+            SessionStore._session_counter += 1
+            session_id = f"s_{timestamp}_{SessionStore._session_counter}"
 
         self.graph.add_node(
             "session",
