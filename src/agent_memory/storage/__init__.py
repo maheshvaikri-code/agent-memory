@@ -2,6 +2,7 @@
 from .atomic import atomic_write_text
 from .errors import AgentMemoryError, StoreCorrupt, StoreInUse, StoreLockTimeout
 from .lock import FileLock
+from .shared_graph import META_ID, META_TYPE, SharedGraph
 
-__all__ = ["atomic_write_text", "AgentMemoryError", "FileLock", "StoreCorrupt", "StoreInUse",
-           "StoreLockTimeout"]
+__all__ = ["atomic_write_text", "AgentMemoryError", "FileLock", "META_ID", "META_TYPE",
+           "SharedGraph", "StoreCorrupt", "StoreInUse", "StoreLockTimeout"]
