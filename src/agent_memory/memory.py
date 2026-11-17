@@ -26,6 +26,9 @@ from .stores import (
 )
 from .context import ContextBuilder, CodingContext
 from .consolidation import MemoryConsolidator
+from . import anchors as anchors_mod
+from .record import KINDS, MemoryRecord
+from .writer import MemoryWriter, WriteResult
 
 
 class AgentMemory:
@@ -52,35 +55,33 @@ class AgentMemory:
         memory = AgentMemory.load("project.memory")
     """
 
-    def __init__(self, name: str = "project"):
-        self.name = name
-        self.graph = ISONGraph(name=name)
+    _STORES = (
+        ("codebase", CodebaseStore), ("decisions", DecisionStore),
+        ("conventions", ConventionStore), ("bugs", BugPatternStore),
+        ("dependencies", DependencyStore), ("tests", TestPatternStore),
+        ("performance", PerformanceStore), ("techdebt", TechDebtStore),
+        ("team", TeamStore), ("sessions", SessionStore),
+        ("templates", TemplateStore), ("skills", SkillStore),
+        ("todos", TodoStore), ("goals", GoalStore), ("issues", IssueStore),
+    )
 
-        # Ensure agent node exists
+    def __init__(self, name: str = "project", repo_root: Optional[str] = None,
+                 agent: str = "unknown"):
+        self.name = name
+        self.repo_root = str(repo_root) if repo_root else None
+        self.load_warnings: List[str] = []
+        self._bind(ISONGraph(name=name), agent)
         self.graph.add_node("agent", "self", name="agent")
 
-        # Initialize stores
-        self.codebase = CodebaseStore(self.graph)
-        self.decisions = DecisionStore(self.graph)
-        self.conventions = ConventionStore(self.graph)
-        self.bugs = BugPatternStore(self.graph)
-        self.dependencies = DependencyStore(self.graph)
-        self.tests = TestPatternStore(self.graph)
-        self.performance = PerformanceStore(self.graph)
-        self.techdebt = TechDebtStore(self.graph)
-        self.team = TeamStore(self.graph)
-        self.sessions = SessionStore(self.graph)
-        self.templates = TemplateStore(self.graph)
-        self.skills = SkillStore(self.graph)
-        # New stores for task/goal/issue tracking
-        self.todos = TodoStore(self.graph)
-        self.goals = GoalStore(self.graph)
-        self.issues = IssueStore(self.graph)
-
-        # Context builder
+    def _bind(self, graph: ISONGraph, agent: str) -> None:
+        """Attach every store, the writer, the context builder and the consolidator to `graph`."""
+        self.graph = graph
+        self.writer = MemoryWriter(graph, self.repo_root, agent)
+        for attr, cls in self._STORES:
+            store = cls(graph)
+            store.writer = self.writer
+            setattr(self, attr, store)
         self._context_builder = ContextBuilder(self)
-
-        # Memory consolidator
         self._consolidator = MemoryConsolidator(self)
 
     # =========================================================================
@@ -96,6 +97,7 @@ class AgentMemory:
         if last and last != session_id:
             self.sessions.continue_session(session_id, last)
 
+        self.writer.session_id = session_id
         return session_id
 
     def end_session(self, session_id: str, completion: float = 1.0) -> None:
@@ -228,6 +230,40 @@ class AgentMemory:
         return self.team.find_expert(topic)
 
     # =========================================================================
+    # Record operations
+    # =========================================================================
+
+    def set_actor(self, agent: str, session_id: str = "") -> None:
+        """Set who is stamped as the author of subsequent writes."""
+        self.writer.agent = agent
+        self.writer.session_id = session_id
+
+    def remember(self, kind: str, fields: Dict[str, Any], **kw) -> WriteResult:
+        """Record a memory. See MemoryWriter.add for keyword arguments."""
+        return self.writer.add(kind, fields, **kw)
+
+    def supersede(self, old_id, kind: str, fields: Dict[str, Any], **kw) -> WriteResult:
+        """Replace `old_id` with a new record; the old one stops being returned."""
+        return self.writer.supersede(self.writer.find(old_id), kind, fields, **kw)
+
+    def retract(self, memory_id, reason: str = "") -> None:
+        """Mark a memory as wrong. It is kept, and no longer returned."""
+        self.writer.retract(self.writer.find(memory_id), reason)
+
+    def feedback(self, memory_id, helpful: bool) -> None:
+        """Tell the memory whether a recalled record helped."""
+        self.writer.feedback(self.writer.find(memory_id), helpful)
+
+    def anchor(self, memory_id, path: str, symbol: str = "") -> None:
+        """Tie a memory to a file, recording the file's current content hash."""
+        anchors_mod.add_anchor(self.graph, self.writer.find(memory_id), path, symbol,
+                               self.repo_root, anchors_mod.head_commit(self.repo_root))
+
+    def verify(self, memory_id) -> int:
+        """Confirm a memory still holds: re-stamp its anchors at the current file hashes."""
+        return anchors_mod.restamp(self.graph, self.writer.find(memory_id), self.repo_root)
+
+    # =========================================================================
     # Persistence
     # =========================================================================
 
@@ -236,39 +272,25 @@ class AgentMemory:
         self.graph.save(path)
 
     @classmethod
-    def load(cls, path: str) -> "AgentMemory":
+    def load(cls, path: str, repo_root: Optional[str] = None,
+             agent: str = "unknown") -> "AgentMemory":
         """Load memory from file"""
         graph = ISONGraph.load(path)
-        memory = cls(name=graph.name)
-        memory.graph = graph
-
-        # Reinitialize stores with loaded graph
-        memory.codebase = CodebaseStore(graph)
-        memory.decisions = DecisionStore(graph)
-        memory.conventions = ConventionStore(graph)
-        memory.bugs = BugPatternStore(graph)
-        memory.dependencies = DependencyStore(graph)
-        memory.tests = TestPatternStore(graph)
-        memory.performance = PerformanceStore(graph)
-        memory.techdebt = TechDebtStore(graph)
-        memory.team = TeamStore(graph)
-        memory.sessions = SessionStore(graph)
-        memory.templates = TemplateStore(graph)
-        memory.skills = SkillStore(graph)
-        memory.todos = TodoStore(graph)
-        memory.goals = GoalStore(graph)
-        memory.issues = IssueStore(graph)
-
-        memory._context_builder = ContextBuilder(memory)
-        memory._consolidator = MemoryConsolidator(memory)
-
+        memory = cls.__new__(cls)
+        memory.name = graph.name
+        memory.repo_root = str(repo_root) if repo_root else None
+        memory.load_warnings = []
+        memory._bind(graph, agent)
+        for kind in KINDS:
+            for node in graph.nodes(kind):
+                MemoryRecord.from_node(node, memory.load_warnings)
         return memory
 
     def export_json(self, path: str) -> None:
         """Export memory as JSON"""
         import json
         data = self.graph.to_dict()
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
     # =========================================================================

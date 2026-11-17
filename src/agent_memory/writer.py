@@ -1,0 +1,179 @@
+"""The single write path for memory records."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from . import anchors as anchors_mod
+from .record import (
+    ENVELOPE_FIELDS, KINDS, PRIORITIES, MemoryRecord, NodeRef, build_text,
+    envelope_props, make_id, normalize_text, utc_now,
+)
+from .retrieval.tokenize import tokens_for
+
+SIMILAR_JACCARD = 0.6
+REINFORCE_STEP = 0.1
+CONFIDENCE_CAP = 0.95
+
+
+@dataclass
+class WriteResult:
+    ref: NodeRef
+    created: bool
+    merged: bool = False
+    similar: List[NodeRef] = field(default_factory=list)
+
+    @property
+    def id(self):
+        return self.ref[1]
+
+
+class MemoryWriter:
+    def __init__(self, graph, repo_root: Optional[str] = None, agent: str = "unknown"):
+        self.graph = graph
+        self.repo_root = repo_root
+        self.agent = agent
+        self.session_id = ""
+        self._by_text: Dict[Tuple[str, str], NodeRef] = {}
+        self._indexed: set = set()
+
+    # -- lookup ------------------------------------------------------------
+
+    def find(self, memory_id) -> NodeRef:
+        for kind in KINDS:
+            if self.graph.has_node(kind, memory_id):
+                return (kind, memory_id)
+        raise KeyError(f"No memory with id {memory_id!r}")
+
+    def _active_with_text(self, kind: str, norm: str) -> Optional[NodeRef]:
+        if kind not in self._indexed:
+            for node in self.graph.nodes(kind):
+                rec = MemoryRecord.from_node(node)
+                if rec.status == "active":
+                    self._by_text.setdefault((kind, normalize_text(rec.text)), rec.ref)
+            self._indexed.add(kind)
+        ref = self._by_text.get((kind, norm))
+        if ref is None or not self.graph.has_node(*ref):
+            return None
+        rec = MemoryRecord.from_node(self.graph.get_node(*ref))
+        if rec.status != "active" or normalize_text(rec.text) != norm:
+            self._by_text.pop((kind, norm), None)
+            return None
+        return ref
+
+    # -- writes ------------------------------------------------------------
+
+    def add(self, kind: str, fields: Dict[str, Any], *, node_id=None,
+            anchors: Iterable = (), scope: Optional[List[str]] = None, evidence: str = "",
+            priority: Optional[str] = None, confidence: Optional[float] = None,
+            source: str = "explicit") -> WriteResult:
+        if kind not in KINDS:
+            raise ValueError(f"Unknown memory kind {kind!r}. Valid kinds: {', '.join(sorted(KINDS))}")
+        if priority is not None and priority not in PRIORITIES:
+            raise ValueError(f"priority must be one of {PRIORITIES}, got {priority!r}")
+        props = {k: ("" if v is None else v) for k, v in fields.items()}
+        text = build_text(kind, props)
+        norm = normalize_text(text)
+        if not norm and node_id is None:
+            raise ValueError(f"A {kind} memory has no text; check the field names for this kind")
+
+        existing = self._active_with_text(kind, norm) if norm else None
+        if existing is not None:
+            self._reinforce(existing, evidence)
+            self._anchor_all(existing, kind, props, anchors)
+            return WriteResult(existing, created=False, merged=True)
+
+        similar = self._similar(kind, text) if node_id is None else []
+
+        new_id = node_id if node_id is not None else make_id(kind, text)
+        if self.graph.has_node(kind, new_id):
+            base = f"{new_id}_{make_id(kind, text).rsplit('_', 1)[1]}" if node_id is not None else new_id
+            new_id, n = base, 2
+            while self.graph.has_node(kind, new_id):
+                new_id, n = f"{base}_{n}", n + 1
+
+        envelope = envelope_props(agent=self.agent, session_id=self.session_id, source=source,
+                                  evidence=evidence, commit=anchors_mod.head_commit(self.repo_root),
+                                  scope=scope, priority=priority, confidence=confidence)
+        for key, value in envelope.items():
+            props.setdefault(key, value)   # kind fields win, e.g. a decision's own status
+        self.graph.add_node(kind, new_id, **props)
+        ref = (kind, new_id)
+        if norm:
+            self._by_text[(kind, norm)] = ref
+        self._anchor_all(ref, kind, props, anchors)
+        return WriteResult(ref, created=True, similar=similar)
+
+    def supersede(self, old_ref: NodeRef, kind: str, fields: Dict[str, Any], **kw) -> WriteResult:
+        self.graph.get_node(*old_ref)
+        result = self.add(kind, fields, **kw)
+        if result.ref == old_ref:
+            return result
+        self._set_status(old_ref, "superseded")
+        if not self.graph.has_edge("SUPERSEDES", result.ref, old_ref):
+            self.graph.add_edge("SUPERSEDES", result.ref, old_ref,
+                                reason=kw.get("evidence", ""), date=utc_now())
+        return result
+
+    def retract(self, ref: NodeRef, reason: str = "") -> None:
+        self._set_status(ref, "retracted")
+        if reason:
+            self._append_evidence(ref, f"retracted: {reason}")
+
+    def feedback(self, ref: NodeRef, helpful: bool) -> None:
+        rec = MemoryRecord.from_node(self.graph.get_node(*ref))
+        if helpful:
+            self.graph.update_node(ref[0], ref[1], helpful=rec.helpful + 1)
+        else:
+            self.graph.update_node(ref[0], ref[1], harmful=rec.harmful + 1)
+
+    # -- helpers -----------------------------------------------------------
+
+    def _set_status(self, ref: NodeRef, status: str) -> None:
+        now = utc_now()
+        self.graph.update_node(ref[0], ref[1], status=status, invalid_at=now, updated_at=now)
+
+    def _append_evidence(self, ref: NodeRef, extra: str) -> None:
+        rec = MemoryRecord.from_node(self.graph.get_node(*ref))
+        if extra and extra not in rec.evidence:
+            merged = f"{rec.evidence}; {extra}" if rec.evidence else extra
+            self.graph.update_node(ref[0], ref[1], evidence=merged)
+
+    def _reinforce(self, ref: NodeRef, evidence: str) -> None:
+        rec = MemoryRecord.from_node(self.graph.get_node(*ref))
+        self.graph.update_node(ref[0], ref[1],
+                               confidence=min(CONFIDENCE_CAP, rec.confidence + REINFORCE_STEP),
+                               updated_at=utc_now())
+        self._append_evidence(ref, evidence)
+
+    def _similar(self, kind: str, text: str) -> List[NodeRef]:
+        mine = set(tokens_for(text))
+        if not mine:
+            return []
+        out = []
+        for node in self.graph.nodes(kind):
+            rec = MemoryRecord.from_node(node)
+            if rec.status != "active":
+                continue
+            theirs = set(tokens_for(rec.text))
+            union = mine | theirs
+            if union and len(mine & theirs) / len(union) >= SIMILAR_JACCARD:
+                out.append(rec.ref)
+        return out
+
+    def _anchor_all(self, ref: NodeRef, kind: str, props: Dict[str, Any], anchors: Iterable) -> None:
+        commit = anchors_mod.head_commit(self.repo_root)
+        for item in anchors:
+            path, symbol = (item, "") if isinstance(item, str) else (item[0], item[1])
+            anchors_mod.add_anchor(self.graph, ref, path, symbol, self.repo_root, commit)
+        field_name = KINDS[kind].scope_field
+        value = props.get(field_name) if field_name else None
+        if self.repo_root and value and "," not in str(value):
+            rel = anchors_mod.norm_path(str(value), self.repo_root)
+            try:
+                is_file = (Path(self.repo_root) / rel).is_file()
+            except (OSError, ValueError):
+                is_file = False
+            if is_file:
+                anchors_mod.add_anchor(self.graph, ref, rel, "", self.repo_root, commit)

@@ -18,8 +18,20 @@ class BaseStore(ABC):
     """
 
     def __init__(self, graph: ISONGraph):
+        from ..writer import MemoryWriter
         self.graph = graph
         self._cache: Dict[str, Any] = {}
+        # AgentMemory replaces this with one writer shared by all stores.
+        self.writer = MemoryWriter(graph)
+
+    def _add_memory(self, kind: str, node_id: str, **fields) -> str:
+        """Create a memory node through the shared write path.
+
+        Returns the id actually used: the existing record's id when the same
+        text is already stored, or a suffixed id when `node_id` is taken by
+        a different text.
+        """
+        return self.writer.add(kind, fields, node_id=node_id).id
 
     def _get_node_or_none(self, node_type, node_id):
         """
