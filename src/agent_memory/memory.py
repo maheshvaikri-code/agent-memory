@@ -29,6 +29,7 @@ from .consolidation import MemoryConsolidator
 from . import anchors as anchors_mod
 from .record import KINDS, MemoryRecord
 from .writer import MemoryWriter, WriteResult
+from .retrieval import RecallResult, Retriever
 
 
 class AgentMemory:
@@ -77,6 +78,7 @@ class AgentMemory:
         """Attach every store, the writer, the context builder and the consolidator to `graph`."""
         self.graph = graph
         self.writer = MemoryWriter(graph, self.repo_root, agent)
+        self._retriever = Retriever(graph, self.repo_root)
         for attr, cls in self._STORES:
             store = cls(graph)
             store.writer = self.writer
@@ -237,6 +239,21 @@ class AgentMemory:
         """Set who is stamped as the author of subsequent writes."""
         self.writer.agent = agent
         self.writer.session_id = session_id
+
+    def recall(self, task: str = "", files: Optional[List[str]] = None,
+               symbols: Optional[List[str]] = None, kinds: Optional[List[str]] = None,
+               max_tokens: int = 2000, compact: bool = False) -> RecallResult:
+        """Memories relevant to a task, ranked, within a token budget.
+
+        Returns an empty result when nothing stored is relevant.
+        """
+        return self._retriever.recall(task=task, files=files, symbols=symbols, kinds=kinds,
+                                      max_tokens=max_tokens, compact=compact)
+
+    def attach_semantic(self, searcher) -> None:
+        """Add an optional embedding channel. `searcher.search(query, k=...)` must return
+        objects with `.node_ref` and `.score`; GraphEmbeddedMemory qualifies."""
+        self._retriever.semantic = searcher
 
     def remember(self, kind: str, fields: Dict[str, Any], **kw) -> WriteResult:
         """Record a memory. See MemoryWriter.add for keyword arguments."""
