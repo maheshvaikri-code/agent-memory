@@ -47,6 +47,7 @@ Author: Mahesh Vaikri
 __version__ = "1.0.0"
 
 from .memory import AgentMemory
+from .storage import AgentMemoryError, StoreCorrupt, StoreInUse, StoreLockTimeout
 from .stores import (
     CodebaseStore,
     DecisionStore,
@@ -141,6 +142,10 @@ except ImportError:
 __all__ = [
     "__version__",
     "AgentMemory",
+    "AgentMemoryError",
+    "StoreCorrupt",
+    "StoreInUse",
+    "StoreLockTimeout",
     "AgentIntegration",
     "prepare_for_project",
     "quick_context",

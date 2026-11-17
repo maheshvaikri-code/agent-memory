@@ -2,6 +2,7 @@
 Agent Memory - Main memory manager coordinating all stores
 """
 
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -28,7 +29,7 @@ from .context import ContextBuilder, CodingContext
 from .consolidation import MemoryConsolidator
 from . import anchors as anchors_mod
 from .record import KINDS, MemoryRecord
-from .storage.atomic import atomic_write_text
+from .storage import JournalBackend, SharedGraph, StoreInUse, atomic_write_text
 from .writer import MemoryWriter, WriteResult
 from .retrieval import RecallResult, Retriever
 
@@ -72,6 +73,7 @@ class AgentMemory:
         self.name = name
         self.repo_root = str(repo_root) if repo_root else None
         self.load_warnings: List[str] = []
+        self._backend = None
         self._bind(ISONGraph(name=name), agent)
         self.graph.add_node("agent", "self", name="agent")
 
@@ -136,6 +138,7 @@ class AgentMemory:
         Returns:
             CodingContext with relevant memories
         """
+        self._sync()
         return self._context_builder.build(
             task=task,
             files=files or [],
@@ -207,6 +210,7 @@ class AgentMemory:
         Returns warnings if suggestion conflicts with decisions,
         matches failed refactoring attempts, etc.
         """
+        self._sync()
         warnings = []
 
         # Check decisions
@@ -241,6 +245,7 @@ class AgentMemory:
 
     def who_knows(self, topic: str) -> Optional[Dict[str, Any]]:
         """Find who has expertise on a topic"""
+        self._sync()
         return self.team.find_expert(topic)
 
     # =========================================================================
@@ -264,12 +269,14 @@ class AgentMemory:
 
         Returns an empty result when nothing stored is relevant.
         """
+        self._sync()
         return self._retriever.recall(task=task, files=files, symbols=symbols, kinds=kinds,
                                       max_tokens=max_tokens, compact=compact)
 
     def check(self, approach: str, files: Optional[List[str]] = None):
         """Rejected alternatives, bug patterns, failed refactors and constraints
         relevant to `approach`. Empty when nothing relevant is stored."""
+        self._sync()
         return self._retriever.check(approach, files)
 
     def attach_semantic(self, searcher) -> None:
@@ -307,17 +314,32 @@ class AgentMemory:
     # =========================================================================
 
     def save(self, path: str) -> None:
-        """Save memory to file. The write is atomic: a reader never sees half a file."""
+        """Save memory to file (atomic). In shared mode, saving to the store's own path is a
+        checkpoint; saving elsewhere writes a full snapshot copy. A plain instance may not
+        overwrite a store that has a journal: open it with AgentMemory.open()."""
         target = str(path)
+        if self._backend is not None and os.path.normcase(os.path.abspath(target)) ==                 os.path.normcase(self._backend.path):
+            self._backend.checkpoint()
+            return
+        if self._backend is None and os.path.exists(target + ".journal"):
+            raise StoreInUse(f"{target} is a shared store (it has a journal); use "
+                             f"AgentMemory.open({target!r}) or save to another path")
         text = self.graph.to_isonl() if Path(target).suffix == ".isonl" else self.graph.to_ison()
         atomic_write_text(target, text)
 
     @classmethod
     def load(cls, path: str, repo_root: Optional[str] = None,
              agent: str = "unknown") -> "AgentMemory":
-        """Load memory from file"""
-        graph = ISONGraph.load(path)
+        """Load memory from file. A shared store is loaded as a plain snapshot with its
+        journal replayed; use AgentMemory.open() to keep working on it with other processes."""
+        if Path(path).suffix == ".isonl":
+            graph = ISONGraph.load(path)
+        elif os.path.exists(str(path) + ".journal"):
+            graph = JournalBackend.read_only(path)        # snapshot + journal, as a plain graph
+        else:
+            graph = SharedGraph.from_ison(Path(path).read_text(encoding="utf-8"), Path(path).stem)
         memory = cls.__new__(cls)
+        memory._backend = None
         memory.name = graph.name
         memory.repo_root = str(repo_root) if repo_root else None
         memory.load_warnings = []
@@ -326,6 +348,56 @@ class AgentMemory:
             for node in graph.nodes(kind):
                 MemoryRecord.from_node(node, memory.load_warnings)
         return memory
+
+    @classmethod
+    def open(cls, path, repo_root: Optional[str] = None, agent: str = "unknown",
+             **backend_options) -> "AgentMemory":
+        """Open (or create) a store that several processes can share safely.
+
+        Every write is durable when the call returns and visible to other processes on their
+        next read. Options: durability ("flush" | "fsync"), lock_timeout, compact_min_bytes.
+        """
+        memory = cls.__new__(cls)
+        memory._open_store(path, repo_root, agent, **backend_options)
+        return memory
+
+    def _open_store(self, path, repo_root, agent, **backend_options) -> None:
+        backend = JournalBackend(path, agent=agent, **backend_options)
+        graph = backend.open()
+        self.name = graph.name
+        self.repo_root = str(repo_root) if repo_root else None
+        self.load_warnings = list(backend.warnings)
+        self._backend = backend
+        self._bind(graph, agent)
+        with graph.transaction():
+            if not graph.has_node("agent", "self"):
+                graph.add_node("agent", "self", name="agent")
+
+    @property
+    def is_shared(self) -> bool:
+        return self._backend is not None
+
+    def refresh(self) -> int:
+        """Apply what other processes wrote since this one last looked."""
+        return self._backend.refresh() if self._backend is not None else 0
+
+    def checkpoint(self) -> bool:
+        """Fold the journal into the snapshot. False when not shared or it was skipped."""
+        return self._backend.checkpoint() if self._backend is not None else False
+
+    def close(self) -> None:
+        if self._backend is not None:
+            self._backend.close()
+
+    def __enter__(self) -> "AgentMemory":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def _sync(self) -> None:
+        if self._backend is not None:
+            self._backend.refresh_if_stale()
 
     def export_json(self, path: str) -> None:
         """Export memory as JSON"""
@@ -340,6 +412,7 @@ class AgentMemory:
 
     def get_stats(self) -> Dict[str, Any]:
         """Get comprehensive memory statistics"""
+        self._sync()
         return {
             "name": self.name,
             "total_nodes": self.graph.node_count(),
