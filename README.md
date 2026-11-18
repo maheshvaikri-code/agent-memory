@@ -289,8 +289,14 @@ a plain `.memory` file without converting it to a shared one.
   recorded author and the store choice hold only against an agent that cannot change its own
   command line. Only the MCP server's configured `--allow-must` is enforced, against an agent
   that cannot alter the server's arguments.
-- The read commands (`amem status`, `recall`, `guard`) open the store like the write
-  commands: they create it when it does not exist and checkpoint the journal on the way out.
+- The read commands (`amem status`, `recall`, `guard`) only read. A store that does not exist
+  is not created (nothing appears, not even `.agent-memory/`): `recall` and `guard` answer as
+  for an empty store, and `status` succeeds with `"store_exists": false`. An existing store is
+  read as it is on disk (the snapshot with the journal replayed, holding the store's lock only
+  while reading, as plain `load()` does), never opened, converted or checkpointed: a plain
+  `.memory` file stays plain and a journal is left as it was. Each command reads afresh, so it
+  sees every write a running server has acknowledged. The write commands and the MCP server
+  still open the store (creating it on first use) and checkpoint when they close.
 - `quirk`, `bug_pattern`, `alternative` and `refactoring_attempt` are guardrail kinds. A note
   of these kinds from any agent is shown under "## Guardrails" and makes `memory_check` /
   `amem guard` warn (`warn: true`), still inside the untrusted block.
