@@ -421,7 +421,8 @@ class MemoryService:
             # Neutralizing can lengthen a note ('<' -> '&lt;', NFKC expansions), so pack the
             # engine's items again against the wrapped block: in rank order, skipping an item
             # that does not fit and going on (as the engine's own packer does), so one long
-            # note cannot starve the others.
+            # note cannot starve the others. Items the engine itself skipped for its budget
+            # are invisible here and not counted in the "did not fit" note (by design).
             kept: List[Any] = []
             prompt = ""
             for item in result.items[:MAX_ITEMS]:
@@ -434,7 +435,10 @@ class MemoryService:
                 prompt = wrap(render(kept, result.compact)) if kept else ""
             dropped = len(result.items[:MAX_ITEMS]) - len(kept)
             if not result.items:
-                # empty: nothing relevant, or relevant notes the engine could not fit at all
+                # empty: nothing relevant, or relevant notes the engine could not fit at all.
+                # This second ranking fires the retriever's `sink` a second time on an empty
+                # result: latent until a usage sink is wired; fix then with a probe/suppress
+                # flag on the engine call.
                 dropped = len(ask(UNBOUNDED_TOKENS).items[:MAX_ITEMS])
             items = [item_to_dict(i) for i in kept]
             if not dropped:

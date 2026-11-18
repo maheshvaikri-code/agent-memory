@@ -484,3 +484,43 @@ def test_plain_ids_are_unchanged(svc):
     out = svc.recall("cache keys")
     assert out["items"][0]["id"] == rec["id"]
     assert f"[{rec['id']}]" in out["prompt"]
+
+
+# -- fix round 3: escaped ids never collide; a literal '&' or '&lt;' round-trips ----------------
+
+def test_escape_id_is_a_bijection_on_these_ids():
+    from agent_memory.service.shaping import escape_id, unescape_id
+    samples = ["plain_id_1", "a<b", "a&lt;b", "a&b", "a&amp;b", "&amp;lt;<&", "<<&&", ""]
+    shown = [escape_id(s) for s in samples]
+    assert len(set(shown)) == len(samples)                    # distinct ids stay distinct
+    assert all("<" not in s for s in shown)
+    assert [unescape_id(s) for s in shown] == samples         # and come back exactly
+    assert escape_id("convention_naming_cache_keys_use_co_d81490") == \
+        "convention_naming_cache_keys_use_co_d81490"
+
+
+def test_legacy_ids_that_differ_only_by_an_escape_do_not_collide(svc):
+    a = svc.memory.conventions.add_convention("n", "use <x> keys")
+    b = svc.memory.conventions.add_convention("n", "use &lt;x> keys")
+    assert a != b
+    from agent_memory.service.shaping import unescape_id
+    shown = [i["id"] for i in svc.recall("use x keys")["items"]]
+    assert len(shown) == 2 and len(set(shown)) == 2           # the texts may look alike; ids not
+    by_stored = {unescape_id(v): v for v in shown}
+    assert set(by_stored) == {a, b}
+    id_a, id_b = by_stored[a], by_stored[b]
+    assert svc.retract(id_a, "first") == {"ok": True, "id": a}
+    left = svc.recall("use x keys")["items"]
+    assert [i["id"] for i in left] == [id_b]
+    assert svc.retract(id_b, "second") == {"ok": True, "id": b}
+    assert svc.recall("use x keys")["items"] == []
+
+
+def test_a_legacy_id_with_a_literal_ampersand_round_trips(svc):
+    stored = svc.memory.conventions.add_convention("n", "use a&b keys")
+    assert "&" in stored
+    shown = svc.recall("use keys")["items"][0]["id"]
+    assert shown == stored.replace("&", "&amp;")
+    assert svc.feedback(shown, True) == {"ok": True, "id": stored}
+    assert svc.verify(shown)["id"] == stored
+    assert svc.retract(shown, "no") == {"ok": True, "id": stored}

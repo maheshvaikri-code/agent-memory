@@ -38,13 +38,14 @@ def neutralize(text: str) -> str:
 
 
 def escape_id(ident: str) -> str:
-    """An id as `items[].id` carries it: only '<' escaped, so it round-trips."""
-    return ident.replace("<", "&lt;")
+    """An id as `items[].id` carries it: '&' escaped first, then '<', so distinct ids stay
+    distinct (a literal '&lt;' becomes '&amp;lt;') and every id round-trips."""
+    return ident.replace("&", "&amp;").replace("<", "&lt;")
 
 
 def unescape_id(ident: str) -> str:
-    """The exact inverse of escape_id, for ids an agent passes back."""
-    return ident.replace("&lt;", "<")
+    """The exact inverse of escape_id (reverse order), for ids an agent passes back."""
+    return ident.replace("&lt;", "<").replace("&amp;", "&")
 
 
 def wrap(prompt: str) -> str:
