@@ -55,12 +55,12 @@ graph-embeddings = [
     "ison-graph-embeddings>=1.0.0",
 ]
 mcp = [
-    "mcp>=1.25; python_version >= '3.10'",
+    "mcp>=1.25,<2; python_version >= '3.10'",
 ]
 all = [
     "ison-cache[all]>=1.0.0",
     "ison-graph-embeddings>=1.0.0",
-    "mcp>=1.25; python_version >= '3.10'",
+    "mcp>=1.25,<2; python_version >= '3.10'",
 ]
 
 [project.scripts]

@@ -65,6 +65,113 @@ def test_recall_takes_an_optional_free_text_context(repo):
     assert "context" not in schema.get("required", [])
     assert schema["required"] == ["task"]
     assert "context" in tools["memory_recall"].description
+    # declared exactly `str` (default "") so FastMCP never JSON-parses the text: still optional
+    assert schema["properties"]["context"]["type"] == "string"
+    assert schema["properties"]["context"]["default"] == ""
+    for tool, param in (("memory_remember", "evidence"), ("memory_remember", "priority"),
+                        ("memory_supersede", "evidence"), ("memory_retract", "reason"),
+                        ("memory_session_end", "summary")):
+        params = tools[tool].inputSchema
+        assert params["properties"][param]["type"] == "string", (tool, param)
+        assert params["properties"][param]["default"] == "", (tool, param)
+        assert param not in params.get("required", []), (tool, param)
+
+
+JSON_SHAPED = ['{"error": "StripeSignatureError: no signatures found"}',
+               '[{"msg": "KeyError cache_key"}, 2]', "null", "true", "12", '"quoted"']
+
+
+def test_json_shaped_free_text_reaches_the_service_untouched(repo, monkeypatch):
+    """FastMCP JSON-parses string arguments not annotated exactly `str`; text must not be."""
+    service = MemoryService(resolve_config(repo=str(repo), env={}))
+    seen = []
+    real_recall = service.recall
+
+    def spy(**kwargs):
+        seen.append(kwargs["context"])
+        return real_recall(**kwargs)
+
+    monkeypatch.setattr(service, "recall", spy)
+
+    async def scenario():
+        async with create_connected_server_and_client_session(build_server(service)) as client:
+            _, text = await call(client, "memory_remember", kind="convention", fields={
+                "category": "payments",
+                "rule": "StripeSignatureError means the endpoint secret rotated; reload it"})
+            remembered = json.loads(text)
+            results = [await call(client, "memory_recall", task="the checkout suite is red again",
+                                  context=ctx) for ctx in JSON_SHAPED]
+            omitted = await call(client, "memory_recall", task="the checkout suite is red again")
+            must = await call(client, "memory_remember", kind="quirk",
+                              fields={"description": "a quirk"}, priority="null")
+            return remembered, results, omitted, must
+
+    remembered, results, omitted, must = run(scenario())
+    service.close()
+    assert seen == JSON_SHAPED + [None]                         # omitted context is None
+    assert all(is_error is False for is_error, _ in results + [omitted])
+    # the identifier inside the JSON object still lifts the note
+    assert [i["id"] for i in json.loads(results[0][1])["items"]] == [remembered["id"]]
+    # 'null' is not silently turned into "no priority": the service sees and refuses it
+    assert must[0] is True and '"code": "invalid_argument"' in must[1].replace('\\"', '"')
+
+
+def test_json_shaped_evidence_reason_and_summary_are_stored_verbatim(repo):
+    service = MemoryService(resolve_config(repo=str(repo), env={}))
+    evidence, reason, summary = '{"log": [1, 2]}', '["wrong", "stale"]', "null"
+    replacement = '{"see": "the new note"}'
+
+    async def scenario():
+        async with create_connected_server_and_client_session(build_server(service)) as client:
+            await call(client, "memory_session_start", task="t")
+            _, text = await call(client, "memory_remember", kind="quirk",
+                                 fields={"description": "json quirk one"}, evidence=evidence)
+            first = json.loads(text)
+            _, text = await call(client, "memory_remember", kind="quirk",
+                                 fields={"description": "json quirk two"})
+            second = json.loads(text)
+            _, text = await call(client, "memory_supersede", old_id=second["id"], kind="quirk",
+                                 fields={"description": "json quirk two, corrected"},
+                                 evidence=replacement)
+            superseded = json.loads(text)
+            await call(client, "memory_retract", id=first["id"], reason=reason)
+            await call(client, "memory_session_end", summary=summary)
+            return first, superseded
+
+    first, superseded = run(scenario())
+    graph = service.memory.graph
+    stored = graph.get_node("quirk", first["id"]).properties["evidence"]
+    new = graph.get_node("quirk", superseded["id"]).properties["evidence"]
+    decisions = [n.properties["decision"] for n in graph.nodes("session_decision")]
+    service.close()
+    assert stored == f"{evidence}; retracted: {reason}"
+    assert new == replacement
+    assert decisions == [summary]
+
+
+def test_an_internal_service_error_leaves_a_diagnostic_on_stderr(repo, monkeypatch, caplog):
+    from agent_memory.service import ServiceError
+    service = MemoryService(resolve_config(repo=str(repo), env={}))
+
+    def boom():
+        try:
+            raise OSError("disk unplugged at /very/secret/place")
+        except OSError as cause:
+            raise ServiceError("internal", "the memory engine failed unexpectedly") from cause
+
+    monkeypatch.setattr(service, "status", boom)
+
+    async def scenario():
+        async with create_connected_server_and_client_session(build_server(service)) as client:
+            return await call(client, "memory_status")
+
+    with caplog.at_level("ERROR", logger="agent_memory.mcp_server"):
+        is_error, text = run(scenario())
+    service.close()
+    assert is_error is True and "secret" not in text
+    assert '"code": "internal"' in text.replace('\\"', '"')
+    logged = [r for r in caplog.records if r.name == "agent_memory.mcp_server"]
+    assert logged and logged[0].exc_info and isinstance(logged[0].exc_info[1], OSError)
 
 
 def test_a_full_round_trip_through_the_protocol(repo):
@@ -223,14 +330,38 @@ def test_stdout_carries_only_protocol_frames(repo, tmp_path):
     """A stray print in the server would corrupt the stream a client parses."""
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join([SRC, env.get("PYTHONPATH", "")])
-    init = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-        "protocolVersion": "2024-11-05", "capabilities": {},
-        "clientInfo": {"name": "probe", "version": "0"}}})
+    # unbuffered, so a stray print reaches the pipe at once: buffered, it would sit in
+    # sys.stdout and be dropped at exit (the SDK closes the stdout buffer it wrapped), hiding it
+    env["PYTHONUNBUFFERED"] = "1"
+    messages = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "probe", "version": "0"}}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        # tool calls too, so a stray print inside a handler or the service would show up here
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+            "name": "memory_remember",
+            "arguments": {"kind": "quirk", "fields": {"description": "stdout probe quirk"}}}},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
+            "name": "memory_recall", "arguments": {"task": "stdout probe", "files": ["../x.py"]}}},
+        {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {
+            "name": "memory_status", "arguments": {}}},
+    ]
     proc = subprocess.run(
         [sys.executable, "-m", "agent_memory.cli", "serve", "--store", str(tmp_path / "s.memory"),
          "--repo", str(repo)],
-        input=init + "\n", capture_output=True, text=True, env=env, cwd=str(repo), timeout=60)
+        input="".join(json.dumps(m) + "\n" for m in messages), capture_output=True, text=True,
+        env=env, cwd=str(repo), timeout=60)
     lines = [line for line in proc.stdout.splitlines() if line.strip()]
     assert lines, proc.stderr
+    frames = []
     for line in lines:
-        assert json.loads(line)["jsonrpc"] == "2.0"
+        try:
+            frames.append(json.loads(line))
+        except ValueError:
+            pytest.fail(f"non-protocol output on stdout: {line[:200]!r}")
+    assert all(frame["jsonrpc"] == "2.0" for frame in frames)
+    replies = {frame.get("id"): frame for frame in frames}
+    assert {1, 2, 3, 4} <= set(replies), (sorted(replies, key=str), proc.stderr[-500:])
+    assert replies[2]["result"]["isError"] is False and replies[3]["result"]["isError"] is True
+    assert replies[4]["result"]["isError"] is False

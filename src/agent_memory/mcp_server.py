@@ -35,6 +35,9 @@ def _tool_error(code: str, message: str) -> ToolError:
     return ToolError(json.dumps({"error": {"code": code, "message": message}}))
 
 
+# Every text parameter is annotated exactly `str` (optional ones default to ""): FastMCP
+# JSON-parses a string argument whose annotation is anything else (Optional[str] included), so
+# a context or evidence that happens to look like JSON would be rejected or turned into None.
 def build_server(service: MemoryService) -> FastMCP:
     app = FastMCP("agent-memory", instructions=block("mcp"))
 
@@ -43,6 +46,9 @@ def build_server(service: MemoryService) -> FastMCP:
             service.set_client(_client_name(ctx))
             return fn(**kwargs)
         except ServiceError as exc:
+            if exc.code == "internal":         # the client gets only the generic message
+                _log.error("internal failure in an agent-memory tool: %s", exc.message,
+                           exc_info=exc.__cause__ or exc)
             raise _tool_error(exc.code, exc.message) from None
         except Exception:
             # never reaches the client: no traceback, no path; the operator sees it on stderr
@@ -57,9 +63,9 @@ def build_server(service: MemoryService) -> FastMCP:
     def memory_recall(task: str, ctx: Context, files: Optional[List[str]] = None,
                       symbols: Optional[List[str]] = None,
                       max_tokens: Optional[int] = None,
-                      context: Optional[str] = None) -> Dict[str, Any]:
+                      context: str = "") -> Dict[str, Any]:
         return run(ctx, service.recall, task=task, files=files, symbols=symbols,
-                   max_tokens=max_tokens, context=context)
+                   max_tokens=max_tokens, context=context or None)
 
     @app.tool(description="Check a proposed approach against recorded failures: rejected "
                           "alternatives, bug patterns, failed refactors, constraints. Call "
@@ -79,9 +85,9 @@ def build_server(service: MemoryService) -> FastMCP:
     def memory_remember(kind: str, fields: Dict[str, Any], ctx: Context,
                         files: Optional[List[str]] = None, evidence: str = "",
                         confidence: Optional[float] = None,
-                        priority: Optional[str] = None) -> Dict[str, Any]:
+                        priority: str = "") -> Dict[str, Any]:
         return run(ctx, service.remember, kind=kind, fields=fields, files=files,
-                   evidence=evidence, confidence=confidence, priority=priority)
+                   evidence=evidence, confidence=confidence, priority=priority or None)
 
     @app.tool(description="Tell the memory whether a recalled note helped (true) or misled "
                           "(false), by its id.")
