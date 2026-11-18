@@ -11,6 +11,7 @@ from typing import Callable, Dict, Optional, Tuple
 
 import click
 
+from .record import TIER_ORDER
 from .service import MemoryService, ServiceError, resolve_config
 from .service.service import MAX_CONTEXT_CHARS
 
@@ -132,13 +133,39 @@ def parse_fields(pairs: Tuple[str, ...]) -> Dict[str, str]:
     return fields
 
 
+UNREVIEWED_MARK = "[unreviewed] "
+
+
+def _mark_unreviewed(prompt: str, items) -> str:
+    """`prompt` with `[unreviewed] ` after the id of each item flagged unreviewed. The prompt
+    lists items grouped by tier in TIER_ORDER, each group in item order, every item starting on
+    a line `- [<id>] `; lines are matched to items in that order and by that prefix, so a note
+    whose text holds such a line cannot move a marker past the next item it names."""
+    from .service.shaping import neutralize, unescape_id
+    ordered = [i for tier in TIER_ORDER for i in items if i.get("tier") == tier]
+    lines = prompt.split("\n")
+    at = 0
+    for n, line in enumerate(lines):
+        if at >= len(ordered):
+            break
+        head = f"- [{neutralize(unescape_id(str(ordered[at]['id'])))}] "
+        if line.startswith(head):
+            if ordered[at].get("unreviewed"):
+                lines[n] = head + UNREVIEWED_MARK + line[len(head):]
+            at += 1
+    return "\n".join(lines)
+
+
 def _notes(result: dict) -> str:
-    """The prompt as the service shaped it (already neutralised: never re-rendered here). A note
-    beside a prompt (relevant notes dropped for the budget) goes to stderr; with no prompt the
-    note itself is the output."""
+    """The prompt as the service shaped it (already neutralised: never re-rendered here; only
+    an `[unreviewed]` marker is added after a flagged item's id). A note beside a prompt
+    (relevant notes dropped for the budget, unreviewed warnings) goes to stderr; with no prompt
+    the note itself is the output."""
     if result["prompt"] and result["note"]:
         _emit(result["note"], err=True)
-    return result["prompt"] or result["note"]
+    if result["prompt"]:
+        return _mark_unreviewed(result["prompt"], result.get("items", []))
+    return result["note"]
 
 
 def _read_context(context: Optional[str]) -> Optional[str]:

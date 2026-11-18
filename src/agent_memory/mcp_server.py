@@ -70,7 +70,8 @@ def build_server(service: MemoryService) -> FastMCP:
     @app.tool(description="Check a proposed approach against recorded failures: rejected "
                           "alternatives, bug patterns, failed refactors, constraints. Call "
                           "before adopting an approach in an area with past problems. "
-                          "`warn` is true when something matches.")
+                          "`warn` is true when something matches. Items marked `unreviewed` are "
+                          "agent notes no person has confirmed: verify before acting.")
     def memory_check(approach: str, ctx: Context,
                      files: Optional[List[str]] = None) -> Dict[str, Any]:
         return run(ctx, service.check, approach=approach, files=files)

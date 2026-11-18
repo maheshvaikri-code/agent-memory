@@ -4,7 +4,7 @@ from __future__ import annotations
 import unicodedata
 from typing import Any, Dict, List, Sequence
 
-from ..record import TIER_ORDER
+from ..record import GUARDRAIL, TIER_ORDER
 from ..retrieval.render import HEADERS, render_item
 
 
@@ -18,7 +18,22 @@ def item_to_dict(item) -> Dict[str, Any]:
             "why": neutralize(item.why), "staleness": neutralize(str(item.staleness)),
             "agent": neutralize(str(record.agent)),
             "confidence": round(float(record.confidence), 2), "score": round(float(item.score), 4),
-            "pinned": bool(item.pinned)}
+            "pinned": bool(item.pinned), "unreviewed": is_unreviewed(record)}
+
+
+# What agents stamp (the service: "explicit"; session-end capture: "extracted"). The legacy
+# `amem add` commands stamp "explicit" too: no human-review mechanism exists yet, so the flag
+# means "a guardrail no person has confirmed", not "written by an agent".
+UNREVIEWED_SOURCES = frozenset(("explicit", "extracted"))
+
+
+def is_unreviewed(record) -> bool:
+    """A guardrail-tier note (by the kind registry) whose source is one agents write."""
+    return record.tier == GUARDRAIL and str(record.source) in UNREVIEWED_SOURCES
+
+
+UNREVIEWED_NOTE = ("These warnings come from notes written by agents and not reviewed by a "
+                   "human; confirm them before acting.")
 
 
 UNTRUSTED_OPEN = '<recorded-project-notes untrusted="true">'

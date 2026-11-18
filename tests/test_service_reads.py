@@ -21,7 +21,7 @@ def svc(repo):
 
 
 ITEM_KEYS = {"id", "kind", "tier", "text", "why", "staleness", "agent", "confidence", "score",
-             "pinned"}
+             "pinned", "unreviewed"}
 
 
 def test_recall_on_an_empty_store_abstains(svc):

@@ -21,7 +21,7 @@ from ..storage import JournalBackend, journal
 from ..storage.errors import StoreCorrupt, StoreInUse, StoreLockTimeout
 from .config import ServiceConfig, sanitize_agent
 from .errors import ServiceError
-from .shaping import item_to_dict, unescape_id, wrap, wrap_items
+from .shaping import UNREVIEWED_NOTE, item_to_dict, neutralize, unescape_id, wrap, wrap_items
 
 AGENT_KINDS = ("convention", "decision", "bug_pattern", "alternative", "quirk", "workaround",
                "refactoring_attempt", "open_question", "blocker", "partial_work")
@@ -510,9 +510,12 @@ class MemoryService:
             paths = self._files(files)
             found = self._call(lambda: self.memory.check(approach, files=paths))[:MAX_ITEMS]
             items = [item_to_dict(i) for i in found]
+            if any(i["unreviewed"] for i in items):
+                note = neutralize(UNREVIEWED_NOTE)
+            else:
+                note = "" if items else "no recorded guardrail matches this approach"
             return {"items": items, "prompt": wrap(render(found)) if items else "",
-                    "warn": bool(items),
-                    "note": "" if items else "no recorded guardrail matches this approach"}
+                    "warn": bool(items), "note": note}
 
     # -- status and lifecycle --------------------------------------------------
 
