@@ -299,7 +299,14 @@ a plain `.memory` file without converting it to a shared one.
   still open the store (creating it on first use) and checkpoint when they close.
 - `quirk`, `bug_pattern`, `alternative` and `refactoring_attempt` are guardrail kinds. A note
   of these kinds from any agent is shown under "## Guardrails" and makes `memory_check` /
-  `amem guard` warn (`warn: true`), still inside the untrusted block.
+  `amem guard` warn (`warn: true`), still inside the untrusted block. Such a note is marked
+  unreviewed: every recall and check item carries `unreviewed` (true for a guardrail-tier note
+  whose source is `explicit` or `extracted`, false otherwise), a check that returns one adds a
+  `note` saying the warnings come from agents and were not reviewed by a human, and the human
+  output of `amem guard` / `amem recall` shows `[unreviewed]` after its id. No human-review
+  mechanism exists yet, so the flag means "a guardrail no person has confirmed": the legacy
+  `amem add bug-pattern` and similar commands stamp `explicit` too, so a person's notes added
+  that way are marked unreviewed as well.
 
 ## Sharing one memory between agents
 
