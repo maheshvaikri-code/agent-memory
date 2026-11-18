@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, List, Optional
 from ..memory import AgentMemory
 from ..record import ENVELOPE_FIELDS, KINDS, PRIORITIES, MemoryRecord
 from ..retrieval.render import render
+from ..storage import JournalBackend, journal
 from ..storage.errors import StoreCorrupt, StoreInUse, StoreLockTimeout
 from .config import ServiceConfig, sanitize_agent
 from .errors import ServiceError
@@ -96,6 +97,9 @@ def _bad(message: str) -> ServiceError:
 
 
 class MemoryService:
+    """With `config.read_only` the service never writes the store: see _load_read_only, the
+    write methods (each refuses first) and close()."""
+
     def __init__(self, config: Optional[ServiceConfig] = None, *,
                  memory: Optional[AgentMemory] = None):
         if config is None and memory is None:
@@ -103,12 +107,16 @@ class MemoryService:
         self._lock = threading.RLock()
         self._owns = memory is None
         self._closed = False
+        self._store_exists = True
         if memory is not None:
             self.memory = memory
             self.config = config or ServiceConfig(
                 store_path="", repo_root=str(memory.repo_root or os.getcwd()),
                 agent=sanitize_agent(memory.writer.agent))
             memory.set_actor(self.config.agent)     # writes are stamped with the clean name
+        elif config.read_only:
+            self.config = config
+            self.memory = self._call(self._load_read_only)
         else:
             self.config = config
             os.makedirs(os.path.dirname(config.store_path), exist_ok=True)
@@ -116,6 +124,38 @@ class MemoryService:
                 config.store_path, repo_root=config.repo_root, agent=config.agent))
         self._root = Path(self.config.repo_root).resolve()
         self._session: Optional[str] = None
+
+    def _load_read_only(self) -> AgentMemory:
+        """The store as it is on disk, taking no write path: the snapshot with the journal
+        replayed (AgentMemory.load, which holds the store's lock only while it reads), never
+        opened, so nothing is created, converted or checkpointed. A missing store is an empty
+        memory that exists only here. Each call reads afresh (one per CLI command)."""
+        path, config = self.config.store_path, self.config
+        JournalBackend(path)              # the writer's own path checks (.isonl); touches no file
+        real = os.path.realpath(path)
+        if os.path.exists(real):
+            try:
+                return AgentMemory.load(path, repo_root=config.repo_root, agent=config.agent)
+            except (StoreCorrupt, StoreLockTimeout, StoreInUse, OSError):
+                raise
+            except Exception as exc:          # what open() reports for an unreadable snapshot
+                raise StoreCorrupt(f"snapshot {real} cannot be read: "
+                                   f"{type(exc).__name__}") from None
+        tail = journal.read_tail(real + ".journal", 0)
+        if tail.error is not None or tail.txs or tail.corrupt_at is not None:
+            # as open() refuses it: acknowledged writes without their snapshot
+            raise StoreCorrupt(f"journal {real}.journal exists without its snapshot {real}: "
+                               "restore the snapshot from a backup; nothing was changed")
+        self._store_exists = False
+        return AgentMemory(Path(path).stem or "project", repo_root=config.repo_root,
+                           agent=config.agent)
+
+    def _refuse_if_read_only(self, action: str) -> None:
+        """Defence in depth: a read-only service cannot write through any method, whatever an
+        adapter asks of it."""
+        if self.config.read_only:
+            raise _bad(f"this service is read-only (opened for status, recall and guard): it "
+                       f"cannot {action}; use a command that writes")
 
     # -- plumbing ------------------------------------------------------------
 
@@ -273,6 +313,7 @@ class MemoryService:
                  evidence: str = "", confidence: Optional[float] = None,
                  priority: Optional[str] = None) -> Dict[str, Any]:
         with self._lock:
+            self._refuse_if_read_only("remember a note")
             clean = self._fields(kind, fields)
             anchors = self._files(files)
             evidence = self._text("evidence", evidence, MAX_FIELD_CHARS, allow_empty=True)
@@ -294,6 +335,7 @@ class MemoryService:
 
     def feedback(self, id: str, helpful: bool) -> Dict[str, Any]:
         with self._lock:
+            self._refuse_if_read_only("record feedback")
             ident = self._id(id)
             if not isinstance(helpful, bool):
                 raise _bad("helpful must be true or false")
@@ -304,6 +346,7 @@ class MemoryService:
     def supersede(self, old_id: str, kind: str, fields: Dict[str, Any],
                   files: Optional[List[str]] = None, evidence: str = "") -> Dict[str, Any]:
         with self._lock:
+            self._refuse_if_read_only("supersede a note")
             old = self._id(old_id)
             clean = self._fields(kind, fields)
             anchors = self._files(files)
@@ -318,6 +361,7 @@ class MemoryService:
 
     def retract(self, id: str, reason: str = "") -> Dict[str, Any]:
         with self._lock:
+            self._refuse_if_read_only("retract a note")
             ident = self._id(id)
             reason = self._text("reason", reason, MAX_FIELD_CHARS, allow_empty=True)
             self._lookup(ident, agent_kinds_only=True)
@@ -326,6 +370,7 @@ class MemoryService:
 
     def verify(self, id: str) -> Dict[str, Any]:
         with self._lock:
+            self._refuse_if_read_only("verify a note")
             ident = self._id(id)
             self._lookup(ident)
             count = self._call(lambda: self.memory.verify(ident))
@@ -335,6 +380,7 @@ class MemoryService:
 
     def session_start(self, task: str) -> Dict[str, Any]:
         with self._lock:
+            self._refuse_if_read_only("start a session")
             self._ensure_open()
             task = self._text("task", task, MAX_TASK_CHARS)
             if self._session is not None:
@@ -345,7 +391,9 @@ class MemoryService:
             return {"session_id": session_id, "already_active": False, "carried": carried}
 
     def use_session(self, session_id: str) -> Dict[str, Any]:
-        """Continue a session started earlier (the CLI does this across invocations)."""
+        """Continue a session started earlier (the CLI does this across invocations). Allowed on
+        a read-only service: it writes nothing, it only selects the session whose open items a
+        recall carries (`amem recall --session`)."""
         with self._lock:
             ident = self._id(session_id)
 
@@ -363,6 +411,7 @@ class MemoryService:
 
     def session_end(self, summary: str = "", completion: float = 1.0) -> Dict[str, Any]:
         with self._lock:
+            self._refuse_if_read_only("end a session")
             self._ensure_open()
             if self._session is None:
                 raise ServiceError("no_active_session", "no session is active; start one first")
@@ -473,6 +522,14 @@ class MemoryService:
 
     def _status(self) -> Dict[str, Any]:
         self.memory.refresh()
+        if self.config.read_only and not self.memory.is_shared:
+            # loaded, not opened: what open() would have found, read from the files
+            real = os.path.realpath(self.config.store_path) if self.config.store_path else ""
+            shared = bool(real) and os.path.exists(real + ".journal")
+            unfolded = int(getattr(self.memory.graph, "replay_unfolded", 0))
+        else:
+            shared = bool(self.memory.is_shared)
+            unfolded = self.memory.unfolded_transactions()
         counts: Dict[str, int] = {}
         last = ""
         for kind in KINDS:
@@ -481,21 +538,23 @@ class MemoryService:
                 if record.status == "active":
                     counts[kind] = counts.get(kind, 0) + 1
                     last = max(last, record.updated_at or record.created_at or "")
-        return {"store": self.config.store_path, "repo_root": self.config.repo_root,
-                "agent": self.config.agent, "shared": bool(self.memory.is_shared),
+        return {"store": self.config.store_path, "store_exists": self._store_exists,
+                "repo_root": self.config.repo_root,
+                "agent": self.config.agent, "shared": shared,
                 "session": self._session, "counts": counts,
                 "total_active": sum(counts.values()), "last_write": last,
-                "unfolded_transactions": self.memory.unfolded_transactions(),
+                "unfolded_transactions": unfolded,
                 "warnings": self.memory.warnings, "schema": 1}
 
     def close(self) -> None:
         """Leave a complete snapshot behind and release the store (only if this service opened
-        it). Safe to call twice."""
+        it). A read-only service writes nothing here: it never opened the store, so there is
+        nothing to fold or release. Safe to call twice."""
         with self._lock:
             if self._closed:
                 return
             self._closed = True                 # later calls fail with "service is closed"
-            if not self._owns:
+            if not self._owns or self.config.read_only:
                 return
 
             def shut() -> None:

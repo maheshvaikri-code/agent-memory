@@ -14,6 +14,10 @@ class ServiceConfig:
     repo_root: str
     agent: str = "cli"
     allow_must: bool = False
+    # Read the store without ever writing it: a missing store is not created, an existing one
+    # is loaded (snapshot plus journal replayed) and never checkpointed, and every write
+    # method refuses. For read-only commands (`amem status`, `recall`, `guard`).
+    read_only: bool = False
 
 
 def sanitize_agent(name: str) -> str:
@@ -35,7 +39,7 @@ def find_repo_root(start: Optional[str] = None) -> str:
 def resolve_config(*, store: Optional[str] = None, repo: Optional[str] = None,
                    agent: Optional[str] = None, allow_must: bool = False,
                    env: Optional[Mapping[str, str]] = None,
-                   cwd: Optional[str] = None) -> ServiceConfig:
+                   cwd: Optional[str] = None, read_only: bool = False) -> ServiceConfig:
     """Arguments win over environment variables, which win over defaults:
     store -> $AGENT_MEMORY_STORE -> <repo>/.agent-memory/project.memory;
     repo  -> $AGENT_MEMORY_REPO  -> git top-level of the working directory;
@@ -45,4 +49,5 @@ def resolve_config(*, store: Optional[str] = None, repo: Optional[str] = None,
     store_path = store or env.get("AGENT_MEMORY_STORE") or str(
         Path(repo_root) / ".agent-memory" / "project.memory")
     name = agent or env.get("AGENT_MEMORY_AGENT") or "cli"
-    return ServiceConfig(os.path.abspath(store_path), repo_root, sanitize_agent(name), allow_must)
+    return ServiceConfig(os.path.abspath(store_path), repo_root, sanitize_agent(name), allow_must,
+                         read_only)

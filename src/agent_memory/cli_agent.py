@@ -82,11 +82,13 @@ def _fail(exc: ServiceError, as_json: bool) -> None:
 
 
 def run_service(store, repo, agent, allow_must, as_json, action: Callable[[MemoryService], dict],
-                render: Callable[[dict], str], session: str = ""):
+                render: Callable[[dict], str], session: str = "", read_only: bool = False):
+    """`read_only` (status, recall, guard): the store is read as it is on disk, never created,
+    converted or checkpointed (see MemoryService._load_read_only)."""
     try:
         try:
             service = MemoryService(resolve_config(store=store, repo=repo, agent=agent,
-                                                   allow_must=allow_must))
+                                                   allow_must=allow_must, read_only=read_only))
             try:
                 if session:
                     service.use_session(session)
@@ -167,7 +169,7 @@ def recall(task, files, symbols, max_tokens, context, session, store, repo, agen
     run_service(store, repo, agent, allow_must, as_json,
                 lambda s: s.recall(task, list(files), list(symbols), max_tokens,
                                    _read_context(context)),
-                _notes, session)
+                _notes, session, read_only=True)
 
 
 @click.command("guard")
@@ -178,7 +180,7 @@ def recall(task, files, symbols, max_tokens, context, session, store, repo, agen
 def guard(approach, files, session, store, repo, agent, allow_must, as_json):
     """Check APPROACH against recorded failures (rejected alternatives, bug patterns)."""
     run_service(store, repo, agent, allow_must, as_json,
-                lambda s: s.check(approach, list(files)), _notes, session)
+                lambda s: s.check(approach, list(files)), _notes, session, read_only=True)
 
 
 @click.command("remember")
@@ -238,12 +240,15 @@ def verify(memory_id, store, repo, agent, allow_must, as_json):
 def status(store, repo, agent, allow_must, as_json):
     """Show the store, counts by kind and any storage warnings."""
     def render(r):
-        lines = [f"store: {r['store']}", f"repo: {r['repo_root']}",
+        where = r["store"] if r.get("store_exists", True) else (
+            f"{r['store']} (no store yet: the first write creates it)")
+        lines = [f"store: {where}", f"repo: {r['repo_root']}",
                  f"active notes: {r['total_active']}  last write: {r['last_write'] or '-'}"]
         lines += [f"  {kind}: {n}" for kind, n in sorted(r["counts"].items())]
         lines += [f"warning: {w}" for w in r["warnings"]]
         return _printable("\n".join(lines))
-    run_service(store, repo, agent, allow_must, as_json, lambda s: s.status(), render)
+    run_service(store, repo, agent, allow_must, as_json, lambda s: s.status(), render,
+                read_only=True)
 
 
 @click.group("session")

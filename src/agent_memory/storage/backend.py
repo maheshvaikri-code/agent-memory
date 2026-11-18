@@ -182,9 +182,11 @@ class JournalBackend:
             raise FileNotFoundError(backend.path)
         with backend._lock:
             graph = backend._read_snapshot()
+            graph.replay_unfolded = 0       # journal transactions the snapshot does not hold
             if backend._meta(graph) is not None:
                 backend._adopt(graph)
                 backend._catch_up()
+                graph.replay_unfolded = backend.unfolded()
             graph.replay_warnings = list(backend.warnings)
         return graph
 
