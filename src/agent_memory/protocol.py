@@ -18,7 +18,7 @@ _CLI = """## Project memory (agent-memory)
 
 This repository keeps a shared memory of decisions, conventions, bugs and rejected approaches. Use it with the `amem` command from inside the repository (add `--json` for machine-readable output).
 
-1. At the start of a task run `amem session start "<one-line task>"`, then `amem recall "<task>" -f <file> ...`.
+1. At the start of a task run `amem session start "<one-line task>"`, then `amem recall "<task>" -f <file> ...` (and, optionally, `--context "<text>"`: error output or your current goal; `--context -` reads it from stdin).
 2. Before adopting an approach in an area with past problems run `amem guard "<one-line approach>" -f <file> ...`.
 3. As you work run `amem remember <kind> -F key=value ...` once per fact. Kinds: `decision` (title, context), `convention` (category, rule), `bug_pattern` (name, signature), `alternative` (option, rejected_because), `quirk` (description), `workaround` (solution, description), `refactoring_attempt` (outcome, approach, reason_failed), `open_question` (question), `blocker` (description), `partial_work` (work_type, location, state).
 4. If a recalled note helped or misled you run `amem feedback <id> --helpful` or `--harmful`; if it is wrong run `amem retract <id> --reason "<why>"`.

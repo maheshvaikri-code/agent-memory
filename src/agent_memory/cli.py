@@ -2,8 +2,12 @@
 Agent Memory CLI - Command-line interface for memory management
 """
 
+import contextlib
+import errno
 import json
+import os
 import sys
+from pathlib import Path
 from typing import Optional
 
 import click
@@ -16,6 +20,21 @@ from .memory import AgentMemory
 
 
 console = Console()
+
+
+@contextlib.contextmanager
+def _writable(memory_file: str):
+    """Open `memory_file` for writing. Writes are durable as they happen, and closing leaves a
+    complete snapshot, so there is no separate save step and a store that has been opened with
+    AgentMemory.open() is no longer refused. A missing file is an error, as it was with load():
+    a mistyped path must not quietly create a new store."""
+    if not os.path.exists(memory_file):
+        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(Path(memory_file)))
+    memory = AgentMemory.open(memory_file)
+    try:
+        yield memory
+    finally:
+        memory.close()
 
 
 @click.group()
@@ -118,9 +137,8 @@ def health(memory_file: str):
 def consolidate(memory_file: str):
     """Run memory consolidation"""
     try:
-        memory = AgentMemory.load(memory_file)
-        summary = memory._consolidator.consolidate()
-        memory.save(memory_file)
+        with _writable(memory_file) as memory:
+            summary = memory._consolidator.consolidate()
 
         console.print()
         console.print("[green]Consolidation complete![/green]")
@@ -201,9 +219,8 @@ def add():
 def add_convention(memory_file: str, category: str, rule: str, enforced_by: str):
     """Add a code convention"""
     try:
-        memory = AgentMemory.load(memory_file)
-        conv_id = memory.conventions.add_convention(category, rule, enforced_by)
-        memory.save(memory_file)
+        with _writable(memory_file) as memory:
+            conv_id = memory.conventions.add_convention(category, rule, enforced_by)
 
         console.print(f"[green]Added convention: {conv_id}[/green]")
 
@@ -220,13 +237,12 @@ def add_convention(memory_file: str, category: str, rule: str, enforced_by: str)
 def add_decision(memory_file: str, title: str, context: str, decider: tuple):
     """Add an architectural decision"""
     try:
-        memory = AgentMemory.load(memory_file)
-        dec_id = memory.decisions.add_decision(
-            title=title,
-            context=context,
-            deciders=list(decider)
-        )
-        memory.save(memory_file)
+        with _writable(memory_file) as memory:
+            dec_id = memory.decisions.add_decision(
+                title=title,
+                context=context,
+                deciders=[*decider]
+            )
 
         console.print(f"[green]Added decision: {dec_id}[/green]")
 
@@ -243,13 +259,12 @@ def add_decision(memory_file: str, title: str, context: str, decider: tuple):
 def add_bug_pattern(memory_file: str, name: str, signature: str, module: tuple):
     """Add a bug pattern"""
     try:
-        memory = AgentMemory.load(memory_file)
-        pattern_id = memory.bugs.add_pattern(
-            name=name,
-            signature=signature,
-            modules_affected=list(module)
-        )
-        memory.save(memory_file)
+        with _writable(memory_file) as memory:
+            pattern_id = memory.bugs.add_pattern(
+                name=name,
+                signature=signature,
+                modules_affected=[*module]
+            )
 
         console.print(f"[green]Added bug pattern: {pattern_id}[/green]")
 
@@ -266,13 +281,12 @@ def add_bug_pattern(memory_file: str, name: str, signature: str, module: tuple):
 def add_skill(memory_file: str, name: str, category: str, proficiency: float):
     """Add a skill"""
     try:
-        memory = AgentMemory.load(memory_file)
-        skill_id = memory.skills.add_skill(
-            name=name,
-            category=category,
-            proficiency=proficiency
-        )
-        memory.save(memory_file)
+        with _writable(memory_file) as memory:
+            skill_id = memory.skills.add_skill(
+                name=name,
+                category=category,
+                proficiency=proficiency
+            )
 
         console.print(f"[green]Added skill: {skill_id}[/green]")
 
@@ -383,9 +397,8 @@ def list_skills(memory_file: str):
 def start_session(memory_file: str, task: str):
     """Start a new coding session"""
     try:
-        memory = AgentMemory.load(memory_file)
-        session_id = memory.start_session(task)
-        memory.save(memory_file)
+        with _writable(memory_file) as memory:
+            session_id = memory.start_session(task)
 
         console.print(f"[green]Started session: {session_id}[/green]")
         console.print(f"Task: {task}")
@@ -402,9 +415,8 @@ def start_session(memory_file: str, task: str):
 def end_session(memory_file: str, session_id: str, completion: float):
     """End a coding session"""
     try:
-        memory = AgentMemory.load(memory_file)
-        memory.end_session(session_id, completion)
-        memory.save(memory_file)
+        with _writable(memory_file) as memory:
+            memory.end_session(session_id, completion)
 
         console.print(f"[green]Ended session: {session_id}[/green]")
         console.print(f"Completion: {completion:.0%}")
