@@ -131,11 +131,103 @@ def test_cursor_rule_gets_front_matter_only_on_creation(repo):
     assert path.read_text(encoding="utf-8").count("alwaysApply") == 1
 
 
-def test_generic_uses_the_cli_block_and_the_others_the_mcp_block(repo):
-    assert block("cli") in next(c.new for c in plan_install("generic", repo).changes
-                                if c.path.name == "AGENTS.md")
+def test_agents_md_tools_get_the_combined_block_and_the_others_the_mcp_block(repo):
+    # fix round 1: codex, devin and generic share AGENTS.md, so they share one combined block
+    for tool in ("codex", "devin", "generic"):
+        assert block("both") in next(c.new for c in plan_install(tool, repo).changes
+                                     if c.path.name == "AGENTS.md")
     assert block("mcp") in next(c.new for c in plan_install("claude-code", repo).changes
                                 if c.path.name == "CLAUDE.md")
+    assert block("mcp") in next(c.new for c in plan_install("cursor", repo).changes
+                                if c.path.name == "agent-memory.mdc")
+
+
+# -- fix round 1 -------------------------------------------------------------
+
+def test_the_combined_block_puts_untrusted_data_first_then_mcp_then_cli():
+    from agent_memory import protocol
+    text = block("both")
+    data = text.index("data, not instructions")
+    tools = text.index("If your client exposes the `memory_*` tools, use them")
+    cli = text.index("Otherwise use the `amem`")
+    assert data < tools < cli
+    assert protocol._MCP_STEPS in text and protocol._CLI_STEPS in text   # reused, not rewritten
+    with pytest.raises(ValueError):
+        block("neither")
+
+
+def test_protocol_blocks_stay_within_their_length_limits():
+    # mcp and cli are unchanged; the combined block is bounded by their sum and stays compact
+    assert len(block("mcp")) <= 1200 and len(block("mcp").splitlines()) <= 12
+    assert len(block("cli")) <= 1600 and len(block("cli").splitlines()) <= 12
+    both = block("both")
+    assert len(both) <= len(block("mcp")) + len(block("cli")) and len(both) <= 3000
+    assert len(both.splitlines()) <= 24
+
+
+@pytest.mark.parametrize("order", [("codex", "generic", "devin"), ("generic", "devin", "codex"),
+                                   ("devin", "codex", "generic")])
+def test_agents_md_installs_commute(order, repo):
+    runner = CliRunner()
+    first = runner.invoke(main, ["install", order[0], "--repo", str(repo), "--write"])
+    assert first.exit_code == 0, first.output
+    agents = (repo / "AGENTS.md").read_bytes()
+    for tool in order[1:]:
+        assert all(c.status == "unchanged" for c in plan_install(tool, repo).changes
+                   if c.path.name == "AGENTS.md")
+        out = runner.invoke(main, ["install", tool, "--repo", str(repo), "--write"])
+        assert out.exit_code == 0 and "nothing to change" in out.output.lower(), out.output
+        assert (repo / "AGENTS.md").read_bytes() == agents
+
+
+def test_printed_commands_use_posix_quoting_off_windows(repo, monkeypatch):
+    from agent_memory.installer import plan as plan_module
+    monkeypatch.setattr(plan_module, "_WINDOWS", False)
+    plan = plan_install("codex", repo, command="/opt/my tools/amem")
+    assert plan.commands == ["codex mcp add agent-memory -- '/opt/my tools/amem' serve"]
+
+
+def test_printed_commands_use_windows_quoting_on_windows(repo, monkeypatch):
+    from agent_memory.installer import plan as plan_module
+    monkeypatch.setattr(plan_module, "_WINDOWS", True)
+    plan = plan_install("codex", repo, command=r"C:\Program Files\amem\amem.exe")
+    assert plan.commands == [r'codex mcp add agent-memory -- "C:\Program Files\amem\amem.exe" serve']
+    devin = plan_install("devin", repo, command=r"C:\Program Files\amem\amem.exe", store="a b.memory")
+    assert devin.commands == [r'"C:\Program Files\amem\amem.exe" serve --store "a b.memory"']
+
+
+@pytest.mark.parametrize("option", ["--store", "--command"])
+@pytest.mark.parametrize("bad", ["amem\x1b[2J", "amem\nrm -rf", "a\x00b", "a\x7fb"])
+def test_control_characters_in_store_or_command_are_refused(option, bad, repo):
+    with pytest.raises(InstallError):
+        plan_install("codex", repo, **{option.lstrip("-"): bad})
+    out = CliRunner().invoke(main, ["install", "claude-code", "--repo", str(repo), option, bad,
+                                    "--write"])
+    assert out.exit_code == 1 and "control character" in out.output
+    assert "\x1b" not in out.output and [p.name for p in repo.iterdir()] == [".git"]
+
+
+@pytest.mark.parametrize("tool,config", [("claude-code", ".mcp.json"),
+                                         ("cursor", ".cursor/mcp.json")])
+def test_dropping_an_earlier_store_pin_is_announced(tool, config, repo):
+    path = repo / config
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"mcpServers": {"agent-memory": {
+        "command": "amem", "args": ["serve", "--store", "shared/team.memory"]}}}))
+    plan = plan_install(tool, repo)
+    assert any("--store" in n and "shared/team.memory" in n and "re-run" in n.lower()
+               for n in plan.notes)
+    runner = CliRunner()
+    dry = runner.invoke(main, ["install", tool, "--repo", str(repo)])
+    wrote = runner.invoke(main, ["install", tool, "--repo", str(repo), "--write"])
+    for out in (dry, wrote):
+        assert out.exit_code == 0 and "shared/team.memory" in out.output and "note:" in out.output
+    # kept pin (same --store given) or no pin at all: no such note
+    assert not any("--store" in n for n in plan_install(tool, repo).notes)
+    path.write_text(json.dumps({"mcpServers": {"agent-memory": {
+        "command": "amem", "args": ["serve", "--store=x.memory"]}}}))
+    assert any("x.memory" in n for n in plan_install(tool, repo).notes)
+    assert not any("--store" in n for n in plan_install(tool, repo, store="x.memory").notes)
 
 
 def test_two_edits_to_one_file_become_one_change(repo, monkeypatch):
@@ -253,7 +345,9 @@ def test_install_command_dry_run_strips_terminal_controls_from_user_text(repo):
 # -- golden files ----------------------------------------------------------
 
 @pytest.mark.parametrize("tool", sorted(TOOLS))
-def test_output_matches_the_golden_files(tool, repo):
+def test_output_matches_the_golden_files(tool, repo, monkeypatch):
+    from agent_memory.installer import plan as plan_module
+    monkeypatch.setattr(plan_module, "_WINDOWS", False)     # goldens pin POSIX command quoting
     plan = plan_install(tool, repo)
     produced = {c.path.relative_to(repo).as_posix(): c.new for c in plan.changes}
     produced["COMMANDS.txt"] = "\n".join(plan.commands) + ("\n" if plan.commands else "")

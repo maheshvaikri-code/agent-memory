@@ -14,7 +14,7 @@ class ToolSpec:
     key: str
     label: str
     instruction_path: str          # repo-relative
-    mode: str                      # "mcp" or "cli": which protocol text to write
+    mode: str                      # "mcp", "cli" or "both": which protocol text to write
     mcp_json_path: str = ""        # repo-relative JSON config with an `mcpServers` object ("" = none)
     mcp_command: bool = False      # print a registration command instead of writing a file
     front_matter: str = ""         # written once, when the instruction file is created
@@ -26,7 +26,8 @@ TOOLS: Dict[str, ToolSpec] = {t.key: t for t in (
     ToolSpec("cursor", "Cursor", ".cursor/rules/agent-memory.mdc", "mcp",
              mcp_json_path=".cursor/mcp.json",
              front_matter="---\ndescription: Project memory protocol\nalwaysApply: true\n---\n\n"),
-    ToolSpec("codex", "Codex CLI", "AGENTS.md", "mcp", mcp_command=True),
-    ToolSpec("devin", "Devin", "AGENTS.md", "mcp", mcp_command=True, verified=False),
-    ToolSpec("generic", "Any agent with a shell", "AGENTS.md", "cli"),
+    # Every tool that reads AGENTS.md writes the same combined block, so installs commute.
+    ToolSpec("codex", "Codex CLI", "AGENTS.md", "both", mcp_command=True),
+    ToolSpec("devin", "Devin", "AGENTS.md", "both", mcp_command=True, verified=False),
+    ToolSpec("generic", "Any agent with a shell", "AGENTS.md", "both"),
 )}
