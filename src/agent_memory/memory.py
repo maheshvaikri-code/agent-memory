@@ -359,6 +359,7 @@ class AgentMemory:
         memory.repo_root = str(repo_root) if repo_root else None
         memory.load_warnings = []
         memory._bind(graph, agent)
+        memory.load_warnings.extend(getattr(graph, "replay_warnings", []))
         for kind in KINDS:
             for node in graph.nodes(kind):
                 MemoryRecord.from_node(node, memory.load_warnings)
@@ -391,6 +392,28 @@ class AgentMemory:
     @property
     def is_shared(self) -> bool:
         return self._backend is not None
+
+    @property
+    def warnings(self) -> List[str]:
+        """Everything the store has to say: problems met while loading and, in shared mode, notes
+        from the storage layer (a skipped compaction or close checkpoint, a journal that was
+        rebuilt). A copy: appending to it changes nothing."""
+        out = list(self.load_warnings)
+        if self._backend is not None:
+            out.extend(w for w in self._backend.warnings if w not in out)
+        return out
+
+    def carried_items(self):
+        """Open questions, blockers and partial work that recall() carries: this writer's current
+        session while it is open, else the most recent session that was never ended (within 14
+        days). Items of a session that was ended are not carried."""
+        self._sync()
+        return self._retriever.carried()
+
+    def unfolded_transactions(self) -> int:
+        """Journal transactions the snapshot does not hold yet (0 for a plain memory)."""
+        self._sync()
+        return self._backend.unfolded() if self._backend is not None else 0
 
     def refresh(self) -> int:
         """Apply what other processes wrote since this one last looked."""

@@ -555,6 +555,10 @@ class Retriever:
             return None
         return latest
 
+    def carried(self) -> List[ScoredMemory]:
+        """The open session items recall() would carry (see _carried_session), as detached copies."""
+        return [_detach(item) for item in self._open_session_items(self._candidates(None), set())]
+
     def _open_session_items(self, cands: Dict[NodeRef, MemoryRecord], taken: set) -> List[ScoredMemory]:
         session = self._carried_session()
         if session is None:

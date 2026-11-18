@@ -185,6 +185,7 @@ class JournalBackend:
             if backend._meta(graph) is not None:
                 backend._adopt(graph)
                 backend._catch_up()
+            graph.replay_warnings = list(backend.warnings)
         return graph
 
     # -- snapshot helpers --------------------------------------------------
@@ -559,6 +560,11 @@ class JournalBackend:
                 self._catch_up()
                 self._prepare_append()
                 return self._compact()
+
+    def unfolded(self) -> int:
+        """Journal transactions that the snapshot does not hold yet."""
+        meta = self._meta(self.graph)
+        return max(0, self.seq - (meta[1] if meta else 0))
 
     def _compact(self) -> bool:
         graph = self.graph

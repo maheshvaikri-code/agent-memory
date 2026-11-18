@@ -20,6 +20,7 @@ class SharedGraph(ISONGraph):
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._backend = None
+        self.replay_warnings: List[str] = []
         self.remote_ops = 0        # bumped whenever content arrives from outside this process
 
     # -- transactions ------------------------------------------------------
