@@ -439,5 +439,10 @@ def export(memory_file: str, output: str, fmt: str):
         sys.exit(1)
 
 
+from . import cli_agent  # noqa: E402  (the agent-facing commands)
+
+cli_agent.register(main)
+
+
 if __name__ == "__main__":
     main()
