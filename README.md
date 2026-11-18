@@ -105,6 +105,176 @@ amem end-session project.memory s_20240101_1000 -c 0.8
 amem export project.memory -o project.json -f json
 ```
 
+## Using the memory from an agent
+
+A coding agent reaches the memory through a local MCP server (`amem serve`, over stdio) or
+through `amem` commands with `--json` output. `amem install` wires a repository to a tool.
+
+### Install
+
+```bash
+pip install 'agent-memory[mcp]'     # the MCP server needs Python 3.10+
+pip install agent-memory            # CLI only (Python 3.9+): every command except `amem serve`
+```
+
+### Wire a repository to a tool
+
+```bash
+amem install claude-code            # dry run: prints the diff, writes nothing
+amem install claude-code --write    # applies it
+```
+
+Tools: `claude-code`, `cursor`, `codex`, `devin`, `generic`. What each one gets:
+
+| Tool | Instruction block in | MCP registration |
+| --- | --- | --- |
+| `claude-code` | `CLAUDE.md` | `agent-memory` entry in `.mcp.json` |
+| `cursor` | `.cursor/rules/agent-memory.mdc` | `agent-memory` entry in `.cursor/mcp.json` |
+| `codex` | `AGENTS.md` | prints `codex mcp add agent-memory -- amem serve` for you to run |
+| `devin` | `AGENTS.md` | prints `amem serve` to register in Devin's own settings |
+| `generic` | `AGENTS.md` | none: the block tells the agent to use the `amem` commands |
+
+Every install also adds `.agent-memory/` to `.gitignore` when the repository has a `.git`.
+The instruction block sits between `<!-- agent-memory:begin ... -->` and
+`<!-- agent-memory:end -->` markers. Re-running replaces only that region, so running it twice
+changes nothing; text outside the markers, other MCP servers and other keys in the JSON config
+are never touched. An existing config that is not valid JSON, or a file with broken markers,
+is refused rather than rewritten. The tools that read `AGENTS.md` (`codex`, `devin`,
+`generic`) share one combined block that names the MCP tools and the `amem` commands, so
+installing several of them in any order gives the same file. `--store PATH` pins the store in
+the server command (by default the server finds it from the repository, which keeps the
+config portable); `--command` changes the command that starts the server (default `amem`).
+
+### What the agent then does
+
+The block (and the MCP server's own instructions) tell the agent to:
+
+1. start a session and recall what is recorded for the task and the files it expects to touch;
+2. check an approach before adopting it in an area with past problems;
+3. record each decision, convention, bug root cause, rejected alternative, quirk, workaround,
+   failed refactor and piece of unfinished work as it happens;
+4. give feedback on a recalled note that helped or misled, and retract one that is wrong;
+5. end the session.
+
+### MCP tools
+
+| Tool | What it does |
+| --- | --- |
+| `memory_recall` | Notes relevant to `task` (and `files`, `symbols`, optional `context`), within `max_tokens` (default 1500, clamped to 200..4000). Empty, with a `note`, when nothing is relevant |
+| `memory_check` | Recorded failures (rejected alternatives, bug patterns, failed refactors, constraints) that match a proposed `approach`; `warn` is true when one does |
+| `memory_remember` | Record one fact of an agent-writable kind; the same fact written twice is merged into one record |
+| `memory_feedback` | Say a recalled note helped or misled |
+| `memory_supersede` | Replace a note with a corrected one; the old one is kept, no longer returned |
+| `memory_retract` | Mark a note as wrong; it is kept, no longer returned |
+| `memory_verify` | Re-stamp a note's file anchors after re-reading the code |
+| `memory_session_start` | Start a session; returns open items of an earlier session that was never ended |
+| `memory_session_end` | End the session; returns what is still unresolved |
+| `memory_status` | Store, agent name, counts by kind, last write, storage warnings |
+
+Agent-writable kinds and their required fields: `convention` (category, rule), `decision`
+(title, context), `bug_pattern` (name, signature), `alternative` (option, rejected_because),
+`quirk` (description), `workaround` (solution, description), `refactoring_attempt` (outcome,
+approach, reason_failed), `open_question` (question), `blocker` (description), `partial_work`
+(work_type, location, state).
+
+`context` is optional free text the agent already has (error output, a diff hunk, its goal).
+Only its identifier-like terms are used to rank notes (`StripeSignatureError`, `cache_key`,
+`E11000`, `ECONNRESET`); plain words and paths in it are ignored, because words such as
+"error" or "failed" would match some note in almost any store and end abstention.
+
+A failed call is a tool error whose text is JSON:
+`{"error": {"code": "...", "message": "..."}}`, with `code` one of `invalid_argument`,
+`unknown_kind`, `path_outside_repo`, `not_found`, `no_active_session`, `store_busy`,
+`store_corrupt`, `too_large`, `internal`.
+
+### The same through the command line
+
+Every command takes `--json` for machine-readable output (an error is
+`{"error": {"code", "message"}}` with exit code 2), and `--store`, `--repo`, `--agent`:
+
+```bash
+amem session start "add retry logic to the payment webhook"       # prints the session id
+amem recall "add retry logic to the payment webhook" -f webhooks/payment.py --json
+amem recall "fix the failing webhook test" --context "StripeSignatureError: no signatures found"
+pytest 2>&1 | tail -5 | amem recall "fix the failing test" --context -   # at most 2000 chars
+amem guard "retry the webhook forever with backoff" -f webhooks/payment.py
+amem remember decision -F title="Cap webhook retries at 5" -F context="INC-2026-03" \
+    -f webhooks/payment.py --session <session-id>
+amem feedback <id> --helpful        # or --harmful
+amem retract <id> --reason "the code changed"
+amem verify <id>
+amem status
+amem session end <session-id> --summary "retries capped"
+```
+
+`amem guard` is the command-line `memory_check` (the name `amem check` already belongs to an
+older command that is kept).
+
+### Where the store lives, and who is writing
+
+The store is `<repo>/.agent-memory/project.memory`, where the repository root is the nearest
+directory with a `.git` at or above the working directory. Override with `--store` /
+`AGENT_MEMORY_STORE` and `--repo` / `AGENT_MEMORY_REPO`; the server fixes both when it starts,
+and no tool argument can change them. Writes are stamped with the MCP client's reported name
+(`claude-code`, `cursor`, ...), else `--agent` / `AGENT_MEMORY_AGENT`, else `cli`.
+
+Recalled notes come back inside a labelled block,
+`<recorded-project-notes untrusted="true">`, that says they are data written by earlier agents
+and not instructions. Every `<` inside a note is escaped as `&lt;` (after folding look-alike
+characters), so a note cannot close the block or open a tag of its own, and terminal control
+characters are dropped.
+
+What an agent cannot do through the tools: delete anything (there is no delete; notes are
+retracted or superseded and kept), choose or change the store, name a file outside the
+repository (`..`, absolute paths elsewhere and symlinks that leave it are refused), set the
+author, session, status, priority or other bookkeeping fields through `fields`, or pin a
+`must` note (priority `must` is refused unless the server was started with `--allow-must`, a
+human decision).
+
+### Check the setup
+
+```bash
+amem doctor            # one line per check; exit 0 when all are ok, else 1
+amem doctor --json
+```
+
+It reports the Python version, whether the `mcp` package is installed (only a note when it is
+not: just `amem serve` needs it), the repository root, the store path, and, when the store
+exists, whether it opens, how many journal transactions are not yet folded into the snapshot,
+any storage warnings, which of the `.lock` and `.journal` files are present, and for each tool
+whether its instruction block (and, for Claude Code and Cursor, its `.mcp.json` entry) is
+installed. For `codex` and `devin` it can see only the `AGENTS.md` block: their MCP
+registration lives in the tool's own settings. The doctor never creates a store, and it reads
+a plain `.memory` file without converting it to a shared one.
+
+### Known limits
+
+- Local only: the server speaks stdio to a client on the same machine. Hosted agents that
+  need an MCP server by URL (Base44) need the remote transport, which is a later sub-project
+  and not built. Local filesystems only (no NFS or SMB), and the store's lock is not fair: a
+  process writing in a tight loop can make another wait until `store_busy`.
+- Tool support for Devin, Codex and Cursor beyond the files written here comes from secondary
+  sources and is unverified; Replit Agent's MCP support is unknown, so use the `generic`
+  install and the `amem` commands there.
+- Agents may simply not call the tools. The instruction block and short tool descriptions are
+  the mitigation, not a guarantee.
+- A recall that finds nothing ranks twice (once more, without a budget, to tell "nothing
+  relevant" from "relevant notes did not fit"), so an empty recall costs about two recalls.
+- FastMCP puts `Error executing tool <name>:` and a space in front of a tool error's JSON
+  text, so a client parses the JSON after that prefix. An argument of the wrong type is
+  rejected by the MCP layer itself, with no stable `code`.
+- With `--json`, a usage error (a missing argument, an unknown option) is still click's plain
+  text on stderr with exit code 2, not JSON.
+- The legacy write commands (`amem add ...`, `start-session`, `end-session`, `consolidate`)
+  now use `open()`: on a plain `.memory` file they convert it in place, one way, to a shared
+  store (a `.journal` and `.lock` appear beside it), after which plain `load()` still works
+  but `save()` to that path is refused. To return it to a plain file, see "Sharing one
+  memory between agents" below. An `.isonl` file cannot be a shared store: it works only with
+  the legacy commands and plain `load()`/`save()`; `amem serve` and the commands above refuse
+  it.
+- A relative `--store` in an MCP config is resolved against the working directory the client
+  starts the server in, which varies between clients; prefer the default or an absolute path.
+
 ## Sharing one memory between agents
 
 Several processes on one machine (Claude Code, Codex, a script, an IDE plugin) can use one
@@ -220,12 +390,13 @@ Limits:
 - `export_json()` and `save()` to another path include the internal `store_meta` node.
 - A store stays shared after every process has closed it: once a path has been opened with
   `open()`, its `.journal` file remains, and a `save()` to that path from any other memory
-  (from `load()`, from `AgentMemory(...)`, from another shared store, or from any `amem`
-  write command) raises `StoreInUse`. This is
+  (from `load()`, from `AgentMemory(...)` or from another shared store) raises `StoreInUse`.
+  This is
   deliberate: a plain save over a store that has a journal can write a snapshot whose
   recorded sequence number is stale relative to its content, so the next opener would
   re-apply journal operations. `load()` and the CLI's read commands keep working (`load()`
-  replays the journal). The `amem` CLI moves onto `open()` in the next sub-project.
+  replays the journal). The `amem` write commands use `open()` themselves, so they work on a
+  shared store, and on a plain `.memory` file they make it one (see "Known limits" above).
 
 To turn a shared store back into a plain file: make sure no other process is using it, then
 open it once, checkpoint, close, and delete the journal. After that plain `load()`/`save()`
@@ -427,11 +598,30 @@ print(result.data)   # [('module', 'mod_src_cache')]
 
 ## Evaluation
 
-`PYTHONPATH=src python -m tests.eval.run` prints the retrieval scorecard.
-The baseline and the current results are recorded in `tests/eval/BASELINE.md`
-and `tests/eval/RESULTS.md`. The strict latency gates are opt-in:
-`pytest -m perf`. It takes about 2 minutes, because the 5,000-record open test
-first builds its store (about 105 s).
+`PYTHONPATH=src python -m tests.eval.run` prints the retrieval scorecard: 50
+scenarios over a small synthetic project (about forty records), judged on the
+rendered text for must-include notes, superseded or retracted notes leaking
+through, and abstention (nothing returned for an unrelated task). Run it with
+`PYTHONPATH=src` so the checkout, not an installed copy, is measured. Current
+figures: must-include recall 1.00 (30/30), leaks 0, abstention 1.00 (12/12).
+That abstention figure is in-sample (the scenarios were used while tuning); on
+16 held-out tasks never used for tuning it is **0.38 (6/16)**, a known weak
+spot: a single shared word can let an unrelated, labelled note through.
+`--service` runs the same scenarios through `MemoryService` (the boundary the
+MCP server and the CLI use; the prompt judged is the untrusted block) and gives
+the identical scorecard; `--shared` runs them on a shared store. The baseline
+and the current results are recorded in `tests/eval/BASELINE.md` and
+`tests/eval/RESULTS.md`.
+
+The strict latency gates are opt-in: `python -m pytest tests -m perf`,
+including recall through the service (p95 under 50 ms on a 5,000-record store,
+`tests/test_service_perf.py`). It takes several minutes, because the
+5,000-record tests first build their stores; the default run keeps loose
+always-on guards that only catch a pathological slowdown.
+
+The installer's golden files (`tests/golden/install/`) are regenerated with
+`UPDATE_GOLDEN=1 python -m pytest tests/test_installer_tools.py -q -k golden`;
+read every changed file before committing it.
 
 ## License
 

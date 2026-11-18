@@ -15,12 +15,19 @@ the largest — 12+ distinct stores, not just a key-value log.
 
 ## Maturity
 
-The last full run, `python -m pytest tests`, reported 375 passed, 1 skipped
-and 7 deselected. The deselected tests are opt-in: six strict latency gates
+The last full run, `python -m pytest tests`, reported 730 passed, 6 skipped
+and 8 deselected. The deselected tests are opt-in: seven strict latency gates
 (`pytest -m perf`) and one heavy multi-process stress test (`pytest -m
-stress`); the skip is the embeddings test, which needs the optional
-embeddings package. Retrieval quality is gated by the evaluation suite in
-`tests/eval`, which scores the same through a shared store as in memory.
+stress`); the skips are the embeddings test, which needs the optional
+embeddings package, and five tests that need symlinks or POSIX permissions
+the Windows development machine does not grant. Retrieval quality is gated
+by the evaluation suite in `tests/eval`, which scores the same through a
+shared store and through the agent-facing service as in memory (must-include
+recall 1.00, no leaks, abstention 1.00 in-sample but 0.38 on held-out tasks).
+The strict recall gate through the service (p95 under 50 ms at 5,000
+records) is not met on the development laptop once it throttles under
+sustained load (about 42 ms median at full clock, about 118 ms p95
+throttled).
 Shared stores are tested with real processes: concurrent writers, counters
 under contention, and processes killed at named points inside a write and a
 compaction. On the development laptop a write under contention from four
@@ -68,6 +75,18 @@ write is durable when the call returns, against the process dying
 (`durability="fsync"` also covers power loss), and seen by the other
 processes on their next read; two agents writing the same fact get one
 record; a process killed mid-write never corrupts the store.
+
+**Agent surface** — `amem serve` is a local stdio MCP server with ten
+`memory_*` tools (recall, check, remember, feedback, supersede, retract,
+verify, session start/end, status); the same operations are `amem` commands
+with `--json` for agents without MCP. `amem install claude-code|cursor|codex|
+devin|generic` writes the MCP config and a marked instruction block (dry run
+by default, never touching text outside its markers), and `amem doctor`
+reports what is wired up. Recalled notes come back in a labelled
+untrusted-data block; no tool can delete, choose the store or name a file
+outside the repository. Two MCP servers on one store share writes with the
+right author (tested with real stdio processes), and the evaluation scores
+identically through this boundary as in-process.
 
 **Cache integration** — `cache_integration.py` wraps `ison-cache` so memory
 retrieval respects a token budget instead of dumping the whole history.
@@ -117,7 +136,16 @@ print(again.recall(task="payment webhook retries").to_prompt())
   here."
 - Memory quality is only as good as what gets recorded; nothing here
   automatically extracts conventions or decisions from a diff — the agent
-  (or workflow) has to call `add_convention`/`add_decision` explicitly.
+  (or workflow) has to record them explicitly (`memory_remember`,
+  `amem remember` or the Python API). The installed instruction block tells
+  agents to, but an agent may not follow it.
+- The agent surface is local: a stdio MCP server and a CLI on the same
+  machine. Hosted agents that need an MCP server by URL (Base44) are not
+  served yet, and tool support for Devin, Codex and Cursor beyond the files
+  the installer writes comes from secondary sources and is unverified.
+- On a set of held-out unrelated tasks, recall stays empty only 6 of 16
+  times (0.38): a single shared word can let an unrelated note through. It
+  is labelled with why it matched, but it costs tokens.
 - Matching is lexical unless the optional embedding channel is attached, so
   a paraphrase that shares no word with a memory will not find it.
 - Staleness is tracked per file, not per function; a busy file marks every
@@ -129,8 +157,8 @@ print(again.recall(task="payment webhook retries").to_prompt())
   are not supported.
 - A path once opened with `open()` stays a shared store after every process
   has closed it: its `.journal` file remains, and a plain `save()` to it
-  (including every `amem` write command, since the CLI does not use `open()`
-  yet) raises `StoreInUse`, because a plain save there could write a snapshot
+  raises `StoreInUse` (the `amem` commands use `open()`, and on a plain
+  `.memory` file they convert it, one way), because a plain save there could write a snapshot
   whose recorded sequence number is stale and make the next opener re-apply
   journal operations. To return it to a plain file, with no other process
   using it: `AgentMemory.open(path)`, `checkpoint()` (go on only if it
