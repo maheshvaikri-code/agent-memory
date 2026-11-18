@@ -189,8 +189,11 @@ A failed call is a tool error whose text is JSON:
 
 ### The same through the command line
 
-Every command takes `--json` for machine-readable output (an error is
-`{"error": {"code", "message"}}` with exit code 2), and `--store`, `--repo`, `--agent`:
+The memory commands (`recall`, `guard`, `remember`, `feedback`, `retract`, `verify`,
+`status`, `session start|end`) take `--json` for machine-readable output (an error is
+`{"error": {"code", "message"}}` with exit code 2), and `--store`, `--repo`, `--agent` and
+`--allow-must`. `amem install` and `amem doctor` take `--json`, `--repo` and `--store` (no
+`--agent`):
 
 ```bash
 amem session start "add retry logic to the payment webhook"       # prints the session id
@@ -278,6 +281,19 @@ a plain `.memory` file without converting it to a shared one.
   it.
 - A relative `--store` in an MCP config is resolved against the working directory the client
   starts the server in, which varies between clients; prefer the default or an absolute path.
+- The MCP server keeps one current session per server process. Over stdio that is one client,
+  so it is the client's session; a server shared by several clients (the remote transport,
+  not built) would need one per connection.
+- In CLI mode the guards are advisory. `--allow-must`, `--agent` and `--store` are ordinary
+  flags that an agent running `amem` commands can pass itself, so the `must` gate, the
+  recorded author and the store choice hold only against an agent that cannot change its own
+  command line. Only the MCP server's configured `--allow-must` is enforced, against an agent
+  that cannot alter the server's arguments.
+- The read commands (`amem status`, `recall`, `guard`) open the store like the write
+  commands: they create it when it does not exist and checkpoint the journal on the way out.
+- `quirk`, `bug_pattern`, `alternative` and `refactoring_attempt` are guardrail kinds. A note
+  of these kinds from any agent is shown under "## Guardrails" and makes `memory_check` /
+  `amem guard` warn (`warn: true`), still inside the untrusted block.
 
 ## Sharing one memory between agents
 
@@ -349,7 +365,7 @@ disk sync per write. `lock_timeout` (default 10 s) is how long a call waits for 
 before raising `StoreLockTimeout`. The journal is folded into the snapshot automatically when
 it passes `compact_min_bytes` (default 1 MiB) and is larger than the snapshot, and by
 `checkpoint()` and `close()`. If the snapshot cannot be replaced (on Windows, another program
-has it open), the compaction is skipped with one warning in `memory._backend.warnings`, and
+has it open), the compaction is skipped with one warning in `memory.warnings`, and
 automatic compaction is tried again once the journal has doubled or 60 s have passed;
 `checkpoint()` and `close()` always try. `AgentMemory.load()` on a shared store gives a plain,
 single-process copy with the journal replayed; it takes the store's lock to read it, so it can
@@ -388,7 +404,7 @@ Limits:
   `recall()` and `check()` answer from the state the instance last saw.
 - `close()` never raises because the lock is busy: if it cannot take the lock within
   `lock_timeout`, it skips its checkpoint (every write is already in the journal) and records
-  a note only in the internal `memory._backend.warnings`; no public attribute shows it.
+  a note in `memory.warnings`.
   Call `checkpoint()` yourself when you need to know the snapshot is current (it returns
   `True` when it folded the journal).
 - `export_json()` and `save()` to another path include the internal `store_meta` node.
@@ -413,7 +429,7 @@ from agent_memory import AgentMemory
 path = "project.memory"
 memory = AgentMemory.open(path)   # replays whatever is left in the journal
 if not memory.checkpoint():       # folds all of it into the snapshot
-    raise RuntimeError("checkpoint skipped (see memory._backend.warnings); keep the journal")
+    raise RuntimeError(f"checkpoint skipped ({memory.warnings}); keep the journal")
 memory.close()
 os.remove(path + ".journal")
 ```
@@ -602,7 +618,8 @@ print(result.data)   # [('module', 'mod_src_cache')]
 
 ## Evaluation
 
-`PYTHONPATH=src python -m tests.eval.run` prints the retrieval scorecard: 50
+`PYTHONPATH=src python -m tests.eval.run`, run from the repository root, prints the
+retrieval scorecard (in PowerShell: `$env:PYTHONPATH="src"; python -m tests.eval.run`): 50
 scenarios over a small synthetic project (about forty records), judged on the
 rendered text for must-include notes, superseded or retracted notes leaking
 through, and abstention (nothing returned for an unrelated task). Run it with

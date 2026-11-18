@@ -15,7 +15,7 @@ the largest — 12+ distinct stores, not just a key-value log.
 
 ## Maturity
 
-The last full run, `python -m pytest tests`, reported 749 passed, 6 skipped
+The last full run, `python -m pytest tests`, reported 763 passed, 6 skipped
 and 8 deselected. The deselected tests are opt-in: seven strict latency gates
 (`pytest -m perf`) and one heavy multi-process stress test (`pytest -m
 stress`); the skips are the embeddings test, which needs the optional
