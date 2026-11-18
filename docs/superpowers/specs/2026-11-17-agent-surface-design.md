@@ -75,7 +75,7 @@ The repo root is `--repo` / `AGENT_MEMORY_REPO`, else the git top-level of the w
 
 ### 4.3 Identity and sessions
 
-The agent name stamped on every write is the MCP client's reported name (for example `claude-code`, `cursor`), else `--agent` / `AGENT_MEMORY_AGENT`, else `cli`. The server tracks one current session per connection. `memory_session_start` creates it; `memory_remember` and the other writes stamp it; `memory_session_start` first reports the open items (questions, blockers, partial work) of the previous session that was never ended (the engine carries only those, for up to 14 days; a cleanly ended session's items are not carried), then creates the new session. `memory_session_end` closes the session and returns the items still unresolved so the agent can see what is left.
+The agent name stamped on every write is the MCP client's reported name (for example `claude-code`, `cursor`), else `--agent` / `AGENT_MEMORY_AGENT`, else `cli`. The server tracks one current session per connection. `memory_remember` and the other writes stamp the current session; `memory_session_start` first reports the open items (questions, blockers, partial work) of the previous session that was never ended (the engine carries only those, for up to 14 days; a cleanly ended session's items are not carried), then creates the new session. `memory_session_end` closes the session and returns the items still unresolved so the agent can see what is left.
 
 ### 4.4 Tools
 
@@ -90,7 +90,7 @@ Names carry a `memory_` prefix so they do not collide with other servers in the 
 | `memory_supersede` | `old_id`, `kind`, `fields`, ... | `{id, superseded}` |
 | `memory_retract` | `id`, `reason` | `{ok}` (the record is kept, no longer returned) |
 | `memory_verify` | `id` | `{restamped}` (re-confirms a record's anchors at the current file hashes) |
-| `memory_session_start` | `task` | `{session_id, already_active, carried[...]}` (open items from earlier sessions) |
+| `memory_session_start` | `task` | `{session_id, already_active, carried[...]}` (open items of the previous never-ended session) |
 | `memory_session_end` | `summary?`, `completion?` | `{ok, session_id, unresolved[...]}` |
 | `memory_status` | none | store path, shared mode, counts by kind, last write, storage warnings |
 
@@ -177,4 +177,4 @@ Dropped as not needed by 3a: a public id-based mutator path (the service resolve
 
 ## 9. Plan shape (for the next step)
 
-About 10 tasks: (0) header hardening; (1) `AgentMemory.warnings` and the long-lived-process items (token counter, index bounds, rebind); (2) `MemoryService` core with validation and errors; (3) recall/check shaping, the untrusted block and path confinement; (4) the stdio MCP server and its protocol tests; (5) CLI v2 and moving the legacy commands onto the service; (6) installer core (markers, dry run, idempotence); (7) per-tool templates and golden files; (8) `doctor` and `status`; (9) two-server concurrency test, MCP-boundary equivalence run, docs and README. Each task: an implementer and a reviewer subagent, then a final whole-branch review, as before.
+About 10 tasks: (0) header hardening; (1) `AgentMemory.warnings` and the long-lived-process items (token counter, index bounds); (2) `MemoryService` core with validation and errors; (3) recall/check shaping, the untrusted block and path confinement; (4) the stdio MCP server and its protocol tests; (5) CLI v2 and moving the legacy commands onto the service; (6) installer core (markers, dry run, idempotence); (7) per-tool templates and golden files; (8) `doctor` and `status`; (9) two-server concurrency test, MCP-boundary equivalence run, docs and README. Each task: an implementer and a reviewer subagent, then a final whole-branch review, as before.
