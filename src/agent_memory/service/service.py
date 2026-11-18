@@ -16,10 +16,11 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ..memory import AgentMemory
 from ..record import ENVELOPE_FIELDS, KINDS, PRIORITIES, MemoryRecord
+from ..retrieval.render import render
 from ..storage.errors import StoreCorrupt, StoreInUse, StoreLockTimeout
 from .config import ServiceConfig, sanitize_agent
 from .errors import ServiceError
-from .shaping import item_to_dict
+from .shaping import item_to_dict, wrap
 
 AGENT_KINDS = ("convention", "decision", "bug_pattern", "alternative", "quirk", "workaround",
                "refactoring_attempt", "open_question", "blocker", "partial_work")
@@ -33,8 +34,50 @@ MAX_ITEMS = 50
 DEFAULT_TOKENS = 1500
 MIN_TOKENS, MAX_TOKENS = 200, 4000
 MAX_INT_DIGITS = 18
+MAX_CONTEXT_CHARS = 2000
+WRAPPER_TOKENS = 110      # the labelled untrusted block's own cost
+MIN_INNER_TOKENS = 90
 _KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,40}")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+_CONTEXT_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")   # \t \n \r pass
+MAX_CONTEXT_TERMS = 40
+_WORDISH = re.compile(r"[A-Za-z0-9_]+")
+_MIXED_CASE = re.compile(r"[a-z].*[A-Z]|[A-Z]{2,}[a-z]")      # fooBar, StripeError, HTTPError
+_NOISE_WORDS = frozenset("""
+err error errors warn warning warnings info debug trace fatal critical fail failed failure
+failures pass passed ok skip skipped xfail xpass note todo fixme exit status code test tests
+""".split())       # log levels, test-runner words and test_ name prefixes: in every trace
+
+
+def _context_terms(context: str) -> List[str]:
+    """The distinctive terms of free-text context: identifier-like words only.
+
+    Prose and log words ("error", "failed", "request", "check") would match some record in
+    almost any store and end recall's abstention, so they are dropped. Kept: mixed-case
+    identifiers (folded whole, lower-cased: "StripeSignatureError" -> "stripesignatureerror",
+    which meets the record's own compound token but not every note that says "error"),
+    the 4+ letter parts of snake_case names, words mixing letters and digits ("512MB",
+    "E11000") and ALL-CAPS codes ("ECONNRESET", "JWT"). Chunks containing a path separator
+    are skipped: paths go in `files`, and their segments (home, src, lib) are noise."""
+    terms: List[str] = []
+    for chunk in context.split():
+        if "/" in chunk or "\\" in chunk:
+            continue
+        for word in _WORDISH.findall(chunk):
+            core = word.strip("_")
+            if not core or core.isdigit():
+                continue
+            if "_" in core:
+                found = [p.lower() for p in core.split("_") if len(p) >= 4 and not p.isdigit()]
+            elif _MIXED_CASE.search(core) or (any(c.isdigit() for c in core)
+                                              and any(c.isalpha() for c in core)):
+                found = [core.lower()]
+            elif core.isupper() and len(core) >= 3:
+                found = [core.lower()]
+            else:
+                found = []
+            terms.extend(t for t in found if t not in _NOISE_WORDS)
+    return list(dict.fromkeys(terms))[:MAX_CONTEXT_TERMS]
 
 
 def _required(kind: str) -> List[str]:
@@ -333,6 +376,56 @@ class MemoryService:
             self._session = None
             self.memory.set_actor(self.config.agent, "")
             return {"ok": True, "session_id": session_id, "unresolved": unresolved}
+
+    # -- reads -----------------------------------------------------------------
+
+    def _symbols(self, symbols: Any) -> List[str]:
+        if symbols is None:
+            return []
+        if not isinstance(symbols, (list, tuple)):
+            raise _bad("symbols must be a list of strings")
+        if len(symbols) > MAX_SYMBOLS:
+            raise ServiceError("too_large", f"at most {MAX_SYMBOLS} symbols per call")
+        return [self._text("symbol", s, 100) for s in symbols]
+
+    def _context(self, context: Any) -> str:
+        """Free text the agent already has at hand (error output, a diff hunk, its goal)."""
+        context = self._text("context", context, MAX_CONTEXT_CHARS, allow_empty=True)
+        if _CONTEXT_CONTROL.search(context):
+            raise _bad("context contains a control character "
+                       "(only line breaks and tabs are allowed)")
+        return context
+
+    def recall(self, task: str, files: Optional[List[str]] = None,
+               symbols: Optional[List[str]] = None,
+               max_tokens: Optional[int] = None,
+               context: Optional[str] = None) -> Dict[str, Any]:
+        with self._lock:
+            task = self._text("task", task, MAX_TASK_CHARS, allow_empty=True)
+            paths = self._files(files)
+            names = self._symbols(symbols)
+            budget = self._budget(max_tokens)
+            terms = _context_terms(self._context(context))
+            if terms:                         # the engine joins task and symbols into one query
+                names = names + [" ".join(terms)]
+            result = self._call(lambda: self.memory.recall(
+                task=task, files=paths, symbols=names,
+                max_tokens=max(MIN_INNER_TOKENS, budget - WRAPPER_TOKENS)))
+            items = [item_to_dict(i) for i in result.items[:MAX_ITEMS]]
+            prompt = wrap(result.to_prompt()) if items else ""
+            return {"items": items, "prompt": prompt,
+                    "tokens": self.memory.count_tokens(prompt) if prompt else 0,
+                    "note": "" if items else "nothing relevant is recorded for this task"}
+
+    def check(self, approach: str, files: Optional[List[str]] = None) -> Dict[str, Any]:
+        with self._lock:
+            approach = self._text("approach", approach, MAX_TASK_CHARS)
+            paths = self._files(files)
+            found = self._call(lambda: self.memory.check(approach, files=paths))[:MAX_ITEMS]
+            items = [item_to_dict(i) for i in found]
+            return {"items": items, "prompt": wrap(render(found)) if items else "",
+                    "warn": bool(items),
+                    "note": "" if items else "no recorded guardrail matches this approach"}
 
     # -- status and lifecycle --------------------------------------------------
 
