@@ -244,7 +244,11 @@ exists, whether it opens, how many journal transactions are not yet folded into 
 any storage warnings, which of the `.lock` and `.journal` files are present, and for each tool
 whether its instruction block (and, for Claude Code and Cursor, its `.mcp.json` entry) is
 installed. For `codex` and `devin` it can see only the `AGENTS.md` block: their MCP
-registration lives in the tool's own settings. The doctor never creates a store, and it reads
+registration lives in the tool's own settings. Because `codex`, `devin` and `generic` share
+one `AGENTS.md` block, installing any one of them makes the doctor report all three as
+installed. A store whose `.journal` survives without its snapshot is reported as
+`store_corrupt` (restore the snapshot; do not delete the journal), and a check that fails
+unexpectedly is reported as that one check failing, never as a traceback. The doctor never creates a store, and it reads
 a plain `.memory` file without converting it to a shared one.
 
 ### Known limits
@@ -613,11 +617,16 @@ the identical scorecard; `--shared` runs them on a shared store. The baseline
 and the current results are recorded in `tests/eval/BASELINE.md` and
 `tests/eval/RESULTS.md`.
 
-The strict latency gates are opt-in: `python -m pytest tests -m perf`,
-including recall through the service (p95 under 50 ms on a 5,000-record store,
-`tests/test_service_perf.py`). It takes several minutes, because the
-5,000-record tests first build their stores; the default run keeps loose
-always-on guards that only catch a pathological slowdown.
+The strict latency gates are opt-in: `python -m pytest tests -m perf`. One of
+them is recall through the service at 5,000 records, which must have a p95
+under 50 ms (`tests/test_service_perf.py`). **That gate currently fails on the
+development laptop.** These are measured numbers, not a promise. At full clock
+the p95 is about 44-45 ms (median 36-42 ms). Once the laptop throttles under
+sustained load, the p95 rises to about 86-88 ms (100 ms in the
+test's own run). The remaining cost is the engine's ranking over thousands of
+candidates. The run takes several minutes, because the 5,000-record tests
+first build their stores. The default run keeps loose always-on guards that
+catch only a pathological slowdown.
 
 The installer's golden files (`tests/golden/install/`) are regenerated with
 `UPDATE_GOLDEN=1 python -m pytest tests/test_installer_tools.py -q -k golden`;

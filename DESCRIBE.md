@@ -15,7 +15,7 @@ the largest — 12+ distinct stores, not just a key-value log.
 
 ## Maturity
 
-The last full run, `python -m pytest tests`, reported 730 passed, 6 skipped
+The last full run, `python -m pytest tests`, reported 749 passed, 6 skipped
 and 8 deselected. The deselected tests are opt-in: seven strict latency gates
 (`pytest -m perf`) and one heavy multi-process stress test (`pytest -m
 stress`); the skips are the embeddings test, which needs the optional
@@ -25,9 +25,11 @@ by the evaluation suite in `tests/eval`, which scores the same through a
 shared store and through the agent-facing service as in memory (must-include
 recall 1.00, no leaks, abstention 1.00 in-sample but 0.38 on held-out tasks).
 The strict recall gate through the service (p95 under 50 ms at 5,000
-records) is not met on the development laptop once it throttles under
-sustained load (about 42 ms median at full clock, about 118 ms p95
-throttled).
+records) currently fails on the development laptop once it throttles
+under sustained load: p95 about 44-45 ms at full clock, about 86-88 ms
+throttled. The cost is the engine's ranking over thousands of candidates
+(candidate scoring and de-duplication, about a third of engine time in
+de-duplication); the service's own packing adds a few milliseconds.
 Shared stores are tested with real processes: concurrent writers, counters
 under contention, and processes killed at named points inside a write and a
 compaction. On the development laptop a write under contention from four
