@@ -339,8 +339,32 @@ def install(tool, repo, store, server_command, write, as_json):
     _emit(_printable("\n".join(out)))
 
 
+@click.command("doctor")
+@click.option("--repo", default=None, help="Repository root (default: the git top-level).")
+@click.option("--store", default=None, help="Memory store path "
+              "(default: <repo>/.agent-memory/project.memory).")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
+def doctor(repo, store, as_json):
+    """Check the memory store and which agent tools are wired up (exit 1 if anything is wrong)."""
+    from . import doctor as diagnose
+    try:
+        # the store and repo the other commands would use: arguments, then the environment
+        config = resolve_config(store=store, repo=repo)
+        checks = diagnose.run_doctor(config.repo_root, config.store_path)
+    except Exception:
+        # never a traceback, a path or anything else read from the failure
+        checks = [{"check": "doctor", "ok": False, "detail": "the doctor failed unexpectedly"}]
+    ok = all(c["ok"] for c in checks)
+    if as_json:
+        click.echo(json.dumps({"ok": ok, "checks": checks}, indent=2))
+    else:
+        _emit(_printable("\n".join(f"{'ok  ' if c['ok'] else 'FAIL'} {c['check']}: {c['detail']}"
+                                   for c in checks)))
+    sys.exit(0 if ok else 1)
+
+
 COMMANDS = [serve, recall, guard, remember, feedback, retract, verify, status, session_group,
-            install]
+            install, doctor]
 
 
 def register(group: click.Group) -> None:

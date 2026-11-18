@@ -1,7 +1,9 @@
-"""Print the scorecard: PYTHONPATH=src python -m tests.eval.run [--shared]
+"""Print the scorecard: PYTHONPATH=src python -m tests.eval.run [--shared] [--service]
 
 --shared runs the same evaluation with every AgentMemory backed by a shared store
 (AgentMemory.open), the serial-equivalence check of the concurrency-safe storage.
+--service asks through MemoryService (the boundary the MCP server and the CLI use) and judges
+the prompt it returns: the untrusted-notes wrapper, escaping and token clamp included.
 """
 import contextlib
 import json
@@ -52,7 +54,13 @@ def main(argv=None) -> int:
     shared = "--shared" in argv
     with _mode(shared), tempfile.TemporaryDirectory() as tmp:
         memory = build(Path(tmp))
-        fns = make_fns(memory)
+        if "--service" in argv:
+            from agent_memory.service import MemoryService
+
+            from .eval_service import service_fns
+            fns = service_fns(MemoryService(memory=memory))
+        else:
+            fns = make_fns(memory)
         card = evaluate(*fns)
         held = evaluate(*fns, scenarios=HELDOUT)
         getattr(memory, "close", lambda: None)()      # shared mode: checkpoint, release
