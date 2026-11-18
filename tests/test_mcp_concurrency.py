@@ -34,8 +34,10 @@ def test_two_mcp_servers_on_one_store_share_memory_with_attribution(tmp_path):
     (repo / ".git").mkdir(parents=True)
     store = tmp_path / "shared.memory"
 
+    log = tmp_path / "servers.stderr"
+
     async def scenario():
-        with open(os.devnull, "w") as errlog:
+        with open(log, "w", encoding="utf-8") as errlog:
             async with stdio_client(params(store, repo), errlog=errlog) as (r1, w1), \
                        stdio_client(params(store, repo), errlog=errlog) as (r2, w2):
                 async with ClientSession(r1, w1, client_info=types.Implementation(
@@ -57,7 +59,13 @@ def test_two_mcp_servers_on_one_store_share_memory_with_attribution(tmp_path):
                     seen_by_a = await call(a, "memory_recall", task="which database for billing")
                     return first, seen_by_b, same, mine, seen_by_a
 
-    first, seen_by_b, same, mine, seen_by_a = asyncio.run(asyncio.wait_for(scenario(), 120))
+    try:
+        first, seen_by_b, same, mine, seen_by_a = asyncio.run(asyncio.wait_for(scenario(), 120))
+    except Exception as exc:
+        # the servers' own stderr says why (a failed start, a traceback in a handler)
+        tail = log.read_text(encoding="utf-8", errors="replace")[-2000:] if log.exists() else ""
+        raise AssertionError(
+            f"{type(exc).__name__}: {exc}\nserver stderr (tail):\n{tail}") from exc
     assert seen_by_b["items"] and seen_by_b["items"][0]["agent"] == "claude-code"
     assert same["merged"] is True and same["id"] == first["id"]          # one record, not two
     assert any(i["id"] == mine["id"] and i["agent"] == "cursor" for i in seen_by_a["items"])

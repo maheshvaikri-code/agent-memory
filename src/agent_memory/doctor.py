@@ -9,7 +9,7 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .installer.jsonmerge import has_server
 from .installer.markers import has_block
@@ -17,6 +17,7 @@ from .installer.plan import SERVER_NAME
 from .installer.tools import TOOLS
 from .memory import AgentMemory
 from .service import MemoryService, ServiceError, resolve_config
+from .storage import journal
 
 ISONL = ".isonl"
 
@@ -66,19 +67,21 @@ def _tool_check(root: Path, key: str) -> Dict[str, Any]:
     return _check(f"tool:{key}", True, "installed")
 
 
-def _open_checks(config) -> List[Dict[str, Any]]:
-    """`opens`, `journal` and `warnings` for a store that exists."""
+def _open_checks(config, real: str) -> List[Dict[str, Any]]:
+    """`opens`, `journal` and `warnings` for a store whose snapshot exists (`real` is its
+    resolved path, beside which the journal and lock live)."""
     store = config.store_path
-    plain = not os.path.exists(os.path.realpath(store) + ".journal")
+    plain = not os.path.exists(real + ".journal")
     try:
         if plain:
             try:
                 memory = AgentMemory.load(store, repo_root=config.repo_root)
             except OSError as exc:
-                raise ServiceError("store_unreadable", exc.strerror or "cannot be read") from None
+                return [_check("opens", False,
+                               f"store_unreadable: {exc.strerror or 'the file cannot be read'}")]
             except Exception as exc:
-                raise ServiceError("store_corrupt", f"not a readable memory file "
-                                                    f"({type(exc).__name__})") from None
+                return [_check("opens", False, f"store_corrupt: not a readable memory file "
+                                               f"({type(exc).__name__})")]
             service = MemoryService(config, memory=memory)
         else:
             service = MemoryService(config)
@@ -101,29 +104,67 @@ def _open_checks(config) -> List[Dict[str, Any]]:
     return checks
 
 
+def _orphan_check(real: str) -> List[Dict[str, Any]]:
+    """The snapshot is missing. A journal holding transactions means acknowledged writes
+    without their snapshot: every open refuses it (StoreCorrupt), so it is reported here, read
+    without opening (an open would start a new store when the journal is empty)."""
+    tail = journal.read_tail(real + ".journal", 0)
+    if tail.error is not None or tail.txs or tail.corrupt_at is not None:
+        return [_check("opens", False, "store_corrupt: the journal exists without its snapshot; "
+                                       "restore the snapshot from a backup (do not delete the "
+                                       "journal: it holds acknowledged writes)")]
+    return []
+
+
+def _lock_check(real: str) -> Dict[str, Any]:
+    present = [n for n in (".lock", ".journal") if os.path.exists(real + n)]
+    return _check("lock", True, ", ".join(present) or "no lock or journal files")
+
+
+def _store_checks(root: Path, store_path: Optional[str]) -> List[Dict[str, Any]]:
+    config = resolve_config(repo=str(root), store=store_path, env={})
+    store = Path(config.store_path)
+    if store.suffix == ISONL:
+        return [_check("store", False, f"{store}: a shared store cannot use the {ISONL} format; "
+                                       "use an ISON path such as project.memory")]
+    real = os.path.realpath(config.store_path)
+    if os.path.isdir(real):
+        return [_check("store", False, f"{store} is a directory, not a memory file")]
+    if os.path.exists(real):
+        return ([_check("store", True, str(store))]
+                + _guarded("opens", lambda: _open_checks(config, real))
+                + _guarded("lock", lambda: [_lock_check(real)]))
+    if os.path.exists(real + ".journal") or os.path.exists(real + ".lock"):
+        orphan = _guarded("opens", lambda: _orphan_check(real))
+        if orphan:
+            return ([_check("store", True, f"{store} (its snapshot is missing)")] + orphan
+                    + _guarded("lock", lambda: [_lock_check(real)]))
+    return [_check("store", True, f"{store} will be created on first use")]
+
+
+def _guarded(name: str, fn: Callable[[], List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """`fn()`, or one failed check called `name` when it raises: one broken check never drops
+    the others, and nothing from the exception (a path, a secret) reaches the output."""
+    try:
+        return fn()
+    except Exception:
+        return [_check(name, False, "this check failed unexpectedly")]
+
+
 def run_doctor(repo_root, store_path: Optional[str] = None) -> List[Dict[str, Any]]:
     """The checks, in order: python, mcp, repo, store, then (for an existing store) opens,
     journal, warnings and lock, then one `tool:<key>` per installer tool. A pure function of its
-    arguments: environment variables are resolved by the caller (the `doctor` command)."""
+    arguments: environment variables are resolved by the caller (the `doctor` command). Every
+    check runs on its own: an unexpected failure in one is reported as that check failing."""
     root = Path(repo_root)
-    checks = [_check("python", True, sys.version.split()[0]), _mcp_check()]
+    checks = [_check("python", True, sys.version.split()[0])]
+    checks += _guarded("mcp", lambda: [_mcp_check()])
     if not root.is_dir():
         checks.append(_check("repo", False, f"{root} is not a directory"))
         return checks
     checks.append(_check("repo", True, str(root) if (root / ".git").exists() else
                          f"{root} (no .git here: this directory is used as the root)"))
-    config = resolve_config(repo=str(root), store=store_path, env={})
-    store = Path(config.store_path)
-    if store.suffix == ISONL:
-        checks.append(_check("store", False, f"{store}: a shared store cannot use the {ISONL} "
-                                             "format; use an ISON path such as project.memory"))
-    elif not store.exists():
-        checks.append(_check("store", True, f"{store} will be created on first use"))
-    else:
-        checks.append(_check("store", True, str(store)))
-        checks += _open_checks(config)
-        present = [n for n in (".lock", ".journal") if Path(config.store_path + n).exists()]
-        checks.append(_check("lock", True, ", ".join(present) or "no lock or journal files"))
+    checks += _guarded("store", lambda: _store_checks(root, store_path))
     for key in sorted(TOOLS):
-        checks.append(_tool_check(root, key))
+        checks += _guarded(f"tool:{key}", lambda key=key: [_tool_check(root, key)])
     return checks

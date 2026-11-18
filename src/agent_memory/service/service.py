@@ -20,7 +20,7 @@ from ..retrieval.render import render
 from ..storage.errors import StoreCorrupt, StoreInUse, StoreLockTimeout
 from .config import ServiceConfig, sanitize_agent
 from .errors import ServiceError
-from .shaping import item_to_dict, unescape_id, wrap
+from .shaping import item_to_dict, unescape_id, wrap, wrap_items
 
 AGENT_KINDS = ("convention", "decision", "bug_pattern", "alternative", "quirk", "workaround",
                "refactoring_attempt", "open_question", "blocker", "partial_work")
@@ -423,10 +423,12 @@ class MemoryService:
             # that does not fit and going on (as the engine's own packer does), so one long
             # note cannot starve the others. Items the engine itself skipped for its budget
             # are invisible here and not counted in the "did not fit" note (by design).
+            # (each item is rendered and neutralized once: `pieces`; the trial is assembled)
             kept: List[Any] = []
             prompt = ""
+            pieces: Dict[int, str] = {}
             for item in result.items[:MAX_ITEMS]:
-                trial = wrap(render(kept + [item], result.compact))
+                trial = wrap_items(kept + [item], result.compact, pieces)
                 if self.memory.count_tokens(trial) <= budget:
                     kept.append(item)
                     prompt = trial

@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import unicodedata
-from typing import Any, Dict
+from typing import Any, Dict, List, Sequence
+
+from ..record import TIER_ORDER
+from ..retrieval.render import HEADERS, render_item
 
 
 def item_to_dict(item) -> Dict[str, Any]:
@@ -61,3 +64,25 @@ def wrap(prompt: str) -> str:
     if not prompt or not prompt.strip():
         return ""
     return f"{UNTRUSTED_OPEN}\n{UNTRUSTED_PREAMBLE}\n\n{neutralize(prompt)}\n{UNTRUSTED_CLOSE}"
+
+
+def wrap_items(items: Sequence[Any], compact: bool, cache: Dict[int, str]) -> str:
+    """Exactly `wrap(render(items, compact))`, rendering and neutralizing each item only once
+    (kept in `cache` by the item's identity; the caller keeps the items alive while it uses the
+    cache). Neutralizing piece by piece gives the same text as neutralizing the whole: the
+    pieces are joined by newlines, and nothing neutralize() does reaches across one (a newline
+    is a starter that never composes, and the rest works per character)."""
+    out: List[str] = []
+    for tier in TIER_ORDER:
+        group = [i for i in items if i.tier == tier]
+        if group:
+            out.append(neutralize(HEADERS[tier]))
+            for item in group:
+                piece = cache.get(id(item))
+                if piece is None:
+                    piece = cache[id(item)] = neutralize(render_item(item, compact))
+                out.append(piece)
+    if not out:
+        return ""
+    body = "\n".join(out)
+    return f"{UNTRUSTED_OPEN}\n{UNTRUSTED_PREAMBLE}\n\n{body}\n{UNTRUSTED_CLOSE}"

@@ -138,3 +138,78 @@ def test_an_unexpected_failure_is_one_line_not_a_traceback(repo, monkeypatch):
         assert out.exit_code == 1 and isinstance(out.exception, SystemExit), out.output
         assert "Traceback" not in out.output and "secret" not in out.output
         assert "doctor failed unexpectedly" in out.output
+
+
+# -- fix round 1: one failing check never drops the others; orphaned journals are found -----
+
+TOOL_CHECKS = {f"tool:{t}" for t in ("claude-code", "cursor", "codex", "devin", "generic")}
+
+
+def test_a_store_path_that_is_a_directory_is_reported_and_the_rest_still_run(repo, tmp_path):
+    store = tmp_path / "dir.memory"
+    store.mkdir()
+    checks = by_name(run_doctor(repo, str(store)))
+    assert any(not c["ok"] for c in checks.values())
+    assert TOOL_CHECKS <= set(checks) and "python" in checks
+    out = CliRunner().invoke(main, ["doctor", "--repo", str(repo), "--store", str(store)])
+    assert out.exit_code == 1 and "Traceback" not in out.output
+    assert "tool:cursor" in out.output
+
+
+def test_an_unreadable_plain_store_is_a_failed_check_not_a_crash(repo, monkeypatch):
+    import agent_memory.doctor as doctor
+    from agent_memory import AgentMemory
+    store = repo / ".agent-memory" / "project.memory"
+    store.parent.mkdir()
+    AgentMemory("project", repo_root=str(repo)).save(str(store))
+
+    def denied(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr(doctor.AgentMemory, "load", denied)
+    checks = by_name(run_doctor(repo))
+    assert checks["opens"]["ok"] is False and "store_unreadable" in checks["opens"]["detail"]
+    assert TOOL_CHECKS <= set(checks) and "lock" in checks
+    out = CliRunner().invoke(main, ["doctor", "--repo", str(repo)])
+    assert out.exit_code == 1 and "store_unreadable" in out.output
+
+
+def test_an_unexpected_failure_in_one_check_fails_only_that_check(repo, monkeypatch):
+    import agent_memory.doctor as doctor
+
+    def boom(root, key):
+        raise RuntimeError("C:/secret token=abc")
+    monkeypatch.setattr(doctor, "_tool_installed", boom)
+    service = MemoryService(resolve_config(repo=str(repo), env={}))
+    service.remember("convention", {"category": "c", "rule": "r"})
+    service.close()
+    checks = by_name(run_doctor(repo))
+    assert checks["opens"]["ok"] is True
+    assert all(checks[t]["ok"] is False for t in TOOL_CHECKS)
+    assert not any("secret" in c["detail"] for c in checks.values())
+
+
+def test_a_journal_without_its_snapshot_is_corrupt_not_healthy(repo):
+    service = MemoryService(resolve_config(repo=str(repo), env={}))
+    service.remember("convention", {"category": "c", "rule": "r"})
+    store = service.config.store_path
+    import os
+    from agent_memory.storage import journal
+    assert journal.read_tail(store + ".journal", 0).txs     # the write is in the journal only
+    os.remove(store)                             # not closed: close() would fold the journal
+    checks = by_name(run_doctor(repo))
+    assert checks["opens"]["ok"] is False and "store_corrupt" in checks["opens"]["detail"]
+    assert not os.path.exists(store)             # the doctor did not start a new store over it
+    out = CliRunner().invoke(main, ["doctor", "--repo", str(repo)])
+    assert out.exit_code == 1 and "store_corrupt" in out.output
+
+
+def test_leftover_lock_and_empty_journal_without_a_snapshot_are_not_an_error(repo):
+    import os
+    store = repo / ".agent-memory" / "project.memory"
+    store.parent.mkdir()
+    (store.parent / "project.memory.lock").write_text("")
+    (store.parent / "project.memory.journal").write_text("")
+    checks = by_name(run_doctor(repo))
+    assert all(c["ok"] for c in checks.values()), checks
+    assert "will be created" in checks["store"]["detail"]
+    assert not os.path.exists(store)
