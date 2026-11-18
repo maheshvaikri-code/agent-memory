@@ -4,7 +4,9 @@ Never imports `mcp` at import time: only `serve` loads the MCP server, lazily.""
 from __future__ import annotations
 
 import json
+import re
 import sys
+from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
 import click
@@ -29,7 +31,10 @@ def serve(store, repo, agent, allow_must):
     except ImportError as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
-    run_server(resolve_config(store=store, repo=repo, agent=agent, allow_must=allow_must))
+    try:
+        run_server(resolve_config(store=store, repo=repo, agent=agent, allow_must=allow_must))
+    except ServiceError as exc:                  # e.g. a store the service refuses at startup
+        _fail(exc, False)
 
 
 def service_options(fn):
@@ -56,6 +61,16 @@ def _emit(text: str, err: bool = False) -> None:
     except LookupError:                      # an unknown codec name: keep plain ASCII
         text = text.encode("ascii", errors="replace").decode("ascii")
     click.echo(text, err=err)
+
+
+# C0 controls except tab and newline, DEL, and C1 controls: what a terminal could act on.
+_CONTROLS = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def _printable(text: str) -> str:
+    """`text` without terminal control characters (an ESC or CSI sequence in a stored id or a
+    warning must never reach the terminal); tabs and newlines are kept."""
+    return _CONTROLS.sub("", text)
 
 
 def _fail(exc: ServiceError, as_json: bool) -> None:
@@ -170,8 +185,9 @@ def remember(kind, pairs, files, evidence, confidence, priority, session, store,
     fields = parse_fields(pairs)
     run_service(store, repo, agent, allow_must, as_json,
                 lambda s: s.remember(kind, fields, list(files), evidence, confidence, priority),
-                lambda r: (f"{'created' if r['created'] else 'merged into existing'} {r['id']}"
-                           + (f" (similar: {', '.join(r['similar'])})" if r["similar"] else "")),
+                lambda r: _printable(
+                    f"{'created' if r['created'] else 'merged into existing'} {r['id']}"
+                    + (f" (similar: {', '.join(r['similar'])})" if r["similar"] else "")),
                 session)
 
 
@@ -215,7 +231,7 @@ def status(store, repo, agent, allow_must, as_json):
                  f"active notes: {r['total_active']}  last write: {r['last_write'] or '-'}"]
         lines += [f"  {kind}: {n}" for kind, n in sorted(r["counts"].items())]
         lines += [f"warning: {w}" for w in r["warnings"]]
-        return "\n".join(lines)
+        return _printable("\n".join(lines))
     run_service(store, repo, agent, allow_must, as_json, lambda s: s.status(), render)
 
 
@@ -251,7 +267,80 @@ def session_end(session_id, summary, completion, store, repo, agent, allow_must,
                 lambda s: s.session_end(summary, completion), render, session=session_id)
 
 
-COMMANDS = [serve, recall, guard, remember, feedback, retract, verify, status, session_group]
+def _install_fail(message: str, code: str, as_json: bool, exit_code: int) -> None:
+    if as_json:
+        click.echo(json.dumps({"error": {"code": code, "message": message}}, indent=2))
+    else:
+        _emit(_printable(f"error: {message}"), err=True)
+    sys.exit(exit_code)
+
+
+def _shown_path(path: Path, root: Path) -> str:
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return str(path)
+
+
+@click.command("install")
+@click.argument("tool")
+@click.option("--repo", default=None, help="Repository root (default: the git top-level).")
+@click.option("--store", default=None, help="Pin the store path in the server command "
+              "(default: let the server find it, which keeps the config portable).")
+@click.option("--command", "server_command", default="amem",
+              help="The command that starts the server.")
+@click.option("--write", is_flag=True, help="Apply the changes (default: show them).")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
+def install(tool, repo, store, server_command, write, as_json):
+    """Wire this repository to TOOL (claude-code, cursor, codex, devin, generic): MCP config
+    and a marked instruction block.
+
+    Shows a diff and changes nothing unless --write is given. Content outside the marked
+    block is never touched."""
+    from .installer import InstallError
+    from .installer import plan as planner
+    from .installer.changes import apply_changes
+    from .installer.tools import TOOLS
+    from .service import find_repo_root
+    if tool not in TOOLS:
+        _install_fail(f"unknown tool {tool!r}; choose one of: {', '.join(sorted(TOOLS))}",
+                      "invalid_argument", as_json, 2)
+    try:
+        root = Path(repo or find_repo_root()).resolve()
+        plan = planner.plan_install(tool, root, store=store, command=server_command)
+        pending = [c for c in plan.changes if c.status != "unchanged"]
+        if write:
+            apply_changes(plan.changes, root=str(root))
+    except InstallError as exc:
+        _install_fail(str(exc), "install_failed", as_json, 1)
+    except Exception:
+        # never a traceback, and no path but the files the install was asked to change
+        _install_fail("the install failed unexpectedly", "internal", as_json, 1)
+    if as_json:
+        click.echo(json.dumps({
+            "tool": tool, "written": bool(write and pending),
+            "changes": [{"path": str(c.path), "status": c.status, "note": c.note}
+                        for c in plan.changes],
+            "commands": plan.commands, "notes": plan.notes}, indent=2))
+        return
+    out = []
+    if not pending:
+        out.append(f"Nothing to change: this repository is already set up for {tool}.")
+    for change in pending:
+        out.append(f"{change.status}: {_shown_path(change.path, root)}  ({change.note})")
+        out.append(change.diff())
+    for line in plan.commands:
+        out.append(f"Run this to register the server: {line}")
+    for note in plan.notes:
+        out.append(f"note: {note}")
+    if pending:
+        out.append(f"Wrote {len(pending)} file(s)." if write
+                   else "Dry run: nothing was written. Re-run with --write to apply.")
+    _emit(_printable("\n".join(out)))
+
+
+COMMANDS = [serve, recall, guard, remember, feedback, retract, verify, status, session_group,
+            install]
 
 
 def register(group: click.Group) -> None:

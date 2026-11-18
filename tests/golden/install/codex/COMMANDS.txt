@@ -1,0 +1,1 @@
+codex mcp add agent-memory -- amem serve

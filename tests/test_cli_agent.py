@@ -337,3 +337,54 @@ def test_legacy_write_commands_still_work_on_an_isonl_file(tmp_path):
     assert result.exit_code == 0, result.output
     loaded = AgentMemory.load(path)
     assert [n.properties.get("rule") for n in loaded.graph.nodes("convention")] == ["x is y"]
+
+
+# -- startup errors and terminal controls in human output ---------------------
+
+def test_serve_startup_service_error_is_a_clean_exit_2(repo, monkeypatch):
+    import sys
+    import types
+    from agent_memory.service import MemoryService
+    fake = types.ModuleType("agent_memory.mcp_server")
+    fake.serve = lambda config: MemoryService(config)          # what the real serve does first
+    monkeypatch.setitem(sys.modules, "agent_memory.mcp_server", fake)
+    result = CliRunner().invoke(main, ["serve", "--store", str(repo / "x.isonl"),
+                                       "--repo", str(repo)])
+    assert result.exit_code == 2, result.output
+    assert "error [invalid_argument]:" in result.output and "Traceback" not in result.output
+
+
+def test_serve_startup_service_error_with_the_real_server(repo):
+    pytest.importorskip("mcp")
+    result = CliRunner().invoke(main, ["serve", "--store", str(repo / "x.isonl"),
+                                       "--repo", str(repo)])
+    assert result.exit_code == 2, result.output
+    assert "error [invalid_argument]:" in result.output
+
+
+def test_remember_human_output_drops_terminal_controls(run, monkeypatch):
+    from agent_memory.service import MemoryService
+
+    def remember(self, kind, fields, files=None, evidence="", confidence=None, priority=None):
+        return {"id": "c1\x1b[2J", "kind": kind, "created": True, "merged": False,
+                "similar": ["c2\x1b]0;owned\x07", "c3\x9b31m"]}
+
+    monkeypatch.setattr(MemoryService, "remember", remember)
+    text = run("remember", "convention", "-F", "category=a", "-F", "rule=b", json_out=False)
+    assert "c1" in text and "c2" in text and "c3" in text
+    for bad in ("\x1b", "\x07", "\x9b"):
+        assert bad not in text
+
+
+def test_status_human_output_drops_terminal_controls(run, monkeypatch):
+    from agent_memory.service import MemoryService
+
+    def status(self):
+        return {"store": "s", "repo_root": "r", "total_active": 0, "last_write": None,
+                "counts": {}, "warnings": ["journal damaged\x1b[31m\rFAKE OK\x07\ttab"]}
+
+    monkeypatch.setattr(MemoryService, "status", status)
+    text = run("status", json_out=False)
+    assert "journal damaged" in text and "\ttab" in text
+    for bad in ("\x1b", "\x07", "\r"):
+        assert bad not in text

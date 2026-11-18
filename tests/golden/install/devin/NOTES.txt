@@ -1,0 +1,2 @@
+Register this command as an MCP server in Devin's own settings; it is not written for you.
+Devin support is based on secondary sources; check it against the vendor's documentation.
