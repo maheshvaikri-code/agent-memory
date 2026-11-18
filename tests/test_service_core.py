@@ -4,6 +4,7 @@ import threading
 import pytest
 
 from agent_memory import AgentMemory
+from agent_memory import anchors as anchors_mod
 from agent_memory.service import (AGENT_KINDS, MemoryService, ServiceConfig, ServiceError,
                                   resolve_config, sanitize_agent)
 from agent_memory.storage import journal
@@ -182,6 +183,8 @@ def test_an_absolute_path_elsewhere_is_refused(svc, tmp_path):
 def test_an_absolute_path_inside_the_repo_is_accepted_and_stored_relative(svc, repo):
     out = svc.remember("convention", CONVENTION, files=[str(repo / "src" / "cache.py")])
     assert out["created"]
+    ref = svc.memory.writer.find(out["id"])
+    assert anchors_mod.anchor_paths(svc.memory.graph, ref) == ["src/cache.py"]
 
 
 def test_a_symlink_pointing_out_of_the_repo_is_refused(svc, repo, tmp_path):
@@ -342,3 +345,154 @@ def test_wrapping_an_existing_memory_does_not_close_it():
     assert service.remember("convention", CONVENTION)["created"]
     service.close()
     assert memory.recall(task="cache keys").items                  # still usable
+
+
+# -- fix round 1: error contract ----------------------------------------------
+
+@pytest.mark.parametrize("raised", [OSError("disk at C:/secret/path"), TypeError("bad arg"),
+                                    KeyError("leaked-key"), RuntimeError("boom")])
+def test_unexpected_engine_errors_are_internal_and_generic(svc, monkeypatch, raised):
+    def explode(*a, **kw):
+        raise raised
+    monkeypatch.setattr(svc.memory, "remember", explode)
+    with pytest.raises(ServiceError) as exc:
+        svc.remember("convention", CONVENTION)
+    assert code_of(exc) == "internal"
+    assert "secret" not in exc.value.message and "leaked-key" not in exc.value.message
+
+
+def test_a_store_in_use_is_store_busy(svc, monkeypatch):
+    from agent_memory.storage.errors import StoreInUse
+
+    def busy(*a, **kw):
+        raise StoreInUse("in use")
+    monkeypatch.setattr(svc.memory, "remember", busy)
+    with pytest.raises(ServiceError) as exc:
+        svc.remember("convention", CONVENTION)
+    assert code_of(exc) == "store_busy"
+
+
+def test_status_errors_are_mapped_too(svc, monkeypatch):
+    def explode(*a, **kw):
+        raise OSError("gone")
+    monkeypatch.setattr(svc.memory, "refresh", explode)
+    with pytest.raises(ServiceError) as exc:
+        svc.status()
+    assert code_of(exc) == "internal"
+
+
+def test_a_closed_service_says_so(repo):
+    service = MemoryService(resolve_config(repo=str(repo), env={}))
+    service.close()
+    service.close()                                        # still safe twice
+    for call in (lambda: service.remember("convention", CONVENTION), service.status,
+                 lambda: service.feedback("x", True)):
+        with pytest.raises(ServiceError) as exc:
+            call()
+        assert code_of(exc) == "internal" and "closed" in exc.value.message
+
+
+# -- fix round 1: id-based writes stay within agent kinds and the must gate ------
+
+def _session_decision_id(svc):
+    svc.session_start("t")
+    svc.session_end(summary="a summary the agent wrote")
+    return str(next(iter(svc.memory.graph.nodes("session_decision"))).id)
+
+
+def _module_id(svc):
+    svc.memory.remember("module", {"path": "src/cache.py", "purpose": "cache"}, source="bootstrap")
+    return str(next(iter(svc.memory.graph.nodes("module"))).id)
+
+
+def test_retract_and_supersede_only_reach_agent_kinds(svc):
+    sd = _session_decision_id(svc)
+    mod = _module_id(svc)
+    for ident in (sd, mod):
+        with pytest.raises(ServiceError) as exc:
+            svc.retract(ident, "hide it")
+        assert code_of(exc) == "invalid_argument"
+        with pytest.raises(ServiceError) as exc:
+            svc.supersede(ident, "convention", CONVENTION)
+        assert code_of(exc) == "invalid_argument"
+    assert svc.memory.graph.get_node("module", mod).properties.get("status", "active") == "active"
+    # feedback and verify may still reach any kind
+    svc.feedback(mod, True)
+    svc.verify(mod)
+
+
+def test_must_records_need_allow_must_to_retract_or_supersede(repo):
+    store = str(repo / "must.memory")
+    allowed = MemoryService(resolve_config(repo=str(repo), allow_must=True, env={}, store=store))
+    default = MemoryService(resolve_config(repo=str(repo), env={}, store=store))
+    rid = allowed.remember("convention", CONVENTION, priority="must")["id"]
+    for call in (lambda: default.retract(rid, "no"),
+                 lambda: default.supersede(rid, "convention", {"category": "c", "rule": "other"})):
+        with pytest.raises(ServiceError) as exc:
+            call()
+        assert code_of(exc) == "invalid_argument" and "human" in exc.value.message
+    allowed.retract(rid, "a human decided")
+    props = allowed.memory.graph.get_node("convention", rid).properties
+    assert props["status"] == "retracted"
+    allowed.close()
+    default.close()
+
+
+# -- fix round 1: path hygiene and integer size -------------------------------
+
+@pytest.mark.parametrize("bad", ["src/x\nIGNORE.py", "src/\ttab.py", "src/a\x1fb.py",
+                                 "src/a\x7fb.py", "src/a\rb.py"])
+def test_control_characters_in_paths_are_refused(svc, bad):
+    with pytest.raises(ServiceError) as exc:
+        svc.remember("convention", CONVENTION, files=[bad])
+    assert code_of(exc) == "invalid_argument"
+
+
+@pytest.mark.parametrize("root", [".", "./", "src/..", "REPO"])
+def test_the_repo_root_itself_is_not_an_anchor(svc, repo, root):
+    path = str(repo) if root == "REPO" else root
+    with pytest.raises(ServiceError) as exc:
+        svc.remember("convention", CONVENTION, files=[path])
+    assert code_of(exc) == "invalid_argument"
+
+
+@pytest.mark.parametrize("value", [10 ** 30, -(10 ** 30), 10 ** 5000, 10 ** 18],
+                         ids=["1e30", "minus-1e30", "5001-digits", "19-digits"])
+def test_huge_integers_are_too_large(svc, value):
+    with pytest.raises(ServiceError) as exc:
+        svc.remember("convention", {**CONVENTION, "n": value})
+    assert code_of(exc) == "too_large"
+
+
+def test_an_eighteen_digit_integer_is_fine(svc):
+    assert svc.remember("convention", {**CONVENTION, "n": 10 ** 18 - 1})["created"]
+
+
+# -- fix round 1: sessions, supersede honesty, injected memory ------------------
+
+def test_use_session_sees_a_session_another_process_started_after_it_opened(repo):
+    config = resolve_config(repo=str(repo), env={})
+    b = MemoryService(config)                       # opened first
+    b.status()
+    a = MemoryService(config)
+    sid = a.session_start("t")["session_id"]
+    assert b.use_session(sid)["session_id"] == sid
+    a.close()
+    b.close()
+
+
+def test_superseding_with_the_same_text_supersedes_nothing(svc):
+    old = svc.remember("convention", CONVENTION)
+    out = svc.supersede(old["id"], "convention", dict(CONVENTION))
+    assert out["superseded"] is None and out["id"] == old["id"] and out["created"] is False
+    props = svc.memory.graph.get_node("convention", old["id"]).properties
+    assert props.get("status", "active") == "active"
+    assert svc.status()["counts"]["convention"] == 1
+
+
+def test_an_injected_memory_agent_name_is_sanitised():
+    memory = AgentMemory("t", repo_root=os.getcwd(), agent="Claude Code/1.0")
+    service = MemoryService(memory=memory)
+    assert service.config.agent == "Claude-Code-1.0"
+    rid = service.remember("convention", CONVENTION)["id"]
+    assert memory.graph.get_node("convention", rid).properties["agent"] == "Claude-Code-1.0"
