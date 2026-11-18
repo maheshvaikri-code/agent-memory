@@ -35,7 +35,7 @@ Remote or hosted serving and authentication (3b); automatic extraction of lesson
 Local facts (checked in this repo today):
 
 - The Python MCP SDK is installed (`mcp` 1.25.0). `FastMCP` provides stdio, SSE and streamable-HTTP transports, `instructions`, a `lifespan`, a `TokenVerifier` hook for bearer auth, and the connecting client's name on the request context. It requires Python 3.10+, while this package declares 3.9+, so MCP support is an optional extra.
-- The current `amem` CLI has only the old per-store commands. It has no `recall`, `check` or `remember`, and its write commands use plain `load`/`save`, which sub-project 2 deliberately refuses on a store that has ever been opened with `open()`.
+- The current `amem` CLI has only the old per-store commands. It has no `recall`, `guard` or `remember`, and its write commands use plain `load`/`save`, which sub-project 2 deliberately refuses on a store that has ever been opened with `open()`.
 - `AgentIntegration` (integration.py) is also plain-mode only.
 
 Tool support (from web search; **secondary sources, treat as unverified until checked against each vendor's own docs**):
@@ -58,7 +58,7 @@ Consequences that drive the design: Base44 cannot reach a local stdio server, wh
 ```
 MemoryService  (transport-agnostic; the only code that touches AgentMemory)
    ├── mcp_server.py   FastMCP adapter: tools = service methods, stdio now, HTTP in 3b
-   ├── cli.py          click adapter: amem recall/check/remember/... --json
+   ├── cli.py          click adapter: amem recall/guard/remember/... --json
    └── installer.py    writes MCP config + instruction blocks per tool
 ```
 
@@ -75,7 +75,7 @@ The repo root is `--repo` / `AGENT_MEMORY_REPO`, else the git top-level of the w
 
 ### 4.3 Identity and sessions
 
-The agent name stamped on every write is the MCP client's reported name (for example `claude-code`, `cursor`), else `--agent` / `AGENT_MEMORY_AGENT`, else `cli`. The server tracks one current session per connection. `memory_session_start` creates it; `memory_remember` and the other writes stamp it; `memory_session_end` closes it and carries any open questions, blockers and partial work forward to the next recall (the carry rule already exists in the retriever).
+The agent name stamped on every write is the MCP client's reported name (for example `claude-code`, `cursor`), else `--agent` / `AGENT_MEMORY_AGENT`, else `cli`. The server tracks one current session per connection. `memory_session_start` creates it; `memory_remember` and the other writes stamp it; `memory_session_start` first reports the open items (questions, blockers, partial work) of the previous session that was never ended (the engine carries only those, for up to 14 days; a cleanly ended session's items are not carried), then creates the new session. `memory_session_end` closes the session and returns the items still unresolved so the agent can see what is left.
 
 ### 4.4 Tools
 
@@ -90,8 +90,8 @@ Names carry a `memory_` prefix so they do not collide with other servers in the 
 | `memory_supersede` | `old_id`, `kind`, `fields`, ... | `{id, superseded}` |
 | `memory_retract` | `id`, `reason` | `{ok}` (the record is kept, no longer returned) |
 | `memory_verify` | `id` | `{restamped}` (re-confirms a record's anchors at the current file hashes) |
-| `memory_session_start` | `task` | `{session_id, carried[...]}` (open items from earlier sessions) |
-| `memory_session_end` | `summary?`, `completion?` | `{ok}` |
+| `memory_session_start` | `task` | `{session_id, already_active, carried[...]}` (open items from earlier sessions) |
+| `memory_session_end` | `summary?`, `completion?` | `{ok, session_id, unresolved[...]}` |
 | `memory_status` | none | store path, shared mode, counts by kind, last write, storage warnings |
 
 `memory_remember` accepts a curated set of kinds an agent can sensibly write: `convention`, `decision`, `bug_pattern`, `alternative`, `quirk`, `workaround`, `refactoring_attempt`, `open_question`, `blocker`, `partial_work`. The tool description lists each kind's required fields with a one-line example. The other registry kinds (`module`, `hot_path`, `snippet`, ...) stay available to the Python API and the bootstrap scan but are not offered to agents in 3a.
@@ -113,7 +113,7 @@ The block sits between marker comments. Re-running replaces only the marked regi
 
 ### 4.7 CLI v2
 
-New commands on the shared store, each with a stable `--json` form: `amem recall`, `check`, `remember`, `feedback`, `retract`, `session start|end`, `status`, `serve`, `install`, `doctor`. The existing commands keep their names and output but move from `load`/`save` to the service, so they work on any store and stop being refused. `doctor` reports the store path, whether it opens, lock health, journal state, storage warnings, and which tools have the MCP entry and instruction block installed.
+New commands on the shared store, each with a stable `--json` form: `amem recall`, `guard APPROACH`, `remember`, `feedback`, `retract`, `session start|end`, `status`, `serve`, `install`, `doctor`. The existing commands keep their names and output but move from `load`/`save` to the service, so they work on any store and stop being refused. `doctor` reports the store path, whether it opens, lock health, journal state, storage warnings, and which tools have the MCP entry and instruction block installed.
 
 ### 4.8 Security
 
@@ -130,7 +130,7 @@ A service error has a stable `code` (`invalid_argument`, `unknown_kind`, `path_o
 
 ### 4.10 Lifecycle
 
-`amem serve` opens the store, serves stdio, and on a clean shutdown calls `checkpoint()` when the journal holds anything, so a stopped server leaves a complete snapshot. This implements the "everyone closed cleanly means the snapshot is complete" property **in the server**, without changing `close()` semantics in the storage layer (which stays as sub-project 2 left it).
+`amem serve` opens the store, serves stdio, and on a clean shutdown calls `checkpoint()` when `unfolded_transactions() > 0`, so a stopped server leaves a complete snapshot. This implements the "everyone closed cleanly means the snapshot is complete" property **in the server**, without changing `close()` semantics in the storage layer (which stays as sub-project 2 left it).
 
 ## 5. Folded in from earlier reviews
 
@@ -139,9 +139,9 @@ Items sub-project 1 and 2 left for this one, each small:
 1. **Journal-header hardening (task 0).** A changed byte inside the header's generation id yields a valid header for a different generation, so the journal is judged stale and acknowledged writes are dropped silently. Fix without a format change: when a parseable journal carries a generation other than the snapshot's, re-read it and raise `StoreCorrupt` if any transaction's `seq` exceeds the snapshot's `seq` (a genuinely stale journal only holds seqs at or below it). A server holding a store open for hours makes silent loss costlier, so this goes first.
 2. A public `AgentMemory.warnings` (today a skipped `close()` checkpoint is visible only on the private backend), used by `memory_status` and `doctor`.
 3. A public token counter and sink setter, and bounding the retriever's `_Index._prefixes/_order` (long-lived server process).
-4. `load()` keeps the semantic searcher and session id when it rebinds.
-5. `load()` returns replay warnings through `load_warnings`.
-6. A public id-based mutator path so tools do not resolve records by name.
+4. `load()` returns replay warnings through `load_warnings`.
+
+Dropped as not needed by 3a: a public id-based mutator path (the service resolves ids through the facade) and a rebind path (`_bind` only runs when constructing a fresh instance).
 
 ## 6. How we will know it works
 

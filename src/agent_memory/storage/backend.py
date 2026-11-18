@@ -276,7 +276,7 @@ class JournalBackend:
         if tail.generation != self.generation:   # absent, unfinished, stale, or compacted
             if not authoritative:
                 return None
-            return self._follow_snapshot()
+            return self._follow_snapshot(tail.generation)
         problem = None
         if tail.corrupt_at is not None:
             problem = self._damage(tail.corrupt_at)
@@ -322,13 +322,37 @@ class JournalBackend:
             where = f"byte {at}"
         return f"journal {self.journal_path} is damaged at {where}"
 
-    def _follow_snapshot(self) -> int:
+    def _refuse_unfolded_stale_journal(self, journal_generation: Optional[str],
+                                       snapshot_generation: str, snapshot_seq: int) -> None:
+        """A journal whose generation differs from the snapshot's is normally stale: a compaction
+        replaced the snapshot but crashed before rewriting the journal, and everything in it is
+        already folded in. A damaged byte inside the header's generation id looks exactly the
+        same, but its transactions are NOT folded in. They are told apart by sequence number:
+        compaction keeps the numbering, so a genuinely stale journal only holds seqs at or below
+        the snapshot's. Raises before anything is reset or replaced."""
+        if journal_generation is None or journal_generation == snapshot_generation:
+            return
+        tail = journal.read_tail(self.journal_path, 0)
+        if tail.error is not None:
+            raise StoreCorrupt(f"journal {self.journal_path} cannot be read: {tail.error}")
+        beyond = [tx["seq"] for tx in tail.txs if tx["seq"] > snapshot_seq]
+        if beyond:
+            raise StoreCorrupt(
+                f"journal {self.journal_path} carries generation {journal_generation!r} but the "
+                f"snapshot is generation {snapshot_generation!r}, and the journal holds "
+                f"transactions up to seq {max(beyond)} beyond the snapshot's seq {snapshot_seq}. "
+                f"Either the journal header is damaged or the snapshot was restored from an older "
+                f"backup. Nothing was changed: restore a matching snapshot or inspect the journal.")
+
+    def _follow_snapshot(self, journal_generation: Optional[str] = None) -> int:
         """The journal does not continue our generation. Under the lock the snapshot decides:
         if we hold exactly its state, the journal is absent, unfinished or stale (a compaction
         crashed before rewriting it; everything in it is folded in) and the next writer resets
         it. Otherwise another process compacted, perhaps more than once: reload."""
         fresh = self._read_snapshot()
-        if self._meta(fresh) == (self.generation, self.seq):
+        meta = self._meta(fresh)
+        if meta == (self.generation, self.seq):
+            self._refuse_unfolded_stale_journal(journal_generation, meta[0], meta[1])
             self._snapshot_signature = _file_signature(self.path)
             self._needs_reset = True
             self.offset = 0
@@ -348,6 +372,7 @@ class JournalBackend:
             raise StoreCorrupt(f"journal {self.journal_path} cannot be read: {tail.error}")
         if tail.generation == meta[0] and tail.corrupt_at is not None:
             raise StoreCorrupt(self._damage(tail.corrupt_at))    # before memory is touched
+        self._refuse_unfolded_stale_journal(tail.generation, meta[0], meta[1])
         if note and meta[0] == self.generation:
             self.warnings.append(f"journal {self.journal_path} was rewritten under this "
                                  f"process; its memory was rebuilt from disk")
