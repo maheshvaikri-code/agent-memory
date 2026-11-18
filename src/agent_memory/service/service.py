@@ -499,10 +499,18 @@ class MemoryService:
                 return
 
             def shut() -> None:
+                # Every write is already durable in the journal: a checkpoint (here or in
+                # close()) that cannot get the lock in time is skipped, as JournalBackend.close()
+                # does, never reported as a failure of the call that came before.
                 try:
                     if self.memory.unfolded_transactions():
                         self.memory.checkpoint()
+                except (StoreLockTimeout, StoreInUse):
+                    pass
                 finally:
-                    self.memory.close()
+                    try:
+                        self.memory.close()
+                    except (StoreLockTimeout, StoreInUse):
+                        pass
 
             self._translate(shut)

@@ -91,8 +91,19 @@ def run_service(store, repo, agent, allow_must, as_json, action: Callable[[Memor
                 if session:
                     service.use_session(session)
                 result = action(service)
-            finally:
+            except BaseException:
+                try:
+                    service.close()
+                except Exception:
+                    pass                     # the command's own error is the one to report
+                raise
+            try:
                 service.close()
+            except Exception:
+                # the result is computed and its writes are durable: report it, not this (a
+                # retry would repeat the command: a second session, feedback counted twice)
+                _emit("note: the store could not be closed cleanly; the command's result is "
+                      "already saved", err=True)
             if as_json:
                 click.echo(json.dumps(result, indent=2))
             else:

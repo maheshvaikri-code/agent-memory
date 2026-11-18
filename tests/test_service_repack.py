@@ -85,10 +85,10 @@ def make_store(rng, root):
 
 
 def same_engine_answers(memory):
-    """Both algorithms must pack the same engine result. The engine's answer to an identical
-    call is not always identical (rarely, a later call ranks a different set of items: seen
-    with the reference against itself), so each distinct engine call is answered once and
-    replayed."""
+    """Both algorithms must pack the same engine result, so each distinct engine call is
+    answered once and replayed. (The engine's answer to an identical call used to differ now
+    and then: recency read the clock per record, so exactly tied notes swapped; fixed, see
+    test_retriever_ties.py. Replaying keeps this test about packing alone.)"""
     real = memory.recall
     seen = {}
 

@@ -97,7 +97,8 @@ def _dense_ranks(scores: Dict[NodeRef, float]) -> Dict[NodeRef, int]:
     return {ref: by_value[score] for ref, score in scores.items()}
 
 
-def _age_days(timestamp: str) -> Optional[float]:
+def _age_days(timestamp: str, now: Optional[datetime] = None) -> Optional[float]:
+    """Days since `timestamp` at `now` (default: the current time)."""
     if not timestamp:
         return None
     try:
@@ -106,14 +107,15 @@ def _age_days(timestamp: str) -> Optional[float]:
         return None
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
-    return max(0.0, (datetime.now(timezone.utc) - when).total_seconds() / 86400)
+    now = now if now is not None else datetime.now(timezone.utc)
+    return max(0.0, (now - when).total_seconds() / 86400)
 
 
-def _recency(rec: MemoryRecord) -> float:
+def _recency(rec: MemoryRecord, now: Optional[datetime] = None) -> float:
     half_life = KINDS[rec.kind].half_life_days
     if half_life is None:
         return 1.0
-    age = _age_days(rec.updated_at or rec.created_at)
+    age = _age_days(rec.updated_at or rec.created_at, now)
     if age is None:
         return 1.0
     return max(RECENCY_FLOOR, 0.5 ** (age / half_life))
@@ -423,13 +425,16 @@ class Retriever:
         cache = HashCache(self.repo_root)
         final: Dict[NodeRef, float] = {}
         states: Dict[NodeRef, str] = {}
+        # one clock reading for the whole ranking: read per record, exactly tied notes would
+        # differ by the time between reads and their order would follow evaluation order
+        now = datetime.now(timezone.utc)
         for ref, base in survivors.items():
             rec = cands[ref]
             state = staleness(self.graph, ref, cache)
             if strict and state == "orphaned":
                 continue
             tier = GUARDRAIL if ref in promoted else rec.tier
-            final[ref] = (base * rec.confidence * STALENESS_FACTOR[state] * _recency(rec)
+            final[ref] = (base * rec.confidence * STALENESS_FACTOR[state] * _recency(rec, now)
                           * TIER_BOOST[tier] * _feedback(rec))
             states[ref] = state
         order = sorted(final, key=lambda ref: (-final[ref], str(cands[ref].id), ref[0]))

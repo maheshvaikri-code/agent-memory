@@ -14,12 +14,21 @@ import click
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
+from rich.markup import escape
 from rich.tree import Tree
 
 from .memory import AgentMemory
 
 
 console = Console()
+
+
+def _safe(value) -> str:
+    """`value` as text rich prints literally: terminal control characters dropped (a stored
+    ESC sequence must not reach the terminal) and anything that looks like a markup tag escaped
+    (a stored `[/red]` must neither restyle the output nor raise MarkupError)."""
+    from .cli_agent import _printable
+    return escape(_printable(str(value)))
 
 
 @contextlib.contextmanager
@@ -65,7 +74,7 @@ def init(name: str, output: Optional[str]):
     memory.save(output_path)
 
     console.print(f"[green]Initialized memory store: {output_path}[/green]")
-    console.print(f"Project: {name}")
+    console.print(f"Project: {_safe(name)}")
 
 
 @main.command()
@@ -99,7 +108,7 @@ def stats(memory_file: str):
         console.print(stores)
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Error: {_safe(e)}[/red]")
         sys.exit(1)
 
 
@@ -129,12 +138,12 @@ def health(memory_file: str):
             console.print()
             console.print("[yellow]Recommendations:[/yellow]")
             for rec in health["recommendations"]:
-                console.print(f"  - {rec}")
+                console.print(f"  - {_safe(rec)}")
         else:
             console.print("[green]Memory is healthy![/green]")
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Error: {_safe(e)}[/red]")
         sys.exit(1)
 
 
@@ -154,7 +163,7 @@ def consolidate(memory_file: str):
         console.print(f"  Archived: {summary['archived']}")
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Error: {_safe(e)}[/red]")
         sys.exit(1)
 
 
@@ -171,17 +180,17 @@ def context(memory_file: str, task: str, files: tuple, as_json: bool):
     """Get coding context for a task"""
     try:
         memory = AgentMemory.load(memory_file)
-        ctx = memory.get_context(task=task, files=list(files))
+        ctx = memory.get_context(task=task, files=[*files])   # `list` is the click group here
 
         if as_json:
-            console.print(json.dumps(ctx.to_dict(), indent=2))
+            console.print(_safe(json.dumps(ctx.to_dict(), indent=2)))
         else:
             console.print()
-            console.print(Panel(f"[bold]Context for: {task}[/bold]"))
-            console.print(ctx.to_prompt())
+            console.print(Panel(f"[bold]Context for: {_safe(task)}[/bold]"))
+            console.print(_safe(ctx.to_prompt()))
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Error: {_safe(e)}[/red]")
         sys.exit(1)
 
 
@@ -198,12 +207,13 @@ def check(memory_file: str, suggestion: str):
             console.print()
             console.print("[yellow]Warnings found:[/yellow]")
             for w in warnings:
-                console.print(f"  - [{w.get('type', 'warning')}] {w}")
+                # the type is shown (rich used to swallow "[decision_conflict]" as a tag)
+                console.print(f"  - {_safe('[' + str(w.get('type', 'warning')) + ']')} {_safe(w)}")
         else:
             console.print("[green]No conflicts found.[/green]")
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Error: {_safe(e)}[/red]")
         sys.exit(1)
 
 
@@ -231,7 +241,7 @@ def add_convention(memory_file: str, category: str, rule: str, enforced_by: str)
         console.print(f"[green]Added convention: {conv_id}[/green]")
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Error: {_safe(e)}[/red]")
         sys.exit(1)
 
 
@@ -253,7 +263,7 @@ def add_decision(memory_file: str, title: str, context: str, decider: tuple):
         console.print(f"[green]Added decision: {dec_id}[/green]")
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Error: {_safe(e)}[/red]")
         sys.exit(1)
 
 
@@ -275,7 +285,7 @@ def add_bug_pattern(memory_file: str, name: str, signature: str, module: tuple):
         console.print(f"[green]Added bug pattern: {pattern_id}[/green]")
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Error: {_safe(e)}[/red]")
         sys.exit(1)
 
 
@@ -297,7 +307,7 @@ def add_skill(memory_file: str, name: str, category: str, proficiency: float):
         console.print(f"[green]Added skill: {skill_id}[/green]")
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Error: {_safe(e)}[/red]")
         sys.exit(1)
 
 
@@ -326,15 +336,15 @@ def list_conventions(memory_file: str):
         for node in memory.graph.nodes():
             if node.type == "convention":
                 table.add_row(
-                    node.properties.get("category", ""),
-                    node.properties.get("rule", ""),
-                    node.properties.get("enforced_by", "")
+                    _safe(node.properties.get("category", "")),
+                    _safe(node.properties.get("rule", "")),
+                    _safe(node.properties.get("enforced_by", ""))
                 )
 
         console.print(table)
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Error: {_safe(e)}[/red]")
         sys.exit(1)
 
 
@@ -353,15 +363,15 @@ def list_decisions(memory_file: str):
         for node in memory.graph.nodes():
             if node.type == "decision":
                 table.add_row(
-                    node.properties.get("title", ""),
-                    node.properties.get("status", ""),
-                    node.properties.get("context", "")[:50] + "..."
+                    _safe(node.properties.get("title", "")),
+                    _safe(node.properties.get("status", "")),
+                    _safe(node.properties.get("context", "")[:50] + "...")
                 )
 
         console.print(table)
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Error: {_safe(e)}[/red]")
         sys.exit(1)
 
 
@@ -381,15 +391,15 @@ def list_skills(memory_file: str):
             if node.type == "skill":
                 prof = float(node.properties.get("proficiency", 0))
                 table.add_row(
-                    node.properties.get("name", ""),
-                    node.properties.get("category", ""),
+                    _safe(node.properties.get("name", "")),
+                    _safe(node.properties.get("category", "")),
                     f"{prof:.0%}"
                 )
 
         console.print(table)
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Error: {_safe(e)}[/red]")
         sys.exit(1)
 
 
@@ -407,10 +417,10 @@ def start_session(memory_file: str, task: str):
             session_id = memory.start_session(task)
 
         console.print(f"[green]Started session: {session_id}[/green]")
-        console.print(f"Task: {task}")
+        console.print(f"Task: {_safe(task)}")
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Error: {_safe(e)}[/red]")
         sys.exit(1)
 
 
@@ -428,7 +438,7 @@ def end_session(memory_file: str, session_id: str, completion: float):
         console.print(f"Completion: {completion:.0%}")
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Error: {_safe(e)}[/red]")
         sys.exit(1)
 
 
@@ -453,7 +463,7 @@ def export(memory_file: str, output: str, fmt: str):
         console.print(f"[green]Exported to: {output}[/green]")
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Error: {_safe(e)}[/red]")
         sys.exit(1)
 
 
