@@ -221,3 +221,119 @@ def test_legacy_commands_still_work_on_a_plain_file(tmp_path):
     assert runner.invoke(main, ["add", "convention", path, "-c", "naming", "-r", "x is y"]).exit_code == 0
     assert runner.invoke(main, ["check", path, "use camelCase"]).exit_code == 0   # legacy 2-arg form
     assert runner.invoke(main, ["list", "conventions", path]).exit_code == 0
+
+
+# -- fix round 1 ---------------------------------------------------------------
+
+import io            # noqa: E402
+import os            # noqa: E402
+import subprocess    # noqa: E402
+import sys           # noqa: E402
+
+from agent_memory.protocol import block   # noqa: E402
+
+SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+
+
+def _amem(repo, *args):
+    """A real `amem` process with stdout piped and a narrow (cp1252) output encoding."""
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
+    env["PYTHONPATH"] = os.pathsep.join([SRC, env.get("PYTHONPATH", "")])
+    env["PYTHONIOENCODING"] = "cp1252"
+    return subprocess.run([sys.executable, "-m", "agent_memory.cli", *args, "--repo", str(repo)],
+                          stdin=subprocess.DEVNULL, capture_output=True, env=env, timeout=60)
+
+
+def test_human_output_survives_characters_the_terminal_cannot_encode(run, repo):
+    run("remember", "convention", "-F", "category=naming",
+        "-F", "rule=cache keys use colon namespaces \u2192 \u65e5\u672c")
+    plain = _amem(repo, "recall", "how should I name cache keys")
+    assert plain.returncode == 0, plain.stderr.decode("cp1252", "replace")
+    out = plain.stdout.decode("cp1252")
+    assert "colon namespaces" in out and "Traceback" not in plain.stderr.decode("cp1252", "replace")
+    as_json = _amem(repo, "recall", "how should I name cache keys", "--json")
+    assert as_json.returncode == 0
+    texts = [i["text"] for i in json.loads(as_json.stdout.decode("ascii"))["items"]]
+    assert any("\u2192 \u65e5\u672c" in t for t in texts)        # JSON is lossless, as before
+
+
+def test_recall_context_stdin_tolerates_invalid_utf8(run, repo):
+    _remember_stripe(run)
+    result = CliRunner().invoke(main, ["recall", "the checkout suite is red again",
+                                       "--context", "-", "--repo", str(repo), "--json"],
+                                input=b"abc \xff\xfe\x80 StripeSignatureError")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["items"]
+
+
+def test_recall_context_stdin_accepts_a_full_2000_character_context(run, repo):
+    result = CliRunner().invoke(main, ["recall", "t", "--context", "-", "--repo", str(repo),
+                                       "--json"], input=("\U0001F600" * 2000).encode("utf-8"))
+    assert result.exit_code == 0, result.output
+
+
+class _Endless(io.RawIOBase):
+    """A 1 MB stdin that counts how much of it was read."""
+
+    def __init__(self, size=1 << 20):
+        super().__init__()
+        self.left = size
+        self.read_bytes = 0
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        n = min(len(buffer), self.left)
+        buffer[:n] = b"x" * n
+        self.left -= n
+        self.read_bytes += n
+        return n
+
+
+def test_recall_context_stdin_is_bounded(run, repo):
+    stream = _Endless()
+    result = CliRunner().invoke(main, ["recall", "t", "--context", "-", "--repo", str(repo),
+                                       "--json"], input=stream)
+    assert result.exit_code == 2, result.output
+    assert json.loads(result.output)["error"]["code"] == "too_large"
+    assert stream.read_bytes <= 16 * 1024                       # never the whole megabyte
+
+
+def test_the_protocol_session_flow_attaches_writes_to_the_session(run, repo):
+    text = block("cli")
+    start_cmd = 'amem session start "<one-line task>"'
+    remember_cmd = "amem remember <kind> -F key=value ... --session <session-id>"
+    end_cmd = "amem session end <session-id>"
+    for command in (start_cmd, remember_cmd, end_cmd):
+        assert command in text, command
+    # exactly as written: start, remember with --session, end
+    sid = run("session", "start", "add retries")["session_id"]
+    run("remember", "open_question", "-F", "question=cap the retries?", "--session", sid)
+    ended = run("session", "end", sid)
+    assert any("cap the retries" in i["text"] for i in ended["unresolved"])
+    # a session that never ended (the agent crashed): the next start carries its open work
+    crashed = run("session", "start", "tune backoff")["session_id"]
+    run("remember", "blocker", "-F", "description=backoff ceiling unknown", "--session", crashed)
+    resumed = run("session", "start", "tune backoff again")
+    assert resumed["session_id"] != crashed
+    assert any("backoff ceiling unknown" in i["text"] for i in resumed["carried"])
+
+
+def test_duplicate_field_keys_are_usage_errors(repo):
+    result = CliRunner().invoke(main, ["remember", "convention", "-F", "category=a",
+                                       "-F", "rule=x", "-F", "rule=y", "--repo", str(repo)])
+    assert result.exit_code == 2 and "rule" in result.output and "more than once" in result.output
+
+
+def test_legacy_write_commands_still_work_on_an_isonl_file(tmp_path):
+    # a shared store cannot be .isonl, so these keep the old load/save path
+    path = str(tmp_path / "plain.isonl")
+    runner = CliRunner()
+    assert runner.invoke(main, ["init", "demo", "-o", path]).exit_code == 0
+    result = runner.invoke(main, ["add", "convention", path, "-c", "naming", "-r", "x is y"])
+    assert result.exit_code == 0 and "Added convention" in result.output, result.output
+    result = runner.invoke(main, ["start-session", path, "isonl task"])
+    assert result.exit_code == 0, result.output
+    loaded = AgentMemory.load(path)
+    assert [n.properties.get("rule") for n in loaded.graph.nodes("convention")] == ["x is y"]

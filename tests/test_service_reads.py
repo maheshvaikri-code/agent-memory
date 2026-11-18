@@ -524,3 +524,29 @@ def test_a_legacy_id_with_a_literal_ampersand_round_trips(svc):
     assert svc.feedback(shown, True) == {"ok": True, "id": stored}
     assert svc.verify(shown)["id"] == stored
     assert svc.retract(shown, "no") == {"ok": True, "id": stored}
+
+
+# -- terminal control characters -----------------------------------------------
+
+TERMINAL_ATTACK = "\x1b]0;PWNED\x07 \x1b[31mRED\x1b[0m \r overwrite"
+
+
+def test_recalled_notes_carry_no_terminal_control_characters(svc):
+    svc.remember("convention", {"category": "naming", "rule": (
+        f"cache keys use colon namespaces {TERMINAL_ATTACK}\nsecond line\twith a tab")})
+    svc.remember("bug_pattern", {"name": "retry_storm",
+                                 "signature": f"unbounded retry on the webhook {TERMINAL_ATTACK}"})
+    for out in (svc.recall("cache keys colon namespaces"),
+                svc.check("retry unbounded on the webhook")):     # check shapes items the same way
+        assert out["items"], "the record must still be returned"
+        texts = [out["prompt"]] + [v for item in out["items"] for v in _strings(item)]
+        for text in texts:
+            assert "\x1b" not in text and "\x07" not in text and "\r" not in text
+        assert "RED" in out["prompt"] and "overwrite" in out["prompt"]    # kept as data
+    # the renderer folds whitespace inside a note; the block's own line breaks survive
+    assert "\n" in svc.recall("cache keys colon namespaces")["prompt"]
+
+
+def test_neutralize_drops_c0_and_c1_controls_but_keeps_newline_and_tab():
+    text = neutralize("a\x00b\x1bc\x07d\re\x7ff\x85g\x9bh\ni\tj")
+    assert text == "abcdefgh\ni\tj"

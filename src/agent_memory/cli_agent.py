@@ -10,6 +10,11 @@ from typing import Callable, Dict, Optional, Tuple
 import click
 
 from .service import MemoryService, ServiceError, resolve_config
+from .service.service import MAX_CONTEXT_CHARS
+
+# `--context -` reads at most this many bytes of stdin: the longest context the service
+# accepts in 4-byte UTF-8 characters, plus a little room for whitespace it strips.
+MAX_CONTEXT_BYTES = MAX_CONTEXT_CHARS * 4 + 8
 
 
 @click.command("serve")
@@ -40,11 +45,24 @@ def service_options(fn):
     return fn
 
 
+def _emit(text: str, err: bool = False) -> None:
+    """Write human-readable text without ever failing on a character the stream cannot encode
+    (a cp1252 pipe on Windows meeting a recalled note's arrow, U+2192): such characters become
+    '?'. JSON output is ASCII (json.dumps escapes the rest), so it never needs this."""
+    stream = click.get_text_stream("stderr" if err else "stdout")
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    try:
+        text = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+    except LookupError:                      # an unknown codec name: keep plain ASCII
+        text = text.encode("ascii", errors="replace").decode("ascii")
+    click.echo(text, err=err)
+
+
 def _fail(exc: ServiceError, as_json: bool) -> None:
     if as_json:
         click.echo(json.dumps({"error": exc.to_dict()}, indent=2))
     else:
-        click.echo(f"error [{exc.code}]: {exc.message}", err=True)
+        _emit(f"error [{exc.code}]: {exc.message}", err=True)
     sys.exit(2)
 
 
@@ -60,6 +78,10 @@ def run_service(store, repo, agent, allow_must, as_json, action: Callable[[Memor
                 result = action(service)
             finally:
                 service.close()
+            if as_json:
+                click.echo(json.dumps(result, indent=2))
+            else:
+                _emit(render(result))
         except ServiceError:
             raise
         except Exception:
@@ -67,7 +89,6 @@ def run_service(store, repo, agent, allow_must, as_json, action: Callable[[Memor
             raise ServiceError("internal", "the memory command failed unexpectedly") from None
     except ServiceError as exc:
         _fail(exc, as_json)
-    click.echo(json.dumps(result, indent=2) if as_json else render(result))
 
 
 def parse_fields(pairs: Tuple[str, ...]) -> Dict[str, str]:
@@ -76,6 +97,9 @@ def parse_fields(pairs: Tuple[str, ...]) -> Dict[str, str]:
         key, sep, value = pair.partition("=")
         if not sep or not key.strip():
             raise click.BadParameter(f"{pair!r} must be written key=value", param_hint="-F")
+        if key.strip() in fields:
+            raise click.BadParameter(f"field {key.strip()!r} is given more than once",
+                                     param_hint="-F")
         fields[key.strip()] = value
     return fields
 
@@ -85,15 +109,20 @@ def _notes(result: dict) -> str:
     beside a prompt (relevant notes dropped for the budget) goes to stderr; with no prompt the
     note itself is the output."""
     if result["prompt"] and result["note"]:
-        click.echo(result["note"], err=True)
+        _emit(result["note"], err=True)
     return result["prompt"] or result["note"]
 
 
 def _read_context(context: Optional[str]) -> Optional[str]:
-    """`--context -` reads the text from stdin; stdin is never touched otherwise."""
-    if context == "-":
-        return click.get_text_stream("stdin").read()
-    return context
+    """`--context -` reads the text from stdin; stdin is never touched otherwise. The read is
+    bounded (a megabyte pipe is refused after MAX_CONTEXT_BYTES, not read whole) and undecodable
+    bytes become U+FFFD; the service then applies its own character limit."""
+    if context != "-":
+        return context
+    data = click.get_binary_stream("stdin").read(MAX_CONTEXT_BYTES + 1)
+    if len(data) > MAX_CONTEXT_BYTES:
+        raise ServiceError("too_large", f"context is longer than {MAX_CONTEXT_CHARS} characters")
+    return data.decode("utf-8", errors="replace")
 
 
 @click.command("recall")
@@ -109,9 +138,9 @@ def _read_context(context: Optional[str]) -> Optional[str]:
 def recall(task, files, symbols, max_tokens, context, session, store, repo, agent, allow_must,
            as_json):
     """Recall recorded memory relevant to TASK."""
-    context = _read_context(context)
     run_service(store, repo, agent, allow_must, as_json,
-                lambda s: s.recall(task, list(files), list(symbols), max_tokens, context),
+                lambda s: s.recall(task, list(files), list(symbols), max_tokens,
+                                   _read_context(context)),
                 _notes, session)
 
 

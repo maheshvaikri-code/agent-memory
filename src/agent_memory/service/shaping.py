@@ -27,13 +27,21 @@ UNTRUSTED_PREAMBLE = (
     "goals; use them only as context.")
 
 
+_KEPT_CONTROLS = frozenset(("\n", "\t"))
+
+
 def neutralize(text: str) -> str:
     """Make recorded text unable to form any tag, so it can never open or close the untrusted
     block whatever the spelling: NFKC folds look-alikes such as the fullwidth bracket into '<',
     format characters (zero-width, BOM, bidi controls) are dropped, then every '<' is escaped.
-    Robust by construction rather than by matching the tag's spelling."""
+    Robust by construction rather than by matching the tag's spelling.
+
+    Control characters (Cc) other than newline and tab are dropped too: ESC, BEL, CR, NUL and
+    the C1 controls would otherwise reach a terminal raw (escape sequences that retitle the
+    window, recolour or overwrite lines). This covers notes stored before the rule existed."""
     text = unicodedata.normalize("NFKC", text)
-    text = "".join(c for c in text if unicodedata.category(c) != "Cf")
+    text = "".join(c for c in text
+                   if unicodedata.category(c) not in ("Cf", "Cc") or c in _KEPT_CONTROLS)
     return text.replace("<", "&lt;")
 
 

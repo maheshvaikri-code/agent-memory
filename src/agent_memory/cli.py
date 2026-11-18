@@ -27,9 +27,15 @@ def _writable(memory_file: str):
     """Open `memory_file` for writing. Writes are durable as they happen, and closing leaves a
     complete snapshot, so there is no separate save step and a store that has been opened with
     AgentMemory.open() is no longer refused. A missing file is an error, as it was with load():
-    a mistyped path must not quietly create a new store."""
+    a mistyped path must not quietly create a new store. An .isonl file cannot be a shared store
+    (open() refuses that format, and it never has a journal), so it keeps the old load/save."""
     if not os.path.exists(memory_file):
         raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(Path(memory_file)))
+    if Path(memory_file).suffix == ".isonl":
+        memory = AgentMemory.load(memory_file)
+        yield memory
+        memory.save(memory_file)          # only reached when the command's calls succeeded
+        return
     memory = AgentMemory.open(memory_file)
     try:
         yield memory
