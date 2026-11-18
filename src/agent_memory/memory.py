@@ -283,6 +283,14 @@ class AgentMemory:
         self._sync()
         return self._retriever.check(approach, files)
 
+    def count_tokens(self, text: str) -> int:
+        """Tokens in `text` by the counter recall() uses for its budget."""
+        return self._retriever.counter.count(text)
+
+    def set_token_counter(self, counter) -> None:
+        """Use `counter` (a TokenCounter, e.g. TokenCounter.tiktoken()) for recall budgets."""
+        self._retriever.counter = counter
+
     def attach_semantic(self, searcher) -> None:
         """Add an optional embedding channel. `searcher.search(query, k=...)` must return
         objects with `.node_ref` and `.score`; GraphEmbeddedMemory qualifies."""

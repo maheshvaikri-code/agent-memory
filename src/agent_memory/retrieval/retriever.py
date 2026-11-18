@@ -40,6 +40,8 @@ _NONE: FrozenSet[str] = frozenset()
 _RESOLVED_FIELD = RESOLVED_FIELD
 CARRY_DAYS = 14          # an unended session older than this is a crashed one: not carried
 CARRY_MAX = 10
+PREFIX_CACHE_MAX = 4096  # cached de-dup prefixes per index; cleared when full (long-lived processes)
+ORDER_SLACK = 1024       # dead tokens tolerated in the token order before it is rebuilt
 
 
 @dataclass
@@ -224,6 +226,11 @@ class _Index:
                     if t not in self._order:
                         self._order[t] = self._next_rare
                         self._next_rare -= 1
+            if len(self._order) > len(self.bm25.df) + ORDER_SLACK:
+                # tokens of long-gone records pile up in a long-lived process: rebuild lazily
+                self._order = None
+                self._prefixes.clear()
+                self._next_rare = -1
         self.records = tuple(cands.values())
         self.by_ref = dict(cands)
         return len(remove)
@@ -234,6 +241,8 @@ class _Index:
             if self._order is None:     # rarest first across the candidate corpus
                 df = self.bm25.df
                 self._order = {t: i for i, t in enumerate(sorted(df, key=lambda t: (df[t], t)))}
+            if len(self._prefixes) >= PREFIX_CACHE_MAX:
+                self._prefixes.clear()
             hit = self._prefixes[text] = _prefix(token_set(text), self._order)
         return hit
 
