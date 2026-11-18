@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import difflib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -52,26 +53,62 @@ class Change:
 
     def diff(self) -> str:
         return "".join(difflib.unified_diff(
-            (self.old or "").splitlines(keepends=True), self.new.splitlines(keepends=True),
+            _diff_lines(self.old or ""), _diff_lines(self.new),
             fromfile=f"a/{self.path.name}", tofile=f"b/{self.path.name}"))
 
 
-def apply_changes(changes: List[Change]) -> List[Change]:
+def _diff_lines(text: str) -> List[str]:
+    """Lines for a diff; a final line with no newline carries git's marker so the output is not
+    run together (`-a+b`)."""
+    lines = text.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n\\ No newline at end of file\n"
+    return lines
+
+
+def _real(path: Path) -> str:
+    return os.path.normcase(os.path.realpath(os.fspath(path)))
+
+
+def _inside(path: Path, root: str) -> bool:
+    base = _real(Path(root))
+    try:
+        return os.path.commonpath([base, _real(path)]) == base
+    except ValueError:                  # different drives
+        return False
+
+
+def apply_changes(changes: List[Change], root: Optional[str] = None) -> List[Change]:
     """Write every change that is not 'unchanged'. Returns the ones written.
 
-    Every file is first re-read: if any differs from what the change was planned against (edited
-    or created since), nothing is written. Each write is atomic (temp file + replace), so a
-    crash leaves the original intact.
+    Refused before anything is written: two changes for the same file (the second would drop the
+    first); with `root`, a path that resolves outside it; a file that differs from what its
+    change was planned against (edited or created since it was read). Each write is atomic (temp
+    file + replace), so no file is ever left half-written; if a write fails part-way the error
+    names the failed file and the ones already written.
     """
+    seen = {}
+    for change in changes:
+        key = _real(change.path)
+        if key in seen:
+            raise InstallError(f"two changes target {change.path}; the second would drop the first")
+        seen[key] = change
+        if root is not None and not _inside(change.path, root):
+            raise InstallError(f"{change.path} is outside {root}; refusing to write it")
     pending = [change for change in changes if change.status != "unchanged"]
     for change in pending:
         current, _ = read_text(change.path)
         if current != change.old:
             raise InstallError(f"{change.path} changed since it was read; nothing was written, "
                                "run the install again")
-    written = []
+    written: List[Change] = []
     for change in pending:
-        change.path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(change.path, change.new.replace("\n", change.newline))
+        try:
+            change.path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(change.path, change.new.replace("\n", change.newline))
+        except OSError as exc:
+            done = ", ".join(str(c.path) for c in written) or "none"
+            raise InstallError(f"could not write {change.path} ({exc}); already written: {done}; "
+                               "that file is unchanged") from None
         written.append(change)
     return written

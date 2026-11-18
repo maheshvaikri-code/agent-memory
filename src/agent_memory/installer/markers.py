@@ -9,7 +9,10 @@ END = "<!-- agent-memory:end -->"
 
 
 def has_block(text: str) -> bool:
-    return BEGIN_PREFIX in text and END in text
+    """True only for a valid block: exactly one BEGIN followed by exactly one END. Anything
+    else (lone, reversed or duplicated markers) is not a block; `apply_block` refuses it."""
+    return (text.count(BEGIN_PREFIX) == 1 and text.count(END) == 1
+            and text.find(BEGIN_PREFIX) < text.find(END))
 
 
 def apply_block(existing: str, body: str) -> str:

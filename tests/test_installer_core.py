@@ -1,8 +1,10 @@
 import json
+import os
+from pathlib import Path
 
 import pytest
 
-from agent_memory.installer import InstallError
+from agent_memory.installer import InstallError, markers
 from agent_memory.installer.changes import Change, apply_changes, read_text
 from agent_memory.installer.gitignore import ensure_ignored
 from agent_memory.installer.jsonmerge import has_server, merge_mcp_servers
@@ -110,11 +112,6 @@ def test_apply_creates_parent_directories_and_skips_unchanged(tmp_path):
 # Added for the review focus: idempotence on disk, preservation, newlines,
 # refusal of unsafe inputs, atomicity, encoding edge cases.
 # ---------------------------------------------------------------------------
-import os
-
-from agent_memory.installer import markers
-
-
 def _install_file(path, body=BODY):
     """What `amem install --write` does for one instruction file."""
     text, newline = read_text(path)
@@ -292,7 +289,7 @@ def test_apply_is_atomic_a_failed_replace_leaves_the_original_and_no_temp_file(t
         raise OSError("disk on fire")
 
     monkeypatch.setattr(atomic.os, "replace", boom)
-    with pytest.raises(OSError):
+    with pytest.raises(InstallError, match="disk on fire"):
         apply_changes([Change(path, "original\n", "changed\n", "x")])
     monkeypatch.undo()
     assert path.read_bytes() == b"original\n"
@@ -324,3 +321,113 @@ def test_writing_through_a_symlink_keeps_the_link(tmp_path):
     _install_file(link)
     assert link.is_symlink() and BEGIN.encode() in target.read_bytes()
     assert target.read_bytes().startswith(b"# real\n")
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1
+# ---------------------------------------------------------------------------
+def test_two_changes_for_the_same_file_are_refused_before_any_write(tmp_path):
+    path = tmp_path / "CLAUDE.md"
+    path.write_bytes(b"x\n")
+    other = tmp_path / "other.md"
+    alias = tmp_path / "sub" / ".." / "CLAUDE.md"
+    (tmp_path / "sub").mkdir()
+    changes = [Change(other, None, "o\n", "x"), Change(path, "x\n", "a\n", "x"),
+               Change(alias, "x\n", "b\n", "x")]
+    with pytest.raises(InstallError, match="CLAUDE.md"):
+        apply_changes(changes)
+    assert path.read_bytes() == b"x\n" and not other.exists()
+
+
+def test_existing_entry_keeps_user_keys_and_only_our_keys_are_set():
+    existing = json.dumps({"mcpServers": {"agent-memory": {
+        "command": "old", "args": ["stale"], "env": {"K": "v"}, "disabled": True,
+        "autoApprove": ["recall"]}}}, indent=2) + "\n"
+    out = merge_mcp_servers(existing, "agent-memory", ENTRY)
+    entry = json.loads(out)["mcpServers"]["agent-memory"]
+    assert entry["command"] == "amem" and entry["args"] == ["serve"]
+    assert entry["env"] == {"K": "v"} and entry["disabled"] is True and entry["autoApprove"] == ["recall"]
+    diff = Change(Path("f.json"), existing, out, "x").diff()
+    removed = [l for l in diff.splitlines() if l.startswith("-") and not l.startswith("---")]
+    assert removed == ['-      "command": "old",', '-        "stale"']
+    assert merge_mcp_servers(out, "agent-memory", ENTRY) == out        # idempotent
+
+
+def test_existing_entry_that_is_not_an_object_is_replaced():
+    out = merge_mcp_servers('{"mcpServers": {"agent-memory": "oops"}}', "agent-memory", ENTRY)
+    assert json.loads(out)["mcpServers"]["agent-memory"] == ENTRY
+
+
+def test_diff_marks_a_missing_final_newline_instead_of_garbling():
+    diff = Change(Path("f.md"), "no newline at end", "no newline at end\n\nmore\n", "x").diff()
+    assert "-no newline at end\n\\ No newline at end of file\n" in diff
+    assert "+no newline at end\n" in diff and "+-" not in diff and "end+" not in diff
+    both = Change(Path("f.md"), "a", "b", "x").diff()
+    assert both.count("\\ No newline at end of file") == 2 and "a+b" not in both
+
+
+def test_duplicate_json_keys_are_refused_naming_the_key():
+    with pytest.raises(InstallError, match="mcpServers"):
+        merge_mcp_servers('{"mcpServers": {}, "mcpServers": {"a": {}}}', "agent-memory", ENTRY)
+    with pytest.raises(InstallError, match="dup"):
+        merge_mcp_servers('{"mcpServers": {"x": {"dup": 1, "dup": 2}}}', "agent-memory", ENTRY)
+
+
+def test_non_finite_numbers_are_refused_not_written():
+    for bad in ('{"a": Infinity}', '{"a": 1E400}', '{"a": NaN}'):
+        with pytest.raises(InstallError):
+            merge_mcp_servers(bad, "agent-memory", ENTRY)
+
+
+def test_invalid_json_message_says_what_is_unsupported():
+    with pytest.raises(InstallError) as info:
+        merge_mcp_servers('{"mcpServers": {},}', "agent-memory", ENTRY)
+    message = str(info.value)
+    assert "not valid JSON" in message and "comments" in message and "trailing commas" in message
+    assert "by hand" in message
+
+
+def test_a_failed_write_mid_batch_is_an_install_error_naming_both_files(tmp_path, monkeypatch):
+    import agent_memory.storage.atomic as atomic
+    first, second = tmp_path / "first.md", tmp_path / "second.md"
+    first.write_bytes(b"1\n")
+    second.write_bytes(b"2\n")
+    real = os.replace
+
+    def flaky(src, dst):
+        if os.path.basename(dst) == "second.md":
+            raise PermissionError("locked")
+        return real(src, dst)
+
+    monkeypatch.setattr(atomic.os, "replace", flaky)
+    clock = iter(range(0, 10 ** 6, 10))
+    monkeypatch.setattr(atomic.time, "monotonic", lambda: next(clock))    # no 2 s retry wait
+    monkeypatch.setattr(atomic.time, "sleep", lambda seconds: None)
+    with pytest.raises(InstallError) as info:
+        apply_changes([Change(first, "1\n", "1b\n", "x"), Change(second, "2\n", "2b\n", "x")])
+    monkeypatch.undo()
+    message = str(info.value)
+    assert "second.md" in message and "first.md" in message and "locked" in message
+    assert first.read_bytes() == b"1b\n" and second.read_bytes() == b"2\n"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["first.md", "second.md"]
+
+
+def test_paths_outside_the_root_are_refused_before_anything_is_written(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    inside = root / "a.md"
+    escape = root / "sub" / ".." / ".." / "x.md"
+    with pytest.raises(InstallError, match="outside"):
+        apply_changes([Change(inside, None, "ok\n", "x"), Change(escape, None, "bad\n", "x")],
+                      root=str(root))
+    assert not inside.exists() and not (tmp_path / "x.md").exists()
+    apply_changes([Change(inside, None, "ok\n", "x")], root=str(root))
+    assert inside.read_bytes() == b"ok\n"
+
+
+def test_has_block_needs_a_valid_ordered_pair():
+    assert has_block(apply_block("", BODY))
+    assert not has_block(f"{END}\n{BEGIN}\n")
+    assert not has_block(f"{BEGIN}\na\n{BEGIN}\nb\n{END}\n")
+    assert not has_block(f"{BEGIN}\n{END}\n{END}\n")
+    assert not has_block(f"{BEGIN}\nonly begin\n") and not has_block("")
