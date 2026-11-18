@@ -6,9 +6,11 @@ from typing import Any, Dict
 
 
 def item_to_dict(item) -> Dict[str, Any]:
-    """Every string is neutralized: the structured items carry no markup either."""
+    """Every string is neutralized, so the structured items carry no markup either. The id
+    only has '<' escaped (no NFKC, no dropped characters): it must come back exactly, and the
+    service's id input reverses that one escape (see MemoryService._id)."""
     record = item.record
-    return {"id": neutralize(str(record.id)), "kind": neutralize(str(record.kind)),
+    return {"id": escape_id(str(record.id)), "kind": neutralize(str(record.kind)),
             "tier": neutralize(str(item.tier)), "text": neutralize(item.text),
             "why": neutralize(item.why), "staleness": neutralize(str(item.staleness)),
             "agent": neutralize(str(record.agent)),
@@ -33,6 +35,16 @@ def neutralize(text: str) -> str:
     text = unicodedata.normalize("NFKC", text)
     text = "".join(c for c in text if unicodedata.category(c) != "Cf")
     return text.replace("<", "&lt;")
+
+
+def escape_id(ident: str) -> str:
+    """An id as `items[].id` carries it: only '<' escaped, so it round-trips."""
+    return ident.replace("<", "&lt;")
+
+
+def unescape_id(ident: str) -> str:
+    """The exact inverse of escape_id, for ids an agent passes back."""
+    return ident.replace("&lt;", "<")
 
 
 def wrap(prompt: str) -> str:

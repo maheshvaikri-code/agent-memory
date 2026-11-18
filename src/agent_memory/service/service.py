@@ -20,7 +20,7 @@ from ..retrieval.render import render
 from ..storage.errors import StoreCorrupt, StoreInUse, StoreLockTimeout
 from .config import ServiceConfig, sanitize_agent
 from .errors import ServiceError
-from .shaping import item_to_dict, wrap
+from .shaping import item_to_dict, unescape_id, wrap
 
 AGENT_KINDS = ("convention", "decision", "bug_pattern", "alternative", "quirk", "workaround",
                "refactoring_attempt", "open_question", "blocker", "partial_work")
@@ -37,6 +37,7 @@ MAX_INT_DIGITS = 18
 MAX_CONTEXT_CHARS = 2000
 WRAPPER_TOKENS = 110      # the labelled untrusted block's own cost
 MIN_INNER_TOKENS = 90
+UNBOUNDED_TOKENS = 10 ** 6   # only to learn whether an empty recall dropped notes for budget
 _KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,40}")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _CONTEXT_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")   # \t \n \r pass
@@ -193,7 +194,8 @@ class MemoryService:
         return value
 
     def _id(self, value: Any) -> str:
-        return self._text("id", value, 200)
+        # items[].id arrives with '<' escaped (shaping.escape_id): undo exactly that
+        return unescape_id(self._text("id", value, 200))
 
     def _confine(self, path: Any) -> str:
         if not isinstance(path, str) or not path.strip():
@@ -411,20 +413,41 @@ class MemoryService:
             if terms:
                 # one extra "symbol": the engine joins task and symbols into a single query
                 names = names + [" ".join(terms)]
-            result = self._call(lambda: self.memory.recall(
-                task=task, files=paths, symbols=names,
-                max_tokens=max(MIN_INNER_TOKENS, budget - WRAPPER_TOKENS)))
-            kept = list(result.items[:MAX_ITEMS])
-            prompt = wrap(render(kept, result.compact)) if kept else ""
-            # neutralizing can lengthen a note ('<' -> '&lt;', NFKC expansions): drop the
-            # lowest-ranked items until the wrapped block fits the caller's budget
-            while kept and self.memory.count_tokens(prompt) > budget:
+            def ask(limit: int):
+                return self._call(lambda: self.memory.recall(
+                    task=task, files=paths, symbols=names, max_tokens=limit))
+
+            result = ask(max(MIN_INNER_TOKENS, budget - WRAPPER_TOKENS))
+            # Neutralizing can lengthen a note ('<' -> '&lt;', NFKC expansions), so pack the
+            # engine's items again against the wrapped block: in rank order, skipping an item
+            # that does not fit and going on (as the engine's own packer does), so one long
+            # note cannot starve the others.
+            kept: List[Any] = []
+            prompt = ""
+            for item in result.items[:MAX_ITEMS]:
+                trial = wrap(render(kept + [item], result.compact))
+                if self.memory.count_tokens(trial) <= budget:
+                    kept.append(item)
+                    prompt = trial
+            while kept and self.memory.count_tokens(prompt) > budget:      # backstop
                 kept.pop()
                 prompt = wrap(render(kept, result.compact)) if kept else ""
+            dropped = len(result.items[:MAX_ITEMS]) - len(kept)
+            if not result.items:
+                # empty: nothing relevant, or relevant notes the engine could not fit at all
+                dropped = len(ask(UNBOUNDED_TOKENS).items[:MAX_ITEMS])
             items = [item_to_dict(i) for i in kept]
+            if not dropped:
+                note = "" if items else "nothing relevant is recorded for this task"
+            elif items:
+                note = (f"{dropped} more relevant note(s) did not fit in max_tokens={budget}; "
+                        "ask again with a larger max_tokens to see them")
+            else:
+                note = (f"relevant notes exist but did not fit in max_tokens={budget}; "
+                        "ask again with a larger max_tokens")
             return {"items": items, "prompt": prompt,
                     "tokens": self.memory.count_tokens(prompt) if prompt else 0,
-                    "note": "" if items else "nothing relevant is recorded for this task"}
+                    "note": note}
 
     def check(self, approach: str, files: Optional[List[str]] = None) -> Dict[str, Any]:
         with self._lock:

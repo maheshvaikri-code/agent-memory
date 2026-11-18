@@ -382,7 +382,105 @@ def test_mixed_case_detection_is_unchanged_and_linear():
     assert _context_terms(" ".join(words)) == [
         "foobar", "stripeerror", "httperror", "abc", "ab", "a1b", "xmlhttprequest", "ios",
         "econnreset", "mcdonald"]
-    for word in ("a" * 2000, "A" * 2000, "A" * 1999 + "1", "A" + "a" * 1999):
-        started = time.perf_counter()
-        _context_terms(word)
-        assert time.perf_counter() - started < 0.005
+
+    def fastest(text, runs=3):
+        best = float("inf")
+        for _ in range(runs):
+            started = time.perf_counter()
+            _context_terms(text)
+            best = min(best, time.perf_counter() - started)
+        return best
+
+    # relative, not wall-clock: 20x the input must cost far less than the 400x of a quadratic
+    for make in (lambda n: "a" * n, lambda n: "A" * n, lambda n: "A" * (n - 1) + "1",
+                 lambda n: "A" + "a" * (n - 1)):
+        small, big = fastest(make(2000), 5), fastest(make(40000))
+        assert big < 50 * max(small, 2e-4), (small, big)
+
+
+# -- fix round 2: pack within the budget (no starvation), honest notes, ids round-trip ------------
+
+def _ids_in_prompt(prompt):
+    import re
+    return re.findall(r"^- \[([^\]]*)\]", prompt, re.M)
+
+
+def _consistent(svc, out, max_tokens):
+    assert out["tokens"] <= max_tokens
+    assert out["tokens"] == (svc.memory.count_tokens(out["prompt"]) if out["prompt"] else 0)
+    assert len(out["items"]) == len(_ids_in_prompt(out["prompt"]))
+
+
+@pytest.mark.parametrize("max_tokens", [600, 1500])
+def test_one_angle_bracket_heavy_note_does_not_starve_the_others(svc, max_tokens):
+    hostile = svc.remember("convention", {"category": "naming", "rule": (
+        "cache keys colon namespaces cache keys colon namespaces " + "<" * min(1900, max_tokens * 2))})
+    benign = {svc.remember("convention", {"category": f"style{i}",
+                                          "rule": f"cache keys use colon namespaces rule {i}"})["id"]
+              for i in range(8)}
+    engine = svc.memory.recall(task="cache keys colon namespaces", max_tokens=max_tokens - 110)
+    assert engine.items and str(engine.items[0].record.id) == hostile["id"]   # ranked first
+    engine_benign = {str(i.record.id) for i in engine.items} & benign
+    out = svc.recall("cache keys colon namespaces", max_tokens=max_tokens)
+    _consistent(svc, out, max_tokens)
+    returned = {i["id"] for i in out["items"]}
+    assert engine_benign and engine_benign <= returned        # every benign note the engine gave
+    assert hostile["id"] not in returned                      # escaped, it cannot fit
+    assert "did not fit" in out["note"] and "nothing relevant" not in out["note"]
+
+
+def test_a_budget_too_small_for_any_relevant_note_says_so(svc):
+    svc.remember("convention", {"category": "naming",
+                                "rule": "cache keys use colon namespaces " + "padding " * 230})
+    out = svc.recall("cache keys colon namespaces", max_tokens=200)    # the engine drops it
+    assert out["items"] == [] and out["prompt"] == "" and out["tokens"] == 0
+    assert "did not fit" in out["note"] and "nothing relevant" not in out["note"]
+    assert svc.recall("cache keys colon namespaces", max_tokens=4000)["items"]
+
+
+def test_a_note_that_only_escaping_makes_too_big_says_so(svc):
+    svc.remember("convention", {"category": "naming",
+                                "rule": "cache keys use colon namespaces " + "<" * 1500})
+    assert svc.memory.recall(task="cache keys colon namespaces", max_tokens=490).items
+    out = svc.recall("cache keys colon namespaces", max_tokens=600)    # the service drops it
+    assert out["items"] == [] and out["prompt"] == "" and out["tokens"] == 0
+    assert "did not fit" in out["note"] and "nothing relevant" not in out["note"]
+
+
+def test_true_abstention_keeps_its_note(svc):
+    svc.remember("convention", {"category": "naming", "rule": "cache keys use colon namespaces"})
+    out = svc.recall("fix css on the landing page", max_tokens=200)
+    assert out["items"] == [] and out["note"] == "nothing relevant is recorded for this task"
+    full = svc.recall("cache keys colon namespaces")
+    assert full["items"] and full["note"] == ""
+
+
+LEGACY_RULES = ["cache keys <colon> namespaces", "cache keys ﬁx colon namespaces",
+                "cache keys ａ colon namespaces", "cache keys​ colon namespaces"]
+
+
+@pytest.mark.parametrize("rule", LEGACY_RULES, ids=["lt", "ligature", "fullwidth", "zero_width"])
+def test_legacy_ids_round_trip_through_items(svc, rule):
+    stored = svc.memory.conventions.add_convention("naming", rule)
+    other = svc.memory.conventions.add_convention("naming2", rule)
+    out = svc.recall("cache keys colon namespaces")
+    by_stored = {}
+    for item in out["items"]:
+        assert "<" not in item["id"]
+        by_stored[item["id"].replace("&lt;", "<")] = item["id"]
+    assert stored in by_stored and other in by_stored
+    ident = by_stored[stored]
+    assert ident == stored.replace("<", "&lt;")             # only '<' is escaped in items[].id
+    assert svc.feedback(ident, True) == {"ok": True, "id": stored}
+    assert svc.verify(ident)["id"] == stored
+    new = svc.supersede(ident, "convention", {"category": "naming", "rule": "cache keys use dots"})
+    assert new["superseded"] == stored
+    assert svc.retract(by_stored[other], "no") == {"ok": True, "id": other}
+    assert svc.recall("cache keys colon namespaces")["items"][0]["id"] == new["id"]
+
+
+def test_plain_ids_are_unchanged(svc):
+    rec = svc.remember("convention", {"category": "naming", "rule": "cache keys use colon namespaces"})
+    out = svc.recall("cache keys")
+    assert out["items"][0]["id"] == rec["id"]
+    assert f"[{rec['id']}]" in out["prompt"]
