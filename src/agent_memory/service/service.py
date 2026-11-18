@@ -42,7 +42,9 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _CONTEXT_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")   # \t \n \r pass
 MAX_CONTEXT_TERMS = 40
 _WORDISH = re.compile(r"[A-Za-z0-9_]+")
-_MIXED_CASE = re.compile(r"[a-z].*[A-Z]|[A-Z]{2,}[a-z]")      # fooBar, StripeError, HTTPError
+# fooBar, StripeError, HTTPError. Used with .match(): anchored, no nested repeats, so it is
+# linear (the unanchored `[a-z].*[A-Z]` was quadratic on a long all-lower-case word).
+_MIXED_CASE = re.compile(r"[^a-z]*[a-z][^A-Z]*[A-Z]|.*?[A-Z][A-Z][a-z]")
 _NOISE_WORDS = frozenset("""
 err error errors warn warning warnings info debug trace fatal critical fail failed failure
 failures pass passed ok skip skipped xfail xpass note todo fixme exit status code test tests
@@ -69,7 +71,7 @@ def _context_terms(context: str) -> List[str]:
                 continue
             if "_" in core:
                 found = [p.lower() for p in core.split("_") if len(p) >= 4 and not p.isdigit()]
-            elif _MIXED_CASE.search(core) or (any(c.isdigit() for c in core)
+            elif _MIXED_CASE.match(core) or (any(c.isdigit() for c in core)
                                               and any(c.isalpha() for c in core)):
                 found = [core.lower()]
             elif core.isupper() and len(core) >= 3:
@@ -406,13 +408,20 @@ class MemoryService:
             names = self._symbols(symbols)
             budget = self._budget(max_tokens)
             terms = _context_terms(self._context(context))
-            if terms:                         # the engine joins task and symbols into one query
+            if terms:
+                # one extra "symbol": the engine joins task and symbols into a single query
                 names = names + [" ".join(terms)]
             result = self._call(lambda: self.memory.recall(
                 task=task, files=paths, symbols=names,
                 max_tokens=max(MIN_INNER_TOKENS, budget - WRAPPER_TOKENS)))
-            items = [item_to_dict(i) for i in result.items[:MAX_ITEMS]]
-            prompt = wrap(result.to_prompt()) if items else ""
+            kept = list(result.items[:MAX_ITEMS])
+            prompt = wrap(render(kept, result.compact)) if kept else ""
+            # neutralizing can lengthen a note ('<' -> '&lt;', NFKC expansions): drop the
+            # lowest-ranked items until the wrapped block fits the caller's budget
+            while kept and self.memory.count_tokens(prompt) > budget:
+                kept.pop()
+                prompt = wrap(render(kept, result.compact)) if kept else ""
+            items = [item_to_dict(i) for i in kept]
             return {"items": items, "prompt": prompt,
                     "tokens": self.memory.count_tokens(prompt) if prompt else 0,
                     "note": "" if items else "nothing relevant is recorded for this task"}
