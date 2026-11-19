@@ -15,6 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .. import anchors as anchors_mod
 from ..memory import AgentMemory
 from ..record import ENVELOPE_FIELDS, KINDS, PRIORITIES, MemoryRecord, pending_expired
 from ..retrieval.render import render
@@ -461,6 +462,68 @@ class MemoryService:
             else:
                 live += 1
         return live, expired
+
+    # -- review: for the person at a terminal -------------------------------------
+    # No MCP tool and no adapter an agent reaches calls these. `amem review` does, and its
+    # `accept` insists on an interactive terminal.
+
+    def _review_entry(self, record: MemoryRecord) -> Dict[str, Any]:
+        return {"id": escape_id(str(record.id)), "kind": neutralize(str(record.kind)),
+                "text": neutralize(record.text), "agent": neutralize(str(record.agent)),
+                "session_id": neutralize(str(record.session_id)),
+                "created_at": neutralize(str(record.created_at)),
+                "expired": pending_expired(record.created_at)}
+
+    def review_list(self) -> Dict[str, Any]:
+        with self._lock:
+            records = self._call(self.memory.pending_records)
+            entries = [self._review_entry(r) for r in records]
+            return {"pending": entries, "expired": sum(1 for e in entries if e["expired"]),
+                    "limit": MAX_PENDING}
+
+    def _pending_record(self, ident: str) -> MemoryRecord:
+        record = self._lookup(ident)
+        if record.status != "pending":
+            raise _bad(f"{ident!r} is {record.status}, not waiting for review")
+        return record
+
+    def review_show(self, id: str) -> Dict[str, Any]:
+        with self._lock:
+            record = self._pending_record(self._id(id))
+            entry = self._review_entry(record)
+            entry.update({
+                "fields": {neutralize(str(k)): neutralize(str(v))
+                           for k, v in record.fields.items() if k != "status"},
+                "evidence": neutralize(record.evidence),
+                "files": [neutralize(p) for p in
+                          self._call(lambda: anchors_mod.anchor_paths(self.memory.graph,
+                                                                       record.ref))],
+                "confidence": round(float(record.confidence), 2),
+                "source": neutralize(str(record.source))})
+            return entry
+
+    def review_accept(self, id: str) -> Dict[str, Any]:
+        with self._lock:
+            self._refuse_if_read_only("accept a lesson")
+            ident = self._id(id)
+            self._call(self.memory.expire_pending)
+            record = self._lookup(ident, agent_kinds_only=True)
+            if record.status != "pending":
+                raise _bad(f"{ident!r} is {record.status}, not waiting for review")
+            self._call(lambda: self.memory.accept(ident))
+            return {"ok": True, "id": ident, "status": "active"}
+
+    def review_reject(self, id: str, reason: str = "") -> Dict[str, Any]:
+        with self._lock:
+            self._refuse_if_read_only("reject a lesson")
+            ident = self._id(id)
+            reason = self._text("reason", reason, MAX_FIELD_CHARS, allow_empty=True)
+            self._call(self.memory.expire_pending)
+            record = self._lookup(ident, agent_kinds_only=True)
+            if record.status != "pending":
+                raise _bad(f"{ident!r} is {record.status}, not waiting for review")
+            self._call(lambda: self.memory.retract(ident, reason or "rejected in review"))
+            return {"ok": True, "id": ident}
 
     # -- sessions --------------------------------------------------------------
 

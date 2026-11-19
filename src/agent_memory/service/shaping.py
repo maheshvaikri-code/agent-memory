@@ -24,6 +24,7 @@ def item_to_dict(item) -> Dict[str, Any]:
 # What agents stamp (the service: "explicit"; session-end capture: "extracted"). The legacy
 # `amem add` commands stamp "explicit" too: no human-review mechanism exists yet, so the flag
 # means "a guardrail no person has confirmed", not "written by an agent".
+# A lesson a person accepts is stamped "reviewed" (3c), which is not in this set.
 UNREVIEWED_SOURCES = frozenset(("explicit", "extracted"))
 
 
