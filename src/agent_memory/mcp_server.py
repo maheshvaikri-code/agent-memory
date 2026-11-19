@@ -18,7 +18,7 @@ from .service import MemoryService, ServiceConfig, ServiceError
 
 TOOL_NAMES = ("memory_recall", "memory_check", "memory_remember", "memory_feedback",
               "memory_supersede", "memory_retract", "memory_verify", "memory_session_start",
-              "memory_session_end", "memory_status")
+              "memory_session_end", "memory_capture_lessons", "memory_status")
 
 _log = logging.getLogger(__name__)
 
@@ -118,11 +118,22 @@ def build_server(service: MemoryService) -> FastMCP:
     def memory_session_start(task: str, ctx: Context) -> Dict[str, Any]:
         return run(ctx, service.session_start, task=task)
 
-    @app.tool(description="End the current session. Optional one-line summary. Returns the "
-                          "items still unresolved so you can see what is left.")
-    def memory_session_end(ctx: Context, summary: str = "",
-                           completion: float = 1.0) -> Dict[str, Any]:
-        return run(ctx, service.session_end, summary=summary, completion=completion)
+    @app.tool(description="End the current session. Optional one-line summary and optional "
+                          "lessons (as in memory_capture_lessons). Returns the items still "
+                          "unresolved and, when lessons were given, the capture result.")
+    def memory_session_end(ctx: Context, summary: str = "", completion: float = 1.0,
+                           lessons: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        return run(ctx, service.session_end, summary=summary, completion=completion,
+                   lessons=lessons)
+
+    @app.tool(description="Hand over lessons from this session for a person to review. Each "
+                          "lesson: {kind, fields, evidence, files, symbols}; kind and fields "
+                          "as in memory_remember; evidence and at least one file or symbol "
+                          "are required. Lessons are NOT recalled until a person accepts "
+                          "them. Up to 10 per call. Returns captured ids and skipped "
+                          "lessons with reasons.")
+    def memory_capture_lessons(lessons: List[Dict[str, Any]], ctx: Context) -> Dict[str, Any]:
+        return run(ctx, service.capture, lessons=lessons)
 
     @app.tool(description="Memory status: store, your agent name, counts by kind, last write, "
                           "storage warnings.")

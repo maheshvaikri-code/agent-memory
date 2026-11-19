@@ -46,7 +46,7 @@ def test_the_tool_surface_is_exactly_the_specified_set(repo):
 
     tools = run(scenario())
     service.close()
-    assert sorted(t.name for t in tools) == sorted(TOOL_NAMES) and len(TOOL_NAMES) == 10
+    assert sorted(t.name for t in tools) == sorted(TOOL_NAMES) and len(TOOL_NAMES) == 11
     assert all(t.description and len(t.description) <= 400 for t in tools)
     assert sum(len(t.description) for t in tools) <= 3000       # tokens are paid on every turn
 
