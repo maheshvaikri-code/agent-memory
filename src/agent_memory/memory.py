@@ -3,8 +3,9 @@ Agent Memory - Main memory manager coordinating all stores
 """
 
 import os
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ison_graph import ISONGraph
 
@@ -28,7 +29,7 @@ from .stores import (
 from .context import ContextBuilder, CodingContext
 from .consolidation import MemoryConsolidator
 from . import anchors as anchors_mod
-from .record import KINDS, MemoryRecord
+from .record import KINDS, MemoryRecord, NodeRef
 from .storage import JournalBackend, SharedGraph, StoreInUse, atomic_write_text, transactional
 from .writer import MemoryWriter, WriteResult
 from .retrieval import RecallResult, Retriever
@@ -326,6 +327,62 @@ class AgentMemory:
     def verify(self, memory_id) -> int:
         """Confirm a memory still holds: re-stamp its anchors at the current file hashes."""
         return anchors_mod.restamp(self.graph, self.writer.find(memory_id), self.repo_root)
+
+    # =========================================================================
+    # Lessons waiting for review
+    # =========================================================================
+
+    def pending_records(self) -> List[MemoryRecord]:
+        """Records a person has not accepted yet (status "pending"), oldest first. They are
+        never recalled, checked or carried."""
+        self._sync()
+        return self.writer.pending()
+
+    def find_duplicate(self, kind: str, fields: Dict[str, Any]) -> Optional[Tuple[NodeRef, str]]:
+        """(ref, "active" | "pending") of a record with the text these fields build, or None."""
+        self._sync()
+        return self.writer.find_text(kind, fields)
+
+    @transactional
+    def accept(self, memory_id) -> None:
+        """Promote a pending record to an active, `reviewed` note (a person's decision)."""
+        self.writer.accept(self.writer.find(memory_id))
+
+    @transactional
+    def expire_pending(self, now: Optional[datetime] = None) -> int:
+        """Archive pending records older than PENDING_TTL_DAYS; returns how many."""
+        return self.writer.expire_pending(now)
+
+    @transactional
+    def capture(self, lessons: List[Dict[str, Any]], *, max_pending: int) -> Dict[str, Any]:
+        """Store lessons as pending records, atomically across processes: sweep expired ones,
+        count what is waiting, then add each lesson unless it duplicates an active or pending
+        note or the queue is full. Each lesson is `{"kind", "fields", "anchors", "evidence"}`,
+        already validated by the caller. Nothing here ever changes an existing record."""
+        swept = self.writer.expire_pending()
+        total = len(self.writer.pending())
+        room = max_pending - total
+        if room <= 0:
+            return {"captured": [], "skipped": [], "full": True, "swept": swept, "pending": total}
+        captured: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+        for index, item in enumerate(lessons):
+            hit = self.writer.find_text(item["kind"], item["fields"])
+            if hit is not None:
+                skipped.append({"index": index, "code": "duplicate",
+                                "of": hit[0][1] if hit[1] == "active" else None,
+                                "of_status": hit[1]})
+            elif room <= 0:
+                skipped.append({"index": index, "code": "queue_full", "of": None,
+                                "of_status": None})
+            else:
+                result = self.writer.add(item["kind"], item["fields"], anchors=item["anchors"],
+                                         evidence=item["evidence"], source="extracted",
+                                         status="pending")
+                captured.append({"index": index, "id": result.id})
+                room -= 1
+        return {"captured": captured, "skipped": skipped, "full": False, "swept": swept,
+                "pending": total + len(captured)}
 
     # =========================================================================
     # Persistence

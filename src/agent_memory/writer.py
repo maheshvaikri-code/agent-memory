@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from . import anchors as anchors_mod
 from .record import (
-    KINDS, NATURAL_KEY, PRIORITIES, SESSION_KINDS, MemoryRecord, NodeRef, build_text,
-    envelope_props, is_closed, make_id, normalize_text, utc_now,
+    KINDS, NATURAL_KEY, PENDING_TTL_DAYS, PRIORITIES, SESSION_KINDS, SOURCE_CONFIDENCE,
+    MemoryRecord, NodeRef, build_text, envelope_props, is_closed, make_id, normalize_text,
+    pending_expired, utc_now,
 )
 from .retrieval.tokenize import tokens_for
 from .storage.txn import transactional
@@ -121,18 +123,21 @@ class MemoryWriter:
     def add(self, kind: str, fields: Dict[str, Any], *, node_id=None,
             anchors: Iterable = (), scope: Optional[List[str]] = None, evidence: str = "",
             priority: Optional[str] = None, confidence: Optional[float] = None,
-            source: str = "explicit") -> WriteResult:
+            source: str = "explicit", status: str = "active") -> WriteResult:
         if kind not in KINDS:
             raise ValueError(f"Unknown memory kind {kind!r}. Valid kinds: {', '.join(sorted(KINDS))}")
         if priority is not None and priority not in PRIORITIES:
             raise ValueError(f"priority must be one of {PRIORITIES}, got {priority!r}")
+        if status not in ("active", "pending"):
+            raise ValueError(f"status must be 'active' or 'pending', got {status!r}")
+        pending = status == "pending"
         props = {k: ("" if v is None else v) for k, v in fields.items()}
         text = build_text(kind, props)
         norm = normalize_text(text)
         if not norm and node_id is None:
             raise ValueError(f"A {kind} memory has no text; check the field names for this kind")
 
-        existing = self._active_with_text(kind, norm) if norm else None
+        existing = self._active_with_text(kind, norm) if norm and not pending else None
         if existing is not None:
             if kind in SESSION_KINDS:
                 # the open item now belongs to the session that recorded it again
@@ -143,7 +148,7 @@ class MemoryWriter:
             self._anchor_all(existing, kind, props, anchors)
             return WriteResult(existing, created=False, merged=True)
 
-        similar = self._similar(kind, text) if node_id is None else []
+        similar = self._similar(kind, text) if node_id is None and not pending else []
 
         new_id = node_id if node_id is not None else make_id(kind, text)
         replaces: List[NodeRef] = []
@@ -160,12 +165,13 @@ class MemoryWriter:
 
         envelope = envelope_props(agent=self.agent, session_id=self.session_id, source=source,
                                   evidence=evidence, commit=anchors_mod.head_commit(self.repo_root),
-                                  scope=scope, priority=priority, confidence=confidence)
+                                  scope=scope, priority=priority, confidence=confidence,
+                                  status=status)
         for key, value in envelope.items():
             props.setdefault(key, value)   # kind fields win, e.g. a decision's own status
         self.graph.add_node(kind, new_id, **props)
         ref = (kind, new_id)
-        if norm:
+        if norm and not pending:
             self._by_text[(kind, norm)] = ref
         self._anchor_all(ref, kind, props, anchors)
         for old in replaces:
@@ -197,6 +203,59 @@ class MemoryWriter:
             self.graph.update_node(ref[0], ref[1], helpful=rec.helpful + 1)
         else:
             self.graph.update_node(ref[0], ref[1], harmful=rec.harmful + 1)
+
+    # -- lessons waiting for review -----------------------------------------
+
+    def find_text(self, kind: str, fields: Dict[str, Any]) -> Optional[Tuple[NodeRef, str]]:
+        """(ref, "active" | "pending") of a record of `kind` whose text equals the text these
+        fields build, preferring an active one. An answered question or resolved blocker is
+        history, not a match (the same rule as a merge)."""
+        props = {k: ("" if v is None else v) for k, v in fields.items()}
+        norm = normalize_text(build_text(kind, props))
+        if not norm:
+            return None
+        pending_hit: Optional[Tuple[NodeRef, str]] = None
+        for node in self.graph.nodes(kind):
+            rec = MemoryRecord.from_node(node)
+            if rec.status not in ("active", "pending") or normalize_text(rec.text) != norm:
+                continue
+            if rec.status == "active":
+                if is_closed(kind, rec.fields):
+                    continue
+                return rec.ref, "active"
+            pending_hit = pending_hit or (rec.ref, "pending")
+        return pending_hit
+
+    def pending(self) -> List[MemoryRecord]:
+        """Every record waiting for review, oldest first."""
+        out = [MemoryRecord.from_node(node) for kind in KINDS for node in self.graph.nodes(kind)]
+        out = [rec for rec in out if rec.status == "pending"]
+        out.sort(key=lambda rec: (rec.created_at, str(rec.id)))
+        return out
+
+    @transactional
+    def accept(self, ref: NodeRef) -> None:
+        """A person confirmed this pending record: it becomes an active, reviewed note."""
+        rec = MemoryRecord.from_node(self.graph.get_node(*ref))
+        if rec.status != "pending":
+            raise ValueError(f"{ref[1]!r} is {rec.status}, not pending")
+        hit = self.find_text(ref[0], rec.fields)
+        if hit is not None and hit[1] == "active" and hit[0] != ref:
+            raise ValueError(f"an active note with the same text already exists ({hit[0][1]}); "
+                             "reject this lesson instead")
+        self.graph.update_node(ref[0], ref[1], status="active", source="reviewed",
+                               confidence=SOURCE_CONFIDENCE["reviewed"], invalid_at="",
+                               updated_at=utc_now())
+
+    @transactional
+    def expire_pending(self, now: Optional[datetime] = None, days: int = PENDING_TTL_DAYS) -> int:
+        """Archive pending records older than `days`. Returns how many."""
+        count = 0
+        for rec in self.pending():
+            if pending_expired(rec.created_at, now=now, days=days):
+                self._set_status(rec.ref, "archived")
+                count += 1
+        return count
 
     # -- helpers -----------------------------------------------------------
 

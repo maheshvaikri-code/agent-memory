@@ -9,7 +9,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 NodeRef = Tuple[str, Any]
@@ -18,9 +18,10 @@ GUARDRAIL, GUIDANCE, BACKGROUND = "guardrail", "guidance", "background"
 TIER_ORDER = (GUARDRAIL, GUIDANCE, BACKGROUND)
 
 PRIORITIES = ("must", "should", "info")
-STATUSES = ("active", "superseded", "retracted", "archived")
-SOURCE_CONFIDENCE = {"explicit": 0.7, "extracted": 0.5, "bootstrap": 0.5,
+STATUSES = ("active", "pending", "superseded", "retracted", "archived")
+SOURCE_CONFIDENCE = {"explicit": 0.7, "reviewed": 0.7, "extracted": 0.5, "bootstrap": 0.5,
                      "imported": 0.6, "legacy": 0.6}
+PENDING_TTL_DAYS = 30      # a lesson nobody reviewed in this long is archived (see writer.expire_pending)
 ENVELOPE_FIELDS = ("created_at", "updated_at", "agent", "session_id", "source",
                    "evidence", "commit", "scope", "priority", "confidence",
                    "status", "invalid_at", "helpful", "harmful")
@@ -98,6 +99,19 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def pending_expired(created_at: str, *, now: Optional[datetime] = None,
+                    days: int = PENDING_TTL_DAYS) -> bool:
+    """True when a pending record created at `created_at` (ISO 8601) is older than `days`.
+    An empty or unparseable time is never expired: a record is not archived on a guess."""
+    try:
+        created = datetime.fromisoformat(str(created_at))
+    except (TypeError, ValueError):
+        return False
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return (now or datetime.now(timezone.utc)) - created > timedelta(days=days)
+
+
 def build_text(kind: str, props: Mapping[str, Any]) -> str:
     """The one-statement form of a memory, built from its kind's fields."""
     values = _Blank({k: ("" if v is None else str(v)) for k, v in props.items()})
@@ -120,7 +134,8 @@ def make_id(kind: str, text: str) -> str:
 
 def envelope_props(*, agent: str = "unknown", session_id: str = "", source: str = "explicit",
                    evidence: str = "", commit: str = "", scope: Optional[List[str]] = None,
-                   priority: Optional[str] = None, confidence: Optional[float] = None) -> Dict[str, Any]:
+                   priority: Optional[str] = None, confidence: Optional[float] = None,
+                   status: str = "active") -> Dict[str, Any]:
     """Envelope as node properties. Unset scope and priority are stored empty
     so the kind's derived defaults apply on read."""
     now = utc_now()
@@ -130,7 +145,7 @@ def envelope_props(*, agent: str = "unknown", session_id: str = "", source: str 
         "scope": json.dumps(list(scope)) if scope else "",
         "priority": priority or "",
         "confidence": float(confidence if confidence is not None else SOURCE_CONFIDENCE.get(source, 0.6)),
-        "status": "active", "invalid_at": "", "helpful": 0, "harmful": 0,
+        "status": status, "invalid_at": "", "helpful": 0, "harmful": 0,
     }
 
 
