@@ -248,6 +248,7 @@ def test_a_read_only_service_refuses_every_write(repo):
         "verify": lambda: svc.verify(rec["id"]),
         "session_start": lambda: svc.session_start("a task"),
         "session_end": lambda: svc.session_end("done"),
+        "capture": lambda: svc.capture([]),
     }
     for name, call in writes.items():
         with pytest.raises(ServiceError) as exc:
