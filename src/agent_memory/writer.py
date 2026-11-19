@@ -131,6 +131,9 @@ class MemoryWriter:
         if status not in ("active", "pending"):
             raise ValueError(f"status must be 'active' or 'pending', got {status!r}")
         pending = status == "pending"
+        if pending and node_id is not None:
+            raise ValueError("a pending record cannot be added under an explicit id: "
+                             "that path replaces an active note")
         props = {k: ("" if v is None else v) for k, v in fields.items()}
         text = build_text(kind, props)
         norm = normalize_text(text)
@@ -169,6 +172,8 @@ class MemoryWriter:
                                   status=status)
         for key, value in envelope.items():
             props.setdefault(key, value)   # kind fields win, e.g. a decision's own status
+        if pending:
+            props["status"] = "pending"    # a pending add is always pending, whatever the fields say
         self.graph.add_node(kind, new_id, **props)
         ref = (kind, new_id)
         if norm and not pending:
@@ -181,6 +186,8 @@ class MemoryWriter:
     @transactional
     def supersede(self, old_ref: NodeRef, kind: str, fields: Dict[str, Any], **kw) -> WriteResult:
         self.graph.get_node(*old_ref)
+        if kw.get("status") == "pending":
+            raise ValueError("a pending record cannot supersede an active note")
         result = self.add(kind, fields, **kw)
         if result.ref == old_ref:
             return result
@@ -246,6 +253,9 @@ class MemoryWriter:
         self.graph.update_node(ref[0], ref[1], status="active", source="reviewed",
                                confidence=SOURCE_CONFIDENCE["reviewed"], invalid_at="",
                                updated_at=utc_now())
+        if not is_closed(ref[0], rec.fields):
+            # index it, so the next active add of this text merges instead of duplicating
+            self._by_text[(ref[0], normalize_text(rec.text))] = ref
 
     @transactional
     def expire_pending(self, now: Optional[datetime] = None, days: int = PENDING_TTL_DAYS) -> int:

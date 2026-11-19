@@ -45,7 +45,7 @@ def test_pending_is_a_known_status_and_loads_without_a_warning(memory):
 
 
 def test_add_refuses_a_status_other_than_active_or_pending(memory):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="status must be"):
         memory.remember("quirk", QUIRK, status="archived")
 
 
@@ -231,3 +231,54 @@ def test_two_processes_cannot_push_the_queue_past_its_limit(tmp_path):
     assert [p.wait(timeout=120) for p in procs] == [0, 0]
     with AgentMemory.open(path) as shared:
         assert len(shared.pending_records()) == 100
+
+
+# -- review fixes: pending writes cannot rewrite active notes -----------------
+
+def test_an_accepted_lesson_is_a_merge_target_for_the_next_active_add(memory):
+    memory.remember("quirk", {"description": "some other active quirk"})   # index the kind
+    result = pend(memory)
+    memory.accept(result.id)
+    again = memory.remember("quirk", QUIRK)
+    assert again.merged and not again.created and again.ref == result.ref
+    same = [r for r in memory.graph.nodes("quirk")
+            if MemoryRecord.from_node(r).text == QUIRK["description"]
+            and MemoryRecord.from_node(r).status == "active"]
+    assert len(same) == 1
+
+
+DECISION = {"title": "use sqlite", "context": "small local store"}
+
+
+def test_a_pending_add_under_an_explicit_id_cannot_replace_an_active_note(memory):
+    active = memory.remember("decision", DECISION)
+    with pytest.raises(ValueError):
+        memory.remember("decision", {"title": "use sqlite", "context": "a different context"},
+                        node_id=active.id, status="pending")
+    assert rec(memory, active.ref).status == "active"
+
+
+def test_a_pending_supersede_is_refused_and_leaves_the_old_note_active(memory):
+    active = memory.remember("decision", DECISION)
+    with pytest.raises(ValueError):
+        memory.supersede(active.id, "decision", {"title": "use postgres", "context": "scale"},
+                         status="pending")
+    assert rec(memory, active.ref).status == "active"
+
+
+def test_a_pending_add_stays_pending_even_when_the_fields_carry_a_status(memory):
+    result = memory.remember("decision", {"title": "use zorblax", "context": "queue drops items",
+                                          "status": "accepted"},
+                             source="extracted", status="pending")
+    assert rec(memory, result.ref).status == "pending"
+    assert memory.recall(task="use zorblax queue drops items").items == []
+    assert memory.check("use zorblax queue drops items") == []
+
+
+def test_capture_stores_a_lesson_whose_fields_carry_a_status_as_pending(memory):
+    out = memory.capture([{"kind": "decision",
+                           "fields": {"title": "use zorblax", "context": "queue drops items",
+                                      "status": "accepted"},
+                           "anchors": ["src/a.py"], "evidence": "e"}], max_pending=10)
+    assert len(out["captured"]) == 1
+    assert [r.status for r in memory.pending_records()] == ["pending"]
