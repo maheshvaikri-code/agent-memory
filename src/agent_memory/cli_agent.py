@@ -271,6 +271,10 @@ def status(store, repo, agent, allow_must, as_json):
             f"{r['store']} (no store yet: the first write creates it)")
         lines = [f"store: {where}", f"repo: {r['repo_root']}",
                  f"active notes: {r['total_active']}  last write: {r['last_write'] or '-'}"]
+        if r.get("pending"):
+            lines.append(f"lessons waiting for review: {r['pending']} (amem review list)")
+        if r.get("pending_expired"):
+            lines.append(f"expired lessons not yet swept: {r['pending_expired']}")
         lines += [f"  {kind}: {n}" for kind, n in sorted(r["counts"].items())]
         lines += [f"warning: {w}" for w in r["warnings"]]
         return _printable("\n".join(lines))

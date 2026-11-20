@@ -168,7 +168,8 @@ The block (and the MCP server's own instructions) tell the agent to:
 | `memory_retract` | Mark a note as wrong; it is kept, no longer returned |
 | `memory_verify` | Re-stamp a note's file anchors after re-reading the code |
 | `memory_session_start` | Start a session; returns open items of an earlier session that was never ended |
-| `memory_session_end` | End the session; returns what is still unresolved |
+| `memory_session_end` | End the session; returns what is still unresolved. Optionally takes `lessons` (see "Lessons and review") |
+| `memory_capture_lessons` | Hand over lessons for a person to review; they are never recalled until accepted |
 | `memory_status` | Store, agent name, counts by kind, last write, storage warnings |
 
 Agent-writable kinds and their required fields: `convention` (category, rule), `decision`
@@ -185,7 +186,65 @@ Only its identifier-like terms are used to rank notes (`StripeSignatureError`, `
 A failed call is a tool error whose text is JSON:
 `{"error": {"code": "...", "message": "..."}}`, with `code` one of `invalid_argument`,
 `unknown_kind`, `path_outside_repo`, `not_found`, `no_active_session`, `store_busy`,
-`store_corrupt`, `too_large`, `internal`.
+`store_corrupt`, `too_large`, `queue_full`, `internal`.
+
+### Lessons and review
+
+An agent can leave lessons for a person to review, with `memory_capture_lessons` or the
+`lessons` argument of `memory_session_end`. A lesson is `kind` (an agent-writable kind),
+`fields` (the same fields `memory_remember` takes), `evidence` (required: why the agent
+believes it), and `files` and/or `symbols` (at least one: what it is about; files are
+anchored like any note's). Unknown keys, including `priority` and `confidence`, skip the
+lesson. A lesson that fails these checks, or repeats a note or lesson already there, is
+skipped with a reason and the others are still stored; `memory_session_end` ends the session
+whatever capture does and reports it under `capture` when lessons were passed.
+
+Limits: 10 lessons per call, 100 waiting at once (past that, `queue_full`: a person has to
+review some first), and a lesson nobody reviews is archived after 30 days (on the next
+capture, accept or reject; until then it is shown as expired and no longer counts toward
+the 100).
+
+A captured lesson waits for review (`pending`). It is never recalled, checked or carried to a
+later session, no MCP tool returns its text, and the agent tools that change a note
+(`memory_retract`, `memory_supersede`, `memory_feedback`, `memory_verify` and their `amem`
+commands) refuse it. Only a person turns it into a note:
+
+```bash
+amem review list                  # what is waiting
+amem review show ID               # one lesson in full, labelled as agent-written
+amem review accept ID...          # shows each lesson, then asks you to type `accept`
+amem review reject ID... --reason "wrong"   # kept for the record, never recalled
+```
+
+`accept` needs a real terminal for both input and output, asks per lesson, and has no flag,
+environment variable or `--json` to skip the question; anything other than the word
+`accept` skips that lesson, and Ctrl-C or end of input stops asking, keeps what was already
+accepted and exits with code 2. There is no MCP tool that accepts or rejects. An accepted
+lesson becomes an active note with source `reviewed`. `reject` needs no terminal. `show`
+and the `accept` prompt print every further line of a multi-line value behind `    | `, so a
+lesson's text cannot pass for a field, its evidence or another lesson; symbols with control
+characters are refused at capture.
+
+Agents without MCP use `amem capture`: a JSON list of lessons on stdin (`amem capture
+--session ID`, `--json` for machine output).
+
+```bash
+echo '[{"kind": "quirk", "fields": {"description": "the retry queue drops jobs on restart"},
+        "evidence": "saw it in worker.py while testing", "files": ["worker.py"]}]' | amem capture
+```
+
+`amem status`, `amem doctor`, `amem review list` and `memory_session_start` (as
+`pending_review`) show how many lessons are waiting; `status` and `review list` also show how
+many have expired but are not yet swept.
+
+#### Upgrading
+
+Every process that shares a store should run a build with lessons. A waiting lesson is stored
+with status `archived` and a separate `review: pending` mark, so an older build reads it as
+archived: never recalled, checked or counted as active. A mixed fleet therefore fails safe;
+the older build just does not see the lessons. A lesson a person accepts becomes an ordinary
+active note that every build reads. In the other direction, a record whose status this build
+does not know is read as archived (with a load warning), never as active.
 
 ### The same through the command line
 
@@ -211,7 +270,8 @@ amem session end <session-id> --summary "retries capped"
 ```
 
 `amem guard` is the command-line `memory_check` (the name `amem check` already belongs to an
-older command that is kept).
+older command that is kept). `amem capture` and `amem review` are described under "Lessons and
+review".
 
 ### Where the store lives, and who is writing
 
@@ -303,10 +363,25 @@ a plain `.memory` file without converting it to a shared one.
   unreviewed: every recall and check item carries `unreviewed` (true for a guardrail-tier note
   whose source is `explicit` or `extracted`, false otherwise), a check that returns one adds a
   `note` saying the warnings come from agents and were not reviewed by a human, and the human
-  output of `amem guard` / `amem recall` shows `[unreviewed]` after its id. No human-review
-  mechanism exists yet, so the flag means "a guardrail no person has confirmed": the legacy
-  `amem add bug-pattern` and similar commands stamp `explicit` too, so a person's notes added
-  that way are marked unreviewed as well.
+  output of `amem guard` / `amem recall` shows `[unreviewed]` after its id. The flag means
+  "a guardrail no person has confirmed": the legacy `amem add bug-pattern` and similar
+  commands stamp `explicit` too, so a person's notes added that way are marked unreviewed as
+  well (see the next bullet for how a note gets cleared).
+- Accepted lessons are stamped `reviewed`, and that is the only thing that clears
+  `unreviewed`: `amem review accept` is the human-review mechanism. Legacy `amem add` notes
+  still show as unreviewed.
+- The terminal check on `amem review accept` is a strong barrier, not proof: a program that
+  drives a pseudo-terminal could pass it. The design relies on there being no MCP route, no
+  flag and a confirmation a person can see.
+- A lesson's evidence is checked for presence and for its file or symbol anchors, not for
+  truth; the person reviewing is the check.
+- The legacy commands and store methods (`amem check`, `amem list`, and helpers such as
+  `decisions.check_decision`, `conventions.get_conventions_for_file` and
+  `sessions.get_session_context`) leave waiting lessons out, but they still show retracted
+  and superseded records, as they always did; `recall`, `guard`, `get_context` and the MCP
+  tools do not.
+- Small known rough edges: `amem capture` on a terminal waits for stdin without a prompt; and
+  accepting or rejecting an unknown id in a repository with no store creates an empty store.
 
 ## Sharing one memory between agents
 

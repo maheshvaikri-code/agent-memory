@@ -99,6 +99,9 @@ def _open_checks(config, real: str) -> List[Dict[str, Any]]:
                      "legacy write commands convert it in place, one way, to a shared store)")]
     checks.append(_check("journal", True,
                          f"{status['unfolded_transactions']} unfolded transaction(s)"))
+    checks.append(_check("pending", True,
+                         f"{status['pending']} lesson(s) waiting for review "
+                         f"({status['pending_expired']} expired, not yet swept)"))
     warnings = status["warnings"]
     checks += [_check("warnings", False, w) for w in warnings] or [_check("warnings", True, "none")]
     return checks

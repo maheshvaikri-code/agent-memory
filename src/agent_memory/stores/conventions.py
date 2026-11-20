@@ -4,6 +4,7 @@ Convention Store - Code style and project patterns
 
 from typing import Any, Dict, List, Optional
 from .base import BaseStore
+from ..record import node_is_pending
 
 
 class ConventionStore(BaseStore):
@@ -123,7 +124,7 @@ class ConventionStore(BaseStore):
         conventions = []
 
         for node in self.graph.nodes():
-            if node.type == "convention":
+            if node.type == "convention" and not node_is_pending(node):
                 applies_to = node.properties.get("applies_to", "*")
                 # Simple pattern matching
                 if applies_to == "*" or applies_to in file_path:
@@ -157,7 +158,7 @@ class ConventionStore(BaseStore):
         for edge in self.graph.edges():
             if edge.rel_type == "VIOLATION_HISTORY" and edge.source == ("agent", "self"):
                 conv = self._get_node_or_none(*edge.target)
-                if conv:
+                if conv and not node_is_pending(conv):
                     violations.append({
                         "convention": conv.properties,
                         **edge.properties

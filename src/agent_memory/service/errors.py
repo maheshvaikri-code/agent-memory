@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 CODES = ("invalid_argument", "unknown_kind", "path_outside_repo", "not_found",
-         "no_active_session", "store_busy", "store_corrupt", "too_large", "internal")
+         "no_active_session", "store_busy", "store_corrupt", "too_large", "queue_full", "internal")
 
 
 class ServiceError(Exception):

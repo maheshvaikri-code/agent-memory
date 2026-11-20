@@ -6,22 +6,25 @@ JSON-able dicts. It never imports `mcp`.
 """
 from __future__ import annotations
 
+import logging
 import math
 import os
 import re
 import threading
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .. import anchors as anchors_mod
 from ..memory import AgentMemory
-from ..record import ENVELOPE_FIELDS, KINDS, PRIORITIES, MemoryRecord
+from ..record import ENVELOPE_FIELDS, KINDS, PRIORITIES, MemoryRecord, pending_expired
 from ..retrieval.render import render
 from ..storage import JournalBackend, journal
 from ..storage.errors import StoreCorrupt, StoreInUse, StoreLockTimeout
 from .config import ServiceConfig, sanitize_agent
 from .errors import ServiceError
-from .shaping import UNREVIEWED_NOTE, item_to_dict, neutralize, unescape_id, wrap, wrap_items
+from .shaping import (UNREVIEWED_NOTE, escape_id, item_to_dict, neutralize, unescape_id, wrap,
+                      wrap_items)
 
 AGENT_KINDS = ("convention", "decision", "bug_pattern", "alternative", "quirk", "workaround",
                "refactoring_attempt", "open_question", "blocker", "partial_work")
@@ -41,6 +44,10 @@ MIN_INNER_TOKENS = 90
 UNBOUNDED_TOKENS = 10 ** 6   # only to learn whether an empty recall dropped notes for budget
 _KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,40}")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+MAX_LESSONS_PER_CALL = 10
+MAX_PENDING = 100
+_LESSON_KEYS = frozenset(("kind", "fields", "evidence", "files", "symbols"))
+_log = logging.getLogger(__name__)
 _CONTEXT_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")   # \t \n \r pass
 MAX_CONTEXT_TERMS = 40
 _WORDISH = re.compile(r"[A-Za-z0-9_]+")
@@ -184,6 +191,14 @@ class MemoryService:
             raise ServiceError("invalid_argument", str(exc)) from None
         except Exception as exc:     # OSError, TypeError, KeyError, ...: no internals leak out
             raise ServiceError("internal", "the memory engine failed unexpectedly") from exc
+
+    def _changeable(self, ident: str, *, agent_kinds_only: bool = False) -> MemoryRecord:
+        """_lookup for the agent's own write tools (feedback, supersede, retract, verify): a
+        lesson waiting for review is refused. Only a person changes it, with `amem review`."""
+        record = self._lookup(ident, agent_kinds_only=agent_kinds_only)
+        if record.status == "pending":
+            raise _bad(f"{ident!r} is waiting for review; only `amem review` can change it")
+        return record
 
     def _lookup(self, ident: str, *, agent_kinds_only: bool = False) -> MemoryRecord:
         """The record with this id, read after taking in other processes' writes. Raises
@@ -339,7 +354,7 @@ class MemoryService:
             ident = self._id(id)
             if not isinstance(helpful, bool):
                 raise _bad("helpful must be true or false")
-            self._lookup(ident)
+            self._changeable(ident)
             self._call(lambda: self.memory.feedback(ident, helpful))
             return {"ok": True, "id": ident}
 
@@ -351,7 +366,7 @@ class MemoryService:
             clean = self._fields(kind, fields)
             anchors = self._files(files)
             evidence = self._text("evidence", evidence, MAX_FIELD_CHARS, allow_empty=True)
-            record = self._lookup(old, agent_kinds_only=True)
+            record = self._changeable(old, agent_kinds_only=True)
             result = self._call(lambda: self.memory.supersede(
                 old, kind, clean, anchors=anchors, evidence=evidence, source="explicit"))
             # the same text again resolves to the old record itself: nothing was superseded
@@ -364,7 +379,7 @@ class MemoryService:
             self._refuse_if_read_only("retract a note")
             ident = self._id(id)
             reason = self._text("reason", reason, MAX_FIELD_CHARS, allow_empty=True)
-            self._lookup(ident, agent_kinds_only=True)
+            self._changeable(ident, agent_kinds_only=True)
             self._call(lambda: self.memory.retract(ident, reason))
             return {"ok": True, "id": ident}
 
@@ -372,9 +387,154 @@ class MemoryService:
         with self._lock:
             self._refuse_if_read_only("verify a note")
             ident = self._id(id)
-            self._lookup(ident)
+            self._changeable(ident)
             count = self._call(lambda: self.memory.verify(ident))
             return {"id": ident, "restamped": int(count)}
+
+    # -- lessons (pending until a person accepts) --------------------------------
+
+    def _lesson(self, lesson: Any) -> Dict[str, Any]:
+        """One lesson, validated by the same rules as `remember`, plus: evidence is required
+        and at least one file or symbol. Raises ServiceError; the caller skips the lesson."""
+        if not isinstance(lesson, dict):
+            raise _bad("each lesson must be an object")
+        extra = sorted(str(key) for key in lesson if key not in _LESSON_KEYS)
+        if extra:
+            raise _bad(f"unknown lesson key(s): {', '.join(extra)}; "
+                       "allowed: kind, fields, evidence, files, symbols")
+        clean = self._fields(lesson.get("kind"), lesson.get("fields"))
+        evidence = self._text("evidence", lesson.get("evidence"), MAX_FIELD_CHARS)
+        anchors = self._files(lesson.get("files"))
+        symbols = self._symbols(lesson.get("symbols"))
+        if not anchors and not symbols:
+            raise _bad("a lesson needs at least one file or symbol it is about")
+        if symbols:
+            evidence = f"{evidence}; symbols: {', '.join(symbols)}"
+            if len(evidence) > MAX_FIELD_CHARS:
+                raise ServiceError("too_large", f"evidence with its symbols is longer than "
+                                                f"{MAX_FIELD_CHARS} characters")
+        return {"kind": lesson["kind"], "fields": clean, "anchors": anchors, "evidence": evidence}
+
+    @staticmethod
+    def _skip_reason(item: Dict[str, Any]) -> str:
+        if item["code"] == "queue_full":
+            return "queue_full: the review queue filled up; a person must review it first"
+        if item["of_status"] == "active":
+            return (f"duplicate: an active note with this text already exists "
+                    f"({escape_id(str(item['of']))})")
+        return "duplicate: this lesson is already waiting for review"
+
+    def capture(self, lessons: Any) -> Dict[str, Any]:
+        """Leave lessons for a person to review. They are stored pending: never recalled,
+        checked or carried until someone accepts them with `amem review accept`. Each lesson
+        that fails the gate is skipped with a reason; the others are stored."""
+        with self._lock:
+            self._refuse_if_read_only("capture lessons")
+            self._ensure_open()
+            if not isinstance(lessons, (list, tuple)) or not lessons:
+                raise _bad("lessons must be a non-empty list")
+            if len(lessons) > MAX_LESSONS_PER_CALL:
+                raise ServiceError("too_large",
+                                   f"at most {MAX_LESSONS_PER_CALL} lessons per call")
+            prepared: List[Any] = []
+            skipped: List[Dict[str, Any]] = []
+            for index, lesson in enumerate(lessons):
+                try:
+                    prepared.append((index, self._lesson(lesson)))
+                except ServiceError as exc:
+                    skipped.append({"index": index,
+                                    "reason": neutralize(f"{exc.code}: {exc.message}")})
+            captured: List[str] = []
+            pending = None
+            if prepared:
+                outcome = self._call(lambda: self.memory.capture(
+                    [item for _, item in prepared], max_pending=MAX_PENDING))
+                if outcome["full"]:
+                    raise ServiceError(
+                        "queue_full", f"{MAX_PENDING} lessons are already waiting for review; "
+                        "a person must accept or reject some (amem review list) before more "
+                        "can be captured")
+                captured = [escape_id(str(c["id"])) for c in outcome["captured"]]
+                for item in outcome["skipped"]:
+                    skipped.append({"index": prepared[item["index"]][0],
+                                    "reason": neutralize(self._skip_reason(item))})
+                pending = outcome["pending"]
+            if pending is None:
+                pending = self._call(self._pending_counts)[0]
+            return {"captured": captured, "skipped": sorted(skipped, key=lambda s: s["index"]),
+                    "pending": pending}
+
+    def _pending_counts(self) -> Tuple[int, int]:
+        """(waiting, expired but not yet swept)."""
+        live = expired = 0
+        for record in self.memory.pending_records():
+            if pending_expired(record.created_at):
+                expired += 1
+            else:
+                live += 1
+        return live, expired
+
+    # -- review: for the person at a terminal -------------------------------------
+    # No MCP tool and no adapter an agent reaches calls these. `amem review` does, and its
+    # `accept` insists on an interactive terminal.
+
+    def _review_entry(self, record: MemoryRecord) -> Dict[str, Any]:
+        return {"id": escape_id(str(record.id)), "kind": neutralize(str(record.kind)),
+                "text": neutralize(record.text), "agent": neutralize(str(record.agent)),
+                "session_id": neutralize(str(record.session_id)),
+                "created_at": neutralize(str(record.created_at)),
+                "expired": pending_expired(record.created_at)}
+
+    def review_list(self) -> Dict[str, Any]:
+        with self._lock:
+            records = self._call(self.memory.pending_records)
+            entries = [self._review_entry(r) for r in records]
+            return {"pending": entries, "expired": sum(1 for e in entries if e["expired"]),
+                    "limit": MAX_PENDING}
+
+    def _pending_record(self, ident: str) -> MemoryRecord:
+        record = self._lookup(ident)
+        if record.status != "pending":
+            raise _bad(f"{ident!r} is {record.status}, not waiting for review")
+        return record
+
+    def review_show(self, id: str) -> Dict[str, Any]:
+        with self._lock:
+            record = self._pending_record(self._id(id))
+            entry = self._review_entry(record)
+            entry.update({
+                "fields": {neutralize(str(k)): neutralize(str(v))
+                           for k, v in record.fields.items() if k != "status"},
+                "evidence": neutralize(record.evidence),
+                "files": [neutralize(p) for p in
+                          self._call(lambda: anchors_mod.anchor_paths(self.memory.graph,
+                                                                       record.ref))],
+                "confidence": round(float(record.confidence), 2),
+                "source": neutralize(str(record.source))})
+            return entry
+
+    def review_accept(self, id: str) -> Dict[str, Any]:
+        with self._lock:
+            self._refuse_if_read_only("accept a lesson")
+            ident = self._id(id)
+            self._call(self.memory.expire_pending)
+            record = self._lookup(ident, agent_kinds_only=True)
+            if record.status != "pending":
+                raise _bad(f"{ident!r} is {record.status}, not waiting for review")
+            self._call(lambda: self.memory.accept(ident))
+            return {"ok": True, "id": ident, "status": "active"}
+
+    def review_reject(self, id: str, reason: str = "") -> Dict[str, Any]:
+        with self._lock:
+            self._refuse_if_read_only("reject a lesson")
+            ident = self._id(id)
+            reason = self._text("reason", reason, MAX_FIELD_CHARS, allow_empty=True)
+            self._call(self.memory.expire_pending)
+            record = self._lookup(ident, agent_kinds_only=True)
+            if record.status != "pending":
+                raise _bad(f"{ident!r} is {record.status}, not waiting for review")
+            self._call(lambda: self.memory.retract(ident, reason or "rejected in review"))
+            return {"ok": True, "id": ident}
 
     # -- sessions --------------------------------------------------------------
 
@@ -383,12 +543,15 @@ class MemoryService:
             self._refuse_if_read_only("start a session")
             self._ensure_open()
             task = self._text("task", task, MAX_TASK_CHARS)
+            pending = self._call(lambda: self._pending_counts()[0])
             if self._session is not None:
-                return {"session_id": self._session, "already_active": True, "carried": []}
+                return {"session_id": self._session, "already_active": True, "carried": [],
+                        "pending_review": pending}
             carried = [item_to_dict(i) for i in self._call(self.memory.carried_items)]
             session_id = self._call(lambda: self.memory.start_session(task))
             self._session = session_id
-            return {"session_id": session_id, "already_active": False, "carried": carried}
+            return {"session_id": session_id, "already_active": False, "carried": carried,
+                    "pending_review": pending}
 
     def use_session(self, session_id: str) -> Dict[str, Any]:
         """Continue a session started earlier (the CLI does this across invocations). Allowed on
@@ -409,7 +572,8 @@ class MemoryService:
             self._session = ident
             return {"session_id": ident}
 
-    def session_end(self, summary: str = "", completion: float = 1.0) -> Dict[str, Any]:
+    def session_end(self, summary: str = "", completion: float = 1.0,
+                    lessons: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         with self._lock:
             self._refuse_if_read_only("end a session")
             self._ensure_open()
@@ -421,6 +585,21 @@ class MemoryService:
             summary = self._text("summary", summary, MAX_FIELD_CHARS, allow_empty=True)
             unresolved = [item_to_dict(i) for i in self._call(self.memory.carried_items)]
             session_id = self._session
+            capture = None
+            if lessons is not None and not (isinstance(lessons, (list, tuple)) and not lessons):
+                # stamped with this session, and never able to stop the session from ending
+                try:
+                    capture = self.capture(lessons)
+                except ServiceError as exc:
+                    if exc.code == "internal":
+                        _log.error("internal failure capturing lessons: %s", exc.message,
+                                   exc_info=exc.__cause__ or exc)
+                    capture = {"error": exc.to_dict()}
+                except Exception as exc:     # anything else: logged, reported, the session ends
+                    _log.error("internal failure capturing lessons: %s", type(exc).__name__,
+                               exc_info=exc)
+                    capture = {"error": ServiceError(
+                        "internal", "capturing the lessons failed unexpectedly").to_dict()}
             if summary:
                 self._call(lambda: self.memory.remember(
                     "session_decision", {"decision": summary, "rationale": "end-of-session summary"},
@@ -428,7 +607,10 @@ class MemoryService:
             self._call(lambda: self.memory.end_session(session_id, float(completion)))
             self._session = None
             self.memory.set_actor(self.config.agent, "")
-            return {"ok": True, "session_id": session_id, "unresolved": unresolved}
+            result = {"ok": True, "session_id": session_id, "unresolved": unresolved}
+            if capture is not None:
+                result["capture"] = capture
+            return result
 
     # -- reads -----------------------------------------------------------------
 
@@ -439,7 +621,11 @@ class MemoryService:
             raise _bad("symbols must be a list of strings")
         if len(symbols) > MAX_SYMBOLS:
             raise ServiceError("too_large", f"at most {MAX_SYMBOLS} symbols per call")
-        return [self._text("symbol", s, 100) for s in symbols]
+        names = [self._text("symbol", s, 100) for s in symbols]
+        for name in names:
+            if _CONTROL.search(name):
+                raise _bad(f"symbol {name!r} contains a control character")
+        return names
 
     def _context(self, context: Any) -> str:
         """Free text the agent already has at hand (error output, a diff hunk, its goal)."""
@@ -535,18 +721,25 @@ class MemoryService:
             unfolded = self.memory.unfolded_transactions()
         counts: Dict[str, int] = {}
         last = ""
+        pending = expired = 0
         for kind in KINDS:
             for node in self.memory.graph.nodes(kind):
                 record = MemoryRecord.from_node(node)
                 if record.status == "active":
                     counts[kind] = counts.get(kind, 0) + 1
                     last = max(last, record.updated_at or record.created_at or "")
+                elif record.status == "pending":
+                    if pending_expired(record.created_at):
+                        expired += 1
+                    else:
+                        pending += 1
         return {"store": self.config.store_path, "store_exists": self._store_exists,
                 "repo_root": self.config.repo_root,
                 "agent": self.config.agent, "shared": shared,
                 "session": self._session, "counts": counts,
                 "total_active": sum(counts.values()), "last_write": last,
                 "unfolded_transactions": unfolded,
+                "pending": pending, "pending_expired": expired,
                 "warnings": self.memory.warnings, "schema": 1}
 
     def close(self) -> None:

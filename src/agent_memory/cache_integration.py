@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import hashlib
 
+from .record import node_is_pending
+
 if TYPE_CHECKING:
     from .memory import AgentMemory
 
@@ -352,7 +354,7 @@ class CachedAgentMemory:
         """Get relevant decisions."""
         decisions = []
         for node in self.memory.graph.nodes():
-            if node.type == "decision":
+            if node.type == "decision" and not node_is_pending(node):
                 decisions.append(node.properties)
         return decisions[:5]
 
@@ -541,8 +543,10 @@ class SemanticMemory:
 
         counts = {}
 
-        # Index conventions
+        # Index conventions (a lesson waiting for review is not indexed)
         for node in self.memory.graph.nodes():
+            if node_is_pending(node):
+                continue
             if node.type == "convention":
                 text = self._format_for_indexing("convention", node.properties)
                 self._embedding_cache.set(f"convention:{node.id}", text, metadata={"type": "convention"})
@@ -752,8 +756,12 @@ class MemoryGraphCache:
         entities = []
         relations = []
 
-        # Export nodes as entities
+        # Export nodes as entities; a lesson waiting for review and its links stay out
+        hidden = set()
         for node in self.memory.graph.nodes():
+            if node_is_pending(node):
+                hidden.add((node.type, node.id))
+                continue
             entities.append({
                 "id": node.id,
                 "type": node.type,
@@ -762,6 +770,8 @@ class MemoryGraphCache:
 
         # Export edges as relations
         for edge in self.memory.graph.edges():
+            if edge.source in hidden or edge.target in hidden:
+                continue
             relations.append({
                 "from": edge.source,
                 "to": edge.target,

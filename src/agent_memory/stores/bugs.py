@@ -4,6 +4,7 @@ Bug Pattern Store - Historical bugs and fix patterns
 
 from typing import Any, Dict, List, Optional
 from .base import BaseStore
+from ..record import node_is_pending
 
 
 class BugPatternStore(BaseStore):
@@ -165,7 +166,7 @@ class BugPatternStore(BaseStore):
         risks = []
 
         for node in self.graph.nodes():
-            if node.type == "bug_pattern":
+            if node.type == "bug_pattern" and not node_is_pending(node):
                 modules = node.properties.get("modules_affected", "").split(",")
                 if any(module_path in m or m in module_path for m in modules if m):
                     # Get fix pattern
@@ -192,7 +193,7 @@ class BugPatternStore(BaseStore):
         for file_path in files:
             # Find matching patterns
             for node in self.graph.nodes():
-                if node.type == "bug_pattern":
+                if node.type == "bug_pattern" and not node_is_pending(node):
                     modules = node.properties.get("modules_affected", "").split(",")
                     if any(file_path in m or m in file_path for m in modules if m):
                         results.append({

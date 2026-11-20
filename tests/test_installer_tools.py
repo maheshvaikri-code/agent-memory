@@ -157,9 +157,9 @@ def test_the_combined_block_puts_untrusted_data_first_then_mcp_then_cli():
 
 
 def test_protocol_blocks_stay_within_their_length_limits():
-    # mcp and cli are unchanged; the combined block is bounded by their sum and stays compact
-    assert len(block("mcp")) <= 1200 and len(block("mcp").splitlines()) <= 12
-    assert len(block("cli")) <= 1600 and len(block("cli").splitlines()) <= 12
+    # mcp and cli grew by the lessons clauses (3c spec 4.6, 4.5); the combined block is bounded by their sum and stays compact
+    assert len(block("mcp")) <= 1400 and len(block("mcp").splitlines()) <= 12
+    assert len(block("cli")) <= 1800 and len(block("cli").splitlines()) <= 12
     both = block("both")
     assert len(both) <= len(block("mcp")) + len(block("cli")) and len(both) <= 3000
     assert len(both.splitlines()) <= 24
