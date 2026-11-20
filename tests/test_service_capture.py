@@ -219,3 +219,53 @@ def test_an_expired_lesson_is_counted_apart_until_it_is_swept(svc):
     assert status["pending"] == 0 and status["pending_expired"] == 1
     svc.capture([good("a fresh lesson")])                          # the sweep
     assert svc.status()["pending_expired"] == 0
+
+
+# -- final review fixes ------------------------------------------------------
+
+RESERVED = ["status", "source", "confidence", "priority", "scope", "review", "evidence"]
+
+
+@pytest.mark.parametrize("key", RESERVED)
+def test_a_reserved_key_inside_fields_skips_the_lesson(svc, key):
+    out = svc.capture([good(fields={"description": TEXT, key: "x"})])
+    assert out["captured"] == [] and out["skipped"][0]["index"] == 0
+    assert "set by the memory itself" in out["skipped"][0]["reason"]
+    assert svc.status()["pending"] == 0
+
+
+def test_evidence_with_its_symbols_must_fit_the_field_limit(svc):
+    evidence = "e" * (service_module.MAX_FIELD_CHARS - 10)
+    out = svc.capture([good(evidence=evidence, files=[], symbols=["CacheClient.get"])])
+    assert out["captured"] == [] and "too_large" in out["skipped"][0]["reason"]
+    fits = "e" * (service_module.MAX_FIELD_CHARS - len("; symbols: CacheClient.get"))
+    out = svc.capture([good(evidence=fits, files=[], symbols=["CacheClient.get"])])
+    assert len(out["captured"]) == 1
+    assert len(svc.memory.pending_records()[0].evidence) == service_module.MAX_FIELD_CHARS
+
+
+def test_a_symbol_with_a_control_character_is_refused(svc):
+    for bad in ("evict\nevidence: forged", "a\x1b[2Jb", "tab\there"):
+        out = svc.capture([good(files=[], symbols=[bad])])
+        assert out["captured"] == [] and "control character" in out["skipped"][0]["reason"]
+    with pytest.raises(ServiceError) as err:
+        svc.recall("zorblax", symbols=["evict\nx"])
+    assert code_of(err) == "invalid_argument"
+
+
+def test_session_end_still_ends_when_capture_fails_unexpectedly(svc, monkeypatch, caplog):
+    sid = svc.session_start("a task")["session_id"]
+
+    def boom(lessons):
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(svc, "capture", boom)
+    out = svc.session_end("done", lessons=[good()])
+    assert out["ok"] is True and out["session_id"] == sid
+    assert out["capture"]["error"]["code"] == "internal"
+    assert "disk on fire" not in str(out)
+    assert svc.memory.graph.get_node("session", sid).properties.get("ended")
+    with pytest.raises(ServiceError) as err:
+        svc.session_end()
+    assert code_of(err) == "no_active_session"
+    assert any("capturing lessons" in r.getMessage() for r in caplog.records)

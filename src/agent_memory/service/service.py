@@ -192,6 +192,14 @@ class MemoryService:
         except Exception as exc:     # OSError, TypeError, KeyError, ...: no internals leak out
             raise ServiceError("internal", "the memory engine failed unexpectedly") from exc
 
+    def _changeable(self, ident: str, *, agent_kinds_only: bool = False) -> MemoryRecord:
+        """_lookup for the agent's own write tools (feedback, supersede, retract, verify): a
+        lesson waiting for review is refused. Only a person changes it, with `amem review`."""
+        record = self._lookup(ident, agent_kinds_only=agent_kinds_only)
+        if record.status == "pending":
+            raise _bad(f"{ident!r} is waiting for review; only `amem review` can change it")
+        return record
+
     def _lookup(self, ident: str, *, agent_kinds_only: bool = False) -> MemoryRecord:
         """The record with this id, read after taking in other processes' writes. Raises
         not_found when there is none; with `agent_kinds_only`, invalid_argument for a record an
@@ -346,7 +354,7 @@ class MemoryService:
             ident = self._id(id)
             if not isinstance(helpful, bool):
                 raise _bad("helpful must be true or false")
-            self._lookup(ident)
+            self._changeable(ident)
             self._call(lambda: self.memory.feedback(ident, helpful))
             return {"ok": True, "id": ident}
 
@@ -358,7 +366,7 @@ class MemoryService:
             clean = self._fields(kind, fields)
             anchors = self._files(files)
             evidence = self._text("evidence", evidence, MAX_FIELD_CHARS, allow_empty=True)
-            record = self._lookup(old, agent_kinds_only=True)
+            record = self._changeable(old, agent_kinds_only=True)
             result = self._call(lambda: self.memory.supersede(
                 old, kind, clean, anchors=anchors, evidence=evidence, source="explicit"))
             # the same text again resolves to the old record itself: nothing was superseded
@@ -371,7 +379,7 @@ class MemoryService:
             self._refuse_if_read_only("retract a note")
             ident = self._id(id)
             reason = self._text("reason", reason, MAX_FIELD_CHARS, allow_empty=True)
-            self._lookup(ident, agent_kinds_only=True)
+            self._changeable(ident, agent_kinds_only=True)
             self._call(lambda: self.memory.retract(ident, reason))
             return {"ok": True, "id": ident}
 
@@ -379,7 +387,7 @@ class MemoryService:
         with self._lock:
             self._refuse_if_read_only("verify a note")
             ident = self._id(id)
-            self._lookup(ident)
+            self._changeable(ident)
             count = self._call(lambda: self.memory.verify(ident))
             return {"id": ident, "restamped": int(count)}
 
@@ -402,6 +410,9 @@ class MemoryService:
             raise _bad("a lesson needs at least one file or symbol it is about")
         if symbols:
             evidence = f"{evidence}; symbols: {', '.join(symbols)}"
+            if len(evidence) > MAX_FIELD_CHARS:
+                raise ServiceError("too_large", f"evidence with its symbols is longer than "
+                                                f"{MAX_FIELD_CHARS} characters")
         return {"kind": lesson["kind"], "fields": clean, "anchors": anchors, "evidence": evidence}
 
     @staticmethod
@@ -584,6 +595,11 @@ class MemoryService:
                         _log.error("internal failure capturing lessons: %s", exc.message,
                                    exc_info=exc.__cause__ or exc)
                     capture = {"error": exc.to_dict()}
+                except Exception as exc:     # anything else: logged, reported, the session ends
+                    _log.error("internal failure capturing lessons: %s", type(exc).__name__,
+                               exc_info=exc)
+                    capture = {"error": ServiceError(
+                        "internal", "capturing the lessons failed unexpectedly").to_dict()}
             if summary:
                 self._call(lambda: self.memory.remember(
                     "session_decision", {"decision": summary, "rationale": "end-of-session summary"},
@@ -605,7 +621,11 @@ class MemoryService:
             raise _bad("symbols must be a list of strings")
         if len(symbols) > MAX_SYMBOLS:
             raise ServiceError("too_large", f"at most {MAX_SYMBOLS} symbols per call")
-        return [self._text("symbol", s, 100) for s in symbols]
+        names = [self._text("symbol", s, 100) for s in symbols]
+        for name in names:
+            if _CONTROL.search(name):
+                raise _bad(f"symbol {name!r} contains a control character")
+        return names
 
     def _context(self, context: Any) -> str:
         """Free text the agent already has at hand (error output, a diff hunk, its goal)."""

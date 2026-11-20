@@ -9,8 +9,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from . import anchors as anchors_mod
 from .record import (
     KINDS, NATURAL_KEY, PENDING_TTL_DAYS, PRIORITIES, SESSION_KINDS, SOURCE_CONFIDENCE,
-    MemoryRecord, NodeRef, build_text, envelope_props, is_closed, make_id, normalize_text,
-    pending_expired, utc_now,
+    STORED_PENDING, MemoryRecord, NodeRef, build_text, envelope_props, is_closed, make_id,
+    normalize_text, pending_expired, utc_now,
 )
 from .retrieval.tokenize import tokens_for
 from .storage.txn import transactional
@@ -172,8 +172,11 @@ class MemoryWriter:
                                   status=status)
         for key, value in envelope.items():
             props.setdefault(key, value)   # kind fields win, e.g. a decision's own status
+        # only the writer marks a record as waiting for review: a pending add is always
+        # pending whatever the fields say, and no other add can be
+        props["review"] = envelope["review"]
         if pending:
-            props["status"] = "pending"    # a pending add is always pending, whatever the fields say
+            props.update(STORED_PENDING)
         self.graph.add_node(kind, new_id, **props)
         ref = (kind, new_id)
         if norm and not pending:
@@ -250,7 +253,7 @@ class MemoryWriter:
         if hit is not None and hit[1] == "active" and hit[0] != ref:
             raise ValueError(f"an active note with the same text already exists ({hit[0][1]}); "
                              "reject this lesson instead")
-        self.graph.update_node(ref[0], ref[1], status="active", source="reviewed",
+        self.graph.update_node(ref[0], ref[1], status="active", review="", source="reviewed",
                                confidence=SOURCE_CONFIDENCE["reviewed"], invalid_at="",
                                updated_at=utc_now())
         if not is_closed(ref[0], rec.fields):
@@ -296,8 +299,12 @@ class MemoryWriter:
                 self.graph.add_edge(edge.rel_type, edge.source, new, **dict(edge.properties))
 
     def _set_status(self, ref: NodeRef, status: str) -> None:
+        """Every status change goes through here. It clears a pending mark: an expired lesson
+        is stored "archived" too, and must not still read as waiting for review."""
         now = utc_now()
-        self.graph.update_node(ref[0], ref[1], status=status, invalid_at=now, updated_at=now)
+        extra = {"review": ""} if self.graph.get_node(*ref).properties.get("review") else {}
+        self.graph.update_node(ref[0], ref[1], status=status, invalid_at=now, updated_at=now,
+                               **extra)
 
     def _append_evidence(self, ref: NodeRef, extra: str) -> None:
         rec = MemoryRecord.from_node(self.graph.get_node(*ref))

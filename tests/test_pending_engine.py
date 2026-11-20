@@ -282,3 +282,101 @@ def test_capture_stores_a_lesson_whose_fields_carry_a_status_as_pending(memory):
                            "anchors": ["src/a.py"], "evidence": "e"}], max_pending=10)
     assert len(out["captured"]) == 1
     assert [r.status for r in memory.pending_records()] == ["pending"]
+
+
+# -- final review: storage encoding (an older build fails safe) ---------------
+
+def raw(memory, ref):
+    return memory.graph.get_node(*ref).properties
+
+
+def test_a_pending_lesson_is_stored_archived_with_a_review_mark(memory):
+    result = pend(memory)
+    props = raw(memory, result.ref)
+    # an older build reads `status` only (active is recalled): this one is archived to it
+    assert (props["status"], props["review"]) == ("archived", "pending")
+    assert rec(memory, result.ref).status == "pending"
+    assert "review" not in rec(memory, result.ref).fields
+    assert memory.recall(task="zorblax queue drops items").items == []
+    assert memory.check("zorblax queue drops items over 64KB") == []
+
+
+def test_an_active_add_never_carries_a_review_mark(memory):
+    result = memory.remember("decision", {"title": "use zorblax", "context": "queue",
+                                          "status": "archived", "review": "pending"})
+    assert raw(memory, result.ref)["review"] == ""
+    assert rec(memory, result.ref).status == "archived"
+
+
+def test_accept_clears_the_review_mark_and_makes_it_active(memory):
+    result = pend(memory)
+    memory.accept(result.id)
+    props = raw(memory, result.ref)
+    assert (props["status"], props["review"], props["source"]) == ("active", "", "reviewed")
+    assert rec(memory, result.ref).status == "active"
+
+
+def test_expiry_clears_the_review_mark(memory):
+    result = pend(memory)
+    memory.expire_pending(now=datetime.now(timezone.utc) + timedelta(days=PENDING_TTL_DAYS + 1))
+    props = raw(memory, result.ref)
+    assert (props["status"], props["review"]) == ("archived", "")
+    assert rec(memory, result.ref).status == "archived" and memory.pending_records() == []
+
+
+def test_reject_clears_the_review_mark(memory):
+    result = pend(memory)
+    memory.retract(result.id, "rejected in review")
+    props = raw(memory, result.ref)
+    assert (props["status"], props["review"]) == ("retracted", "")
+    assert memory.pending_records() == []
+
+
+def test_an_unknown_stored_status_is_never_active():
+    from ison_graph import ISONGraph
+    g = ISONGraph(name="t")
+    g.add_node("quirk", "q", description="the zorblax queue drops items", status="quarantined")
+    warnings = []
+    record = MemoryRecord.from_node(g.get_node("quirk", "q"), warnings)
+    assert record.status == "archived" and record.status != "active"
+    assert warnings and "status" in warnings[0]
+
+
+def test_an_unknown_stored_status_is_not_recalled(memory):
+    result = memory.remember("quirk", QUIRK)
+    memory.graph.update_node(*result.ref, status="quarantined")
+    assert memory.recall(task="zorblax queue drops items").items == []
+    assert memory.check("zorblax queue drops items over 64KB") == []
+
+
+# -- final review: legacy readers leave pending lessons out -------------------
+
+def test_legacy_store_readers_leave_pending_lessons_out(memory):
+    sid = memory.start_session("t")
+    memory.capture([
+        lesson("x", kind="convention", fields={"category": "naming", "rule": "zorblaxrule",
+                                               "applies_to": "src"}),
+        lesson("x", kind="bug_pattern", fields={"name": "zorblaxbug", "signature": "s",
+                                                "modules_affected": "src/cache"}),
+        lesson("x", kind="partial_work", fields={"work_type": "refactor", "location": "src/a.py",
+                                                 "state": "zorblaxhalf"}),
+        lesson("x", kind="open_question", fields={"question": "zorblaxwhy?"}),
+        lesson("x", kind="blocker", fields={"description": "zorblaxblock"}),
+    ], max_pending=10)
+    assert len(memory.pending_records()) == 5
+    seen = repr([memory.conventions.get_conventions_for_file("src/cache.py"),
+                 memory.conventions.get_relevant({"files": ["src/cache.py"]}),
+                 memory.bugs.get_risks_for_module("src/cache"),
+                 memory.bugs.get_relevant({"files": ["src/cache"]}),
+                 memory.sessions.get_session_context(sid),
+                 memory.sessions.get_relevant({})])
+    assert "zorblax" not in seen
+
+
+def test_check_suggestion_ignores_a_pending_alternative_naming_a_decision(memory):
+    dec = memory.decisions.add_decision("use sqlite", "small local store")
+    memory.capture([lesson("x", kind="alternative",
+                           fields={"option": "mongodb", "rejected_because": "no transactions",
+                                   "decision_id": dec})], max_pending=10)
+    assert memory.decisions.check_decision("switch to mongodb now") is None
+    assert memory.check_suggestion("switch to mongodb now") == []

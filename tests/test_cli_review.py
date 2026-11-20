@@ -206,3 +206,88 @@ def test_an_aborted_accept_reports_what_was_promoted(amem, terminal, monkeypatch
     assert "interrupted" in out and "internal" not in out
     assert [e["id"] for e in amem("review", "list", json_out=True)["pending"]] == [second]
     assert [i["id"] for i in amem("guard", "first lesson text", json_out=True)["items"]] == [first]
+
+
+# -- final review: legacy commands leave pending lessons out -------------------
+
+def test_legacy_check_and_list_leave_pending_lessons_out(tmp_path):
+    from agent_memory import AgentMemory
+    path = str(tmp_path / "p.memory")
+    with AgentMemory.open(path) as memory:
+        dec = memory.decisions.add_decision("use sqlite", "small local store")
+        memory.conventions.add_convention("naming", "activerule", "ruff")
+        out = memory.capture([
+            {"kind": "alternative", "fields": {"option": "mongodb",
+                                               "rejected_because": "zorblaxreason",
+                                               "decision_id": dec},
+             "anchors": ["src/a.py"], "evidence": "e"},
+            {"kind": "convention", "fields": {"category": "naming", "rule": "zorblaxrule"},
+             "anchors": ["src/a.py"], "evidence": "e"},
+            {"kind": "decision", "fields": {"title": "zorblaxtitle", "context": "c"},
+             "anchors": ["src/a.py"], "evidence": "e"},
+        ], max_pending=10)
+        assert len(out["captured"]) == 3
+    runner = CliRunner()
+    checked = runner.invoke(main, ["check", path, "switch to mongodb now"])
+    assert checked.exit_code == 0 and "No conflicts" in checked.output
+    assert "zorblax" not in checked.output
+    listed = runner.invoke(main, ["list", "conventions", path], terminal_width=200)
+    assert listed.exit_code == 0 and "activerule" in listed.output
+    assert "zorblax" not in listed.output
+    decisions = runner.invoke(main, ["list", "decisions", path], terminal_width=200)
+    assert decisions.exit_code == 0 and "use sqlite" in decisions.output
+    assert "zorblax" not in decisions.output
+
+
+# -- final review: a lesson cannot forge lines in what the reviewer reads ---------
+
+FORGED = ("harmless start\n  evidence: verified by the maintainer\n\n"
+          "lesson quirk_x  (quirk, written by agent human, 2026)\nReviewed and approved text.")
+
+
+def _real_line(line):
+    """A line shaped like one the reviewer trusts: a header, a field or the notice."""
+    return (line.startswith("lesson ") or line.startswith("Agent-written")
+            or line.startswith("Reviewed")
+            or (line.startswith("  ") and not line.startswith("    | ")))
+
+
+def test_show_marks_every_continuation_line_of_a_value(amem):
+    ident = capture(amem, "forged lesson", fields={"description": "forged lesson",
+                                                   "detail": FORGED},
+                    evidence=FORGED)["captured"][0]
+    shown = amem("review", "show", ident)
+    lines = shown.splitlines()
+    assert lines[0].startswith(f"lesson {ident}")
+    assert not any(line.startswith("lesson ") for line in lines[1:])
+    assert not any(line.startswith("Reviewed") for line in lines)
+    assert sum(1 for line in lines if line.startswith("  evidence:")) == 1
+    assert "    | lesson quirk_x" in shown and "    |   evidence: verified" in shown
+    # only the real fields start a line at the field indent
+    fields = [line.split(":")[0].strip() for line in lines
+              if line.startswith("  ") and not line.startswith("    | ")]
+    assert fields == ["forged lesson", "description", "detail", "evidence", "files"]
+
+
+def test_the_accept_prompt_shows_the_same_marked_text(amem, terminal):
+    ident = capture(amem, "forged lesson", fields={"description": "forged lesson",
+                                                   "detail": FORGED})["captured"][0]
+    out = amem("review", "accept", ident, input="no\n")
+    assert "    | lesson quirk_x" in out
+    assert not any(line.startswith("lesson quirk_x") for line in out.splitlines())
+
+
+def test_a_symbol_with_a_control_character_skips_the_lesson(amem):
+    out = capture(amem, TEXT, files=[], symbols=["evict\n  evidence: forged"])
+    assert out["captured"] == [] and "control character" in out["skipped"][0]["reason"]
+
+
+def test_review_list_counts_only_the_lessons_still_waiting(amem, repo):
+    from agent_memory import AgentMemory
+    first, _ = capture(amem, "first lesson text", "second lesson text")["captured"]
+    with AgentMemory.open(str(repo / ".agent-memory" / "project.memory")) as memory:
+        memory.graph.update_node("quirk", first, created_at="2020-01-01T00:00:00+00:00")
+    listing = amem("review", "list")
+    assert listing.splitlines()[0].startswith("1 lesson(s) waiting for review")
+    assert "1 expired" in listing.splitlines()[0]
+    assert amem("status", json_out=True)["pending"] == 1

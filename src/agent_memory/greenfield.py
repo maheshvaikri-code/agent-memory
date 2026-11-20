@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 from .memory import AgentMemory
+from .record import node_is_pending
 from .context import CodingContext
 
 
@@ -489,7 +490,7 @@ class GreenfieldProject:
         # Add conventions summary
         conventions = []
         for node in self.memory.graph.nodes():
-            if node.type == "convention":
+            if node.type == "convention" and not node_is_pending(node):
                 conventions.append(f"- [{node.properties.get('category')}] {node.properties.get('rule')}")
 
         if conventions:
@@ -500,7 +501,7 @@ class GreenfieldProject:
         # Add key decisions
         decisions = []
         for node in self.memory.graph.nodes():
-            if node.type == "decision":
+            if node.type == "decision" and not node_is_pending(node):
                 decisions.append(f"- {node.properties.get('title')}: {node.properties.get('context', '')[:50]}")
 
         if decisions:

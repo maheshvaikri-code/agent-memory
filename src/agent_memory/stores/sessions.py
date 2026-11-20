@@ -4,6 +4,7 @@ Session Store - Session continuity and handoff
 
 from typing import Any, Dict, List, Optional
 from .base import BaseStore
+from ..record import node_is_pending
 
 
 class SessionStore(BaseStore):
@@ -253,18 +254,18 @@ class SessionStore(BaseStore):
 
         # Get partial work
         for node in self.graph.nodes():
-            if node.type == "partial_work":
+            if node.type == "partial_work" and not node_is_pending(node):
                 context["partial_work"].append(node.properties)
 
         # Get open questions (unanswered)
         for node in self.graph.nodes():
-            if node.type == "open_question":
+            if node.type == "open_question" and not node_is_pending(node):
                 if not node.properties.get("answered_in"):
                     context["open_questions"].append(node.properties)
 
         # Get unresolved blockers
         for node in self.graph.nodes():
-            if node.type == "blocker":
+            if node.type == "blocker" and not node_is_pending(node):
                 if not node.properties.get("resolved_in"):
                     context["blockers"].append(node.properties)
 

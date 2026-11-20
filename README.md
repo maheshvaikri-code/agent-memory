@@ -204,8 +204,10 @@ review some first), and a lesson nobody reviews is archived after 30 days (on th
 capture, accept or reject; until then it is shown as expired and no longer counts toward
 the 100).
 
-A captured lesson is stored as `pending`. It is never recalled, checked or carried to a
-later session, and no MCP tool returns its text. Only a person turns it into a note:
+A captured lesson waits for review (`pending`). It is never recalled, checked or carried to a
+later session, no MCP tool returns its text, and the agent tools that change a note
+(`memory_retract`, `memory_supersede`, `memory_feedback`, `memory_verify` and their `amem`
+commands) refuse it. Only a person turns it into a note:
 
 ```bash
 amem review list                  # what is waiting
@@ -218,7 +220,10 @@ amem review reject ID... --reason "wrong"   # kept for the record, never recalle
 environment variable or `--json` to skip the question; anything other than the word
 `accept` skips that lesson, and Ctrl-C or end of input stops asking, keeps what was already
 accepted and exits with code 2. There is no MCP tool that accepts or rejects. An accepted
-lesson becomes an active note with source `reviewed`. `reject` needs no terminal.
+lesson becomes an active note with source `reviewed`. `reject` needs no terminal. `show`
+and the `accept` prompt print every further line of a multi-line value behind `    | `, so a
+lesson's text cannot pass for a field, its evidence or another lesson; symbols with control
+characters are refused at capture.
 
 Agents without MCP use `amem capture`: a JSON list of lessons on stdin (`amem capture
 --session ID`, `--json` for machine output).
@@ -228,8 +233,18 @@ echo '[{"kind": "quirk", "fields": {"description": "the retry queue drops jobs o
         "evidence": "saw it in worker.py while testing", "files": ["worker.py"]}]' | amem capture
 ```
 
-`amem status`, `amem doctor` and `memory_session_start` (as `pending_review`) show how many
-lessons are waiting; `status` also shows how many have expired but are not yet swept.
+`amem status`, `amem doctor`, `amem review list` and `memory_session_start` (as
+`pending_review`) show how many lessons are waiting; `status` and `review list` also show how
+many have expired but are not yet swept.
+
+#### Upgrading
+
+Every process that shares a store should run a build with lessons. A waiting lesson is stored
+with status `archived` and a separate `review: pending` mark, so an older build reads it as
+archived: never recalled, checked or counted as active. A mixed fleet therefore fails safe;
+the older build just does not see the lessons. A lesson a person accepts becomes an ordinary
+active note that every build reads. In the other direction, a record whose status this build
+does not know is read as archived (with a load warning), never as active.
 
 ### The same through the command line
 
@@ -360,6 +375,11 @@ a plain `.memory` file without converting it to a shared one.
   flag and a confirmation a person can see.
 - A lesson's evidence is checked for presence and for its file or symbol anchors, not for
   truth; the person reviewing is the check.
+- The legacy commands and store methods (`amem check`, `amem list`, and helpers such as
+  `decisions.check_decision`, `conventions.get_conventions_for_file` and
+  `sessions.get_session_context`) leave waiting lessons out, but they still show retracted
+  and superseded records, as they always did; `recall`, `guard`, `get_context` and the MCP
+  tools do not.
 - Small known rough edges: `amem capture` on a terminal waits for stdin without a prompt; and
   accepting or rejecting an unknown id in a repository with no store creates an empty store.
 

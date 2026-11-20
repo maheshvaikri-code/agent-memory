@@ -120,3 +120,42 @@ def test_a_full_queue_is_a_tool_error_with_the_code(repo, monkeypatch):
 def test_the_mcp_block_tells_agents_about_lessons_and_the_person():
     text = block("mcp")
     assert "lessons" in text and "person" in text
+
+
+def test_retract_through_the_tool_cannot_touch_a_pending_lesson(repo):
+    async def scenario(client):
+        err, text = await call(client, "memory_capture_lessons", lessons=[lesson()])
+        assert not err, text
+        ident = json.loads(text)["captured"][0]
+        return ident, await call(client, "memory_retract", id=ident, reason="drain")
+
+    (ident, (is_error, text)), service = with_client(repo, scenario)
+    assert is_error and "invalid_argument" in text and "waiting for review" in text
+
+
+def test_session_end_takes_lessons_that_are_not_objects(repo):
+    async def scenario(client):
+        await call(client, "memory_session_start", task="t")
+        err, text = await call(client, "memory_session_end", summary="done",
+                               lessons=["just text", lesson()])
+        assert not err, text
+        err, status = await call(client, "memory_status")
+        return json.loads(text), json.loads(status)
+
+    (out, status), _ = with_client(repo, scenario)
+    assert out["ok"] is True and status["session"] is None
+    assert len(out["capture"]["captured"]) == 1
+    assert out["capture"]["skipped"][0]["index"] == 0
+    assert "object" in out["capture"]["skipped"][0]["reason"]
+
+
+def test_the_capture_tool_takes_a_list_of_anything(repo):
+    async def scenario(client):
+        schema = {t.name: t for t in (await client.list_tools()).tools}
+        return schema, await call(client, "memory_capture_lessons", lessons=["just text"])
+
+    (tools, (is_error, text)), _ = with_client(repo, scenario)
+    assert tools["memory_capture_lessons"].inputSchema["properties"]["lessons"]["type"] == "array"
+    assert not is_error, text
+    out = json.loads(text)
+    assert out["captured"] == [] and out["skipped"][0]["index"] == 0

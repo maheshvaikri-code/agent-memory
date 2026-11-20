@@ -164,3 +164,66 @@ def test_reject_refuses_a_record_that_is_not_pending(svc):
     with pytest.raises(ServiceError) as err:
         svc.review_reject(active)
     assert code_of(err) == "invalid_argument"
+
+
+# -- final review: an agent's write tools cannot change a pending lesson ------
+
+def _still_pending(svc, ident):
+    assert [e["id"] for e in svc.review_list()["pending"]] == [ident]
+    props = svc.memory.graph.get_node("quirk", ident).properties
+    assert (props["status"], props["review"], props["helpful"]) == ("archived", "pending", 0)
+
+
+def test_retract_refuses_a_pending_lesson(svc):
+    ident = capture_one(svc)
+    with pytest.raises(ServiceError) as err:
+        svc.retract(ident, "gone")
+    assert code_of(err) == "invalid_argument" and "waiting for review" in err.value.message
+    _still_pending(svc, ident)
+
+
+def test_supersede_refuses_a_pending_lesson(svc):
+    ident = capture_one(svc)
+    with pytest.raises(ServiceError) as err:
+        svc.supersede(ident, "quirk", {"description": "a replacement text"})
+    assert code_of(err) == "invalid_argument" and "waiting for review" in err.value.message
+    _still_pending(svc, ident)
+    assert svc.status()["total_active"] == 0
+
+
+def test_feedback_refuses_a_pending_lesson(svc):
+    ident = capture_one(svc)
+    for helpful in (True, False):
+        with pytest.raises(ServiceError) as err:
+            svc.feedback(ident, helpful)
+        assert code_of(err) == "invalid_argument"
+    _still_pending(svc, ident)
+    assert svc.memory.graph.get_node("quirk", ident).properties["harmful"] == 0
+
+
+def test_verify_refuses_a_pending_lesson(svc):
+    ident = capture_one(svc)
+    with pytest.raises(ServiceError) as err:
+        svc.verify(ident)
+    assert code_of(err) == "invalid_argument" and "waiting for review" in err.value.message
+    _still_pending(svc, ident)
+
+
+def test_a_retract_loop_cannot_drain_the_review_queue(svc):
+    kept = capture_one(svc, "the lesson a person should see")
+    for i in range(5):
+        ident = capture_one(svc, f"churn lesson {i}")
+        with pytest.raises(ServiceError):
+            svc.retract(ident)
+    assert len(svc.review_list()["pending"]) == 6 and svc.status()["pending"] == 6
+    assert kept in [e["id"] for e in svc.review_list()["pending"]]
+
+
+def test_review_still_rejects_and_accepts_after_the_refusals(svc):
+    first, second = capture_one(svc, "first lesson text"), capture_one(svc, "second lesson text")
+    svc.review_reject(first, "no")
+    svc.review_accept(second)
+    assert svc.memory.graph.get_node("quirk", first).properties["status"] == "retracted"
+    assert svc.memory.graph.get_node("quirk", second).properties["status"] == "active"
+    # once accepted it is an ordinary note: the agent's tools work on it again
+    assert svc.feedback(second, True) == {"ok": True, "id": second}

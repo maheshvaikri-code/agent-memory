@@ -122,7 +122,7 @@ def build_server(service: MemoryService) -> FastMCP:
                           "lessons (as in memory_capture_lessons). Returns the items still "
                           "unresolved and, when lessons were given, the capture result.")
     def memory_session_end(ctx: Context, summary: str = "", completion: float = 1.0,
-                           lessons: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+                           lessons: Optional[List[Any]] = None) -> Dict[str, Any]:
         return run(ctx, service.session_end, summary=summary, completion=completion,
                    lessons=lessons)
 
@@ -132,7 +132,7 @@ def build_server(service: MemoryService) -> FastMCP:
                           "are required. Lessons are NOT recalled until a person accepts "
                           "them. Up to 10 per call. Returns captured ids and skipped "
                           "lessons with reasons.")
-    def memory_capture_lessons(lessons: List[Dict[str, Any]], ctx: Context) -> Dict[str, Any]:
+    def memory_capture_lessons(lessons: List[Any], ctx: Context) -> Dict[str, Any]:
         return run(ctx, service.capture, lessons=lessons)
 
     @app.tool(description="Memory status: store, your agent name, counts by kind, last write, "

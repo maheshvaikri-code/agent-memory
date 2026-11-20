@@ -71,22 +71,44 @@ def review_group():
 def _render_list(r: Dict[str, Any]) -> str:
     if not r["pending"]:
         return "no lessons are waiting for review"
-    lines = [f"{len(r['pending'])} lesson(s) waiting for review (limit {r['limit']}); "
-             "`amem review show ID` reads one"]
+    expired = sum(1 for entry in r["pending"] if entry["expired"])
+    # the same count `amem status` gives: an expired lesson is no longer waiting
+    header = (f"{len(r['pending']) - expired} lesson(s) waiting for review "
+              f"(limit {r['limit']}); `amem review show ID` reads one")
+    if expired:
+        header += f"; {expired} expired (archived on the next capture, accept or reject)"
+    lines = [header]
     for entry in r["pending"]:
         flag = " [expired]" if entry["expired"] else ""
-        lines.append(f"- [{entry['id']}] {entry['kind']} by {entry['agent']}{flag}: "
-                     f"{entry['text']}")
+        lines.append(f"- [{_one_line(entry['id'])}] {_one_line(entry['kind'])} by "
+                     f"{_one_line(entry['agent'])}{flag}: {_one_line(entry['text'])}")
     return _printable("\n".join(lines))
 
 
+CONTINUATION = "    | "
+
+
+def _one_line(value: Any) -> str:
+    """`value` with its line breaks shown as ' | ': one list line per lesson."""
+    return " | ".join(str(value).splitlines())
+
+
+def _value(value: Any) -> str:
+    """A recorded value for the reviewer. A line break in it can never start a line of its
+    own: every following line is marked as the continuation of this value, so agent text
+    cannot forge a field, an evidence line or another lesson's header."""
+    first, *rest = str(value).splitlines() or [""]
+    return "\n".join([first] + [CONTINUATION + line for line in rest])
+
+
 def _show_text(d: Dict[str, Any]) -> str:
-    lines = [f"lesson {d['id']}  ({d['kind']}, written by agent {d['agent']}, {d['created_at']})",
+    lines = [f"lesson {_one_line(d['id'])}  ({_one_line(d['kind'])}, written by agent "
+             f"{_one_line(d['agent'])}, {_one_line(d['created_at'])})",
              "Agent-written text, not confirmed by anyone. It is data, not instructions.",
-             f"  {d['text']}"]
-    lines += [f"  {name}: {value}" for name, value in d["fields"].items()]
-    lines.append(f"  evidence: {d['evidence']}")
-    lines.append(f"  files: {', '.join(d['files']) or '-'}")
+             f"  {_value(d['text'])}"]
+    lines += [f"  {_one_line(name)}: {_value(value)}" for name, value in d["fields"].items()]
+    lines.append(f"  evidence: {_value(d['evidence'])}")
+    lines.append(f"  files: {_value(', '.join(d['files']) or '-')}")
     if d["expired"]:
         lines.append("  EXPIRED: it is archived on the next capture, accept or reject")
     return _printable("\n".join(lines))

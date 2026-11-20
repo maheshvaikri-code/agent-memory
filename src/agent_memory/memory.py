@@ -355,10 +355,14 @@ class AgentMemory:
 
     @transactional
     def capture(self, lessons: List[Dict[str, Any]], *, max_pending: int) -> Dict[str, Any]:
-        """Store lessons as pending records, atomically across processes: sweep expired ones,
-        count what is waiting, then add each lesson unless it duplicates an active or pending
-        note or the queue is full. Each lesson is `{"kind", "fields", "anchors", "evidence"}`,
-        already validated by the caller. Nothing here ever changes an existing record."""
+        """Store lessons as pending records. Each call runs in one cross-process transaction
+        (sweep expired lessons, count what is waiting, check duplicates, add), so no other
+        process writes in between. It is not all-or-nothing: an exception part-way keeps the
+        writes already applied; a retry is safe, since lessons already stored are skipped as
+        duplicates. A lesson is added unless it duplicates an active or pending note or the
+        queue is full. Each lesson is `{"kind", "fields", "anchors", "evidence"}`, already
+        validated by the caller. Nothing here changes an existing record, except that the
+        sweep archives lessons past their review time."""
         swept = self.writer.expire_pending()
         total = len(self.writer.pending())
         room = max_pending - total

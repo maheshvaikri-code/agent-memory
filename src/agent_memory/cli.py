@@ -18,6 +18,7 @@ from rich.markup import escape
 from rich.tree import Tree
 
 from .memory import AgentMemory
+from .record import node_is_pending
 
 
 console = Console()
@@ -334,7 +335,7 @@ def list_conventions(memory_file: str):
         table.add_column("Enforced By", style="green")
 
         for node in memory.graph.nodes():
-            if node.type == "convention":
+            if node.type == "convention" and not node_is_pending(node):   # lessons: amem review
                 table.add_row(
                     _safe(node.properties.get("category", "")),
                     _safe(node.properties.get("rule", "")),
@@ -361,7 +362,7 @@ def list_decisions(memory_file: str):
         table.add_column("Context", style="white")
 
         for node in memory.graph.nodes():
-            if node.type == "decision":
+            if node.type == "decision" and not node_is_pending(node):
                 table.add_row(
                     _safe(node.properties.get("title", "")),
                     _safe(node.properties.get("status", "")),

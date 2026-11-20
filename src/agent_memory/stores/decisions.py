@@ -4,6 +4,7 @@ Decision Store - Architectural Decision Records (ADRs)
 
 from typing import Any, Dict, List, Optional
 from .base import BaseStore
+from ..record import node_is_pending
 from ..schema import Decision, Alternative, DecisionStatus
 
 
@@ -126,7 +127,10 @@ class DecisionStore(BaseStore):
         new_id = self._decision_id(new_title)
 
         if self.graph.has_node("decision", old_id):
-            self.graph.update_node("decision", old_id, status="superseded")
+            # a status change clears a waiting-for-review mark (see MemoryWriter._set_status)
+            old = self.graph.get_node("decision", old_id)
+            extra = {"review": ""} if node_is_pending(old) else {}
+            self.graph.update_node("decision", old_id, status="superseded", **extra)
 
         if self.graph.has_node("decision", old_id) and self.graph.has_node("decision", new_id):
             self.graph.add_edge(
@@ -146,13 +150,13 @@ class DecisionStore(BaseStore):
         suggestion_lower = suggestion.lower()
 
         for node in self.graph.nodes():
-            if node.type == "alternative":
+            if node.type == "alternative" and not node_is_pending(node):
                 option = node.properties.get("option", "").lower()
                 if option and option in suggestion_lower:
                     # Found potential conflict
                     dec_id = node.properties.get("decision_id", "")
                     decision = self._get_node_or_none("decision", dec_id)
-                    if decision:
+                    if decision and not node_is_pending(decision):
                         return {
                             "decision": decision.properties,
                             "alternative": node.properties,
@@ -169,7 +173,7 @@ class DecisionStore(BaseStore):
         for edge in self.graph.edges():
             if edge.rel_type == "CONSTRAINS" and edge.target == ("module", mod_id):
                 decision = self._get_node_or_none(*edge.source)
-                if decision:
+                if decision and not node_is_pending(decision):
                     constraints.append({
                         "decision": decision.properties,
                         "how": edge.properties.get("how", ""),
