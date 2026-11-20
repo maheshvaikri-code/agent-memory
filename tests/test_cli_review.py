@@ -180,3 +180,29 @@ def test_status_and_doctor_report_the_waiting_lessons(amem, repo):
 def test_the_cli_protocol_block_mentions_capture():
     from agent_memory.protocol import block
     assert "amem capture" in block("cli") and "amem capture" in block("both")
+
+
+# -- fixes after review ------------------------------------------------------
+
+def test_capture_survives_deeply_nested_json(amem):
+    out = amem("capture", input="[" * 100_000, expect=2, json_out=True)
+    assert out["error"]["code"] == "invalid_argument"
+    assert "Traceback" not in json.dumps(out) and "decoder.py" not in json.dumps(out)
+
+
+def test_an_aborted_accept_reports_what_was_promoted(amem, terminal, monkeypatch):
+    first, second = capture(amem, "first lesson text", "second lesson text")["captured"]
+    answers = iter(["accept"])
+
+    def prompt(*args, **kwargs):
+        try:
+            return next(answers)
+        except StopIteration:
+            raise cli_review.click.Abort() from None
+
+    monkeypatch.setattr(cli_review.click, "prompt", prompt)
+    out = amem("review", "accept", first, second, expect=2)
+    assert f"accepted {first}" in out and f"skipped {second}" in out
+    assert "interrupted" in out and "internal" not in out
+    assert [e["id"] for e in amem("review", "list", json_out=True)["pending"]] == [second]
+    assert [i["id"] for i in amem("guard", "first lesson text", json_out=True)["items"]] == [first]

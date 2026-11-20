@@ -33,7 +33,7 @@ def _read_lessons() -> List[Any]:
         raise ServiceError("too_large", f"lessons are longer than {MAX_CAPTURE_BYTES} bytes")
     try:
         lessons = json.loads(data.decode("utf-8", errors="replace"))
-    except ValueError:
+    except (ValueError, RecursionError):      # RecursionError: absurdly deep nesting
         raise ServiceError("invalid_argument", "stdin is not valid JSON; send a JSON list of "
                                                "lessons") from None
     if not isinstance(lessons, list):
@@ -113,6 +113,8 @@ def _render_outcome(r: Dict[str, Any]) -> str:
     lines = [f"accepted {i}" for i in r.get("accepted", [])]
     lines += [f"skipped {i}" for i in r.get("skipped", [])]
     lines += [f"rejected {i}" for i in r.get("rejected", [])]
+    if r.get("interrupted"):
+        lines.append("interrupted: the remaining lessons were not reviewed")
     lines += [f"error [{e['error']['code']}] {e['id']}: {e['error']['message']}"
               for e in r["errors"]]
     return _printable("\n".join(lines))
@@ -132,10 +134,11 @@ def review_accept(memory_ids, store, repo, agent, allow_must, as_json):
         _fail(ServiceError("invalid_argument",
                            "accepting a lesson needs an interactive terminal: run `amem review "
                            "accept` yourself in a terminal"), False)
-    outcome: Dict[str, List[Any]] = {"accepted": [], "skipped": [], "errors": []}
+    outcome: Dict[str, List[Any]] = {"accepted": [], "skipped": [], "errors": [],
+                                     "interrupted": []}
 
     def action(service) -> Dict[str, Any]:
-        for ident in memory_ids:
+        for position, ident in enumerate(memory_ids):
             try:
                 _emit(_show_text(service.review_show(ident)))
                 answer = click.prompt("Type 'accept' to make this a recallable note "
@@ -146,12 +149,17 @@ def review_accept(memory_ids, store, repo, agent, allow_must, as_json):
                     outcome["accepted"].append(ident)
                 else:
                     outcome["skipped"].append(ident)
+            except click.Abort:
+                # Ctrl-C or end of input: stop asking, keep what was already promoted
+                outcome["skipped"] += list(memory_ids[position:])
+                outcome["interrupted"].append(True)
+                break
             except ServiceError as exc:
                 outcome["errors"].append({"id": ident, "error": exc.to_dict()})
         return outcome
 
     run_service(store, repo, agent, allow_must, False, action, _render_outcome)
-    if outcome["errors"]:
+    if outcome["errors"] or outcome["interrupted"]:
         sys.exit(2)
 
 
