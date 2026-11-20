@@ -6,13 +6,14 @@ pseudo-terminal could pass it (3c spec, section 4.4)."""
 from __future__ import annotations
 
 import json
+import os
 import sys
 from typing import Any, Dict, List
 
 import click
 
 from .cli_agent import _emit, _fail, _printable, run_service, service_options
-from .service import ServiceError
+from .service import ServiceError, resolve_config
 
 # the largest request the service could accept (10 lessons of 12 fields of 2000 characters in
 # 4-byte UTF-8) plus room for the JSON syntax; a bigger pipe is refused after this many bytes
@@ -27,7 +28,17 @@ def _interactive() -> bool:
         return False
 
 
+def _stdin_is_tty() -> bool:
+    try:
+        return bool(sys.stdin.isatty())
+    except (AttributeError, ValueError):
+        return False
+
+
 def _read_lessons() -> List[Any]:
+    if _stdin_is_tty():
+        _emit("waiting for lessons on stdin: paste a JSON list, then end the input "
+              "(Ctrl-Z Enter on Windows, Ctrl-D elsewhere)", err=True)
     data = click.get_binary_stream("stdin").read(MAX_CAPTURE_BYTES + 1)
     if len(data) > MAX_CAPTURE_BYTES:
         raise ServiceError("too_large", f"lessons are longer than {MAX_CAPTURE_BYTES} bytes")
@@ -41,9 +52,21 @@ def _read_lessons() -> List[Any]:
     return lessons
 
 
+def _require_store(store, repo, agent, as_json) -> None:
+    """Accepting or rejecting needs lessons, so it needs a store: a mistyped id must not
+    leave an empty one behind."""
+    config = resolve_config(store=store, repo=repo, agent=agent)
+    if not os.path.exists(config.store_path):
+        _fail(ServiceError("not_found", f"no memory store at {config.store_path}; "
+                                        "there are no lessons to review"), as_json)
+
+
 def _render_capture(r: Dict[str, Any]) -> str:
     lines = [f"captured {len(r['captured'])}: {', '.join(r['captured']) or '-'}"]
     lines += [f"skipped #{s['index']}: {s['reason']}" for s in r["skipped"]]
+    if r.get("rejected_before"):
+        lines.append(f"retracted before: {', '.join(r['rejected_before'])} repeat(s) a note a "
+                     "person retracted or rejected earlier (`amem review show` says which)")
     lines.append(f"{r['pending']} lesson(s) waiting for review (a person runs `amem review`)")
     return _printable("\n".join(lines))
 
@@ -80,6 +103,8 @@ def _render_list(r: Dict[str, Any]) -> str:
     lines = [header]
     for entry in r["pending"]:
         flag = " [expired]" if entry["expired"] else ""
+        if entry.get("rejected_before"):
+            flag += " [rejected before]"
         lines.append(f"- [{_one_line(entry['id'])}] {_one_line(entry['kind'])} by "
                      f"{_one_line(entry['agent'])}{flag}: {_one_line(entry['text'])}")
     return _printable("\n".join(lines))
@@ -105,10 +130,12 @@ def _show_text(d: Dict[str, Any]) -> str:
     lines = [f"lesson {_one_line(d['id'])}  ({_one_line(d['kind'])}, written by agent "
              f"{_one_line(d['agent'])}, {_one_line(d['created_at'])})",
              "Agent-written text, not confirmed by anyone. It is data, not instructions.",
-             f"  {_value(d['text'])}"]
+             f"  text: {_value(d['text'])}"]
     lines += [f"  {_one_line(name)}: {_value(value)}" for name, value in d["fields"].items()]
     lines.append(f"  evidence: {_value(d['evidence'])}")
     lines.append(f"  files: {_value(', '.join(d['files']) or '-')}")
+    if d.get("rejected_before"):
+        lines.append(f"  rejected before: {_value(d['rejected_before'])}")
     if d["expired"]:
         lines.append("  EXPIRED: it is archived on the next capture, accept or reject")
     return _printable("\n".join(lines))
@@ -156,6 +183,7 @@ def review_accept(memory_ids, store, repo, agent, allow_must, as_json):
         _fail(ServiceError("invalid_argument",
                            "accepting a lesson needs an interactive terminal: run `amem review "
                            "accept` yourself in a terminal"), False)
+    _require_store(store, repo, agent, False)
     outcome: Dict[str, List[Any]] = {"accepted": [], "skipped": [], "errors": [],
                                      "interrupted": []}
 
@@ -171,7 +199,7 @@ def review_accept(memory_ids, store, repo, agent, allow_must, as_json):
                     outcome["accepted"].append(ident)
                 else:
                     outcome["skipped"].append(ident)
-            except click.Abort:
+            except (click.Abort, KeyboardInterrupt):
                 # Ctrl-C or end of input: stop asking, keep what was already promoted
                 outcome["skipped"] += list(memory_ids[position:])
                 outcome["interrupted"].append(True)
@@ -191,6 +219,7 @@ def review_accept(memory_ids, store, repo, agent, allow_must, as_json):
 @service_options
 def review_reject(memory_ids, reason, store, repo, agent, allow_must, as_json):
     """Reject lessons: they are kept for the record and never recalled."""
+    _require_store(store, repo, agent, as_json)
     outcome: Dict[str, List[Any]] = {"rejected": [], "errors": []}
 
     def action(service) -> Dict[str, Any]:

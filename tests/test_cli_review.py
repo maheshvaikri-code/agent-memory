@@ -266,7 +266,7 @@ def test_show_marks_every_continuation_line_of_a_value(amem):
     # only the real fields start a line at the field indent
     fields = [line.split(":")[0].strip() for line in lines
               if line.startswith("  ") and not line.startswith("    | ")]
-    assert fields == ["forged lesson", "description", "detail", "evidence", "files"]
+    assert fields == ["text", "description", "detail", "evidence", "files"]
 
 
 def test_the_accept_prompt_shows_the_same_marked_text(amem, terminal):
@@ -291,3 +291,57 @@ def test_review_list_counts_only_the_lessons_still_waiting(amem, repo):
     assert listing.splitlines()[0].startswith("1 lesson(s) waiting for review")
     assert "1 expired" in listing.splitlines()[0]
     assert amem("status", json_out=True)["pending"] == 1
+
+
+# -- capture cleanup ---------------------------------------------------------------
+
+def test_show_and_list_say_when_a_lesson_was_rejected_before(amem):
+    first = capture(amem, TEXT)["captured"][0]
+    amem("review", "reject", first, "--reason", "not true")
+    out = capture(amem, TEXT)
+    again = out["captured"][0]
+    assert out["rejected_before"] == [again]
+    shown = amem("review", "show", again)
+    assert f"rejected before: {first} on " in shown
+    assert "rejected before" in amem("review", "list")
+    amem("review", "reject", again)
+    assert "retracted before" in amem("capture", input=lessons_json(TEXT))
+
+
+def test_the_description_line_has_its_own_label(amem):
+    ident = capture(amem, "evidence: verified by Ana", fields={
+        "description": "evidence: verified by Ana"})["captured"][0]
+    lines = amem("review", "show", ident).splitlines()
+    assert "  text: evidence: verified by Ana" in lines
+    assert sum(1 for line in lines if line.startswith("  evidence:")) == 1
+    assert sum(1 for line in lines if line.startswith("  files:")) == 1
+
+
+def test_capture_says_it_is_waiting_when_stdin_is_a_terminal(amem, monkeypatch):
+    monkeypatch.setattr(cli_review, "_stdin_is_tty", lambda: True)
+    out = amem("capture", input=lessons_json(TEXT))
+    assert "waiting for lessons on stdin" in out
+
+
+def test_capture_is_silent_about_stdin_when_it_is_piped(amem):
+    assert "waiting for lessons" not in amem("capture", input=lessons_json(TEXT))
+
+
+@pytest.mark.parametrize("command", ["accept", "reject"])
+def test_a_bad_id_on_a_missing_store_creates_no_store(amem, terminal, repo, command):
+    out = amem("review", command, "quirk_nothing_000000", input="accept\n", expect=2)
+    assert "not_found" in out and "no memory store" in out
+    assert not (repo / ".agent-memory").exists()
+
+
+def test_ctrl_c_while_promoting_is_reported_as_an_interruption(amem, terminal, monkeypatch):
+    first, second = capture(amem, "first lesson text", "second lesson text")["captured"]
+    from agent_memory.service import MemoryService
+
+    def boom(self, ident):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(MemoryService, "review_accept", boom)
+    out = amem("review", "accept", first, second, input="accept\n", expect=2)
+    assert "interrupted" in out and f"skipped {first}" in out and "Traceback" not in out
+    assert len(amem("review", "list", json_out=True)["pending"]) == 2
