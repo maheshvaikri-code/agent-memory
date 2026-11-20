@@ -80,7 +80,7 @@ Honest limit: an agent with a pseudo-terminal could satisfy the terminal check. 
 
 ### 4.5 Visibility
 
-`amem status`, `amem doctor` and `memory_session_start` report the pending count. Agents never see pending text. `amem status` shows how many are pending and how many of those have expired but not yet been swept.
+`amem status`, `amem doctor` and `memory_session_start` report the pending count. Agents never see pending text. `amem status` shows how many are waiting (`pending`, not expired) and, separately, how many have expired but not yet been swept (`pending_expired`).
 
 ### 4.6 Protocol text
 
@@ -129,3 +129,45 @@ About six tasks, a reviewer per task, then a whole-branch review:
 4. `amem review` (list, show, accept, reject), pending counts in `status` and `doctor`.
 5. Eval and leak tests, two-process test.
 6. Docs (README, known limits) and implementation notes in this spec.
+
+## 10. Implementation notes
+
+Built as sub-project 3c (commits `fb9c5ce` to `6edef31`). Where the plan had to read the spec more narrowly than it was written, the choice is recorded here.
+
+### 10.1 Clarifications made while planning
+
+1. **Symbol-only lessons.** The record model anchors files only. A lesson with `symbols` and no `files` is accepted; the symbols are appended to the stored evidence as `symbols: a, b` so the reviewer sees them. A lesson with neither is skipped.
+2. **Partial room.** With 95 pending and 10 lessons, the first 5 are stored and the rest are skipped with reason `queue_full`. With no room at all, `capture` stores nothing and raises `queue_full`.
+3. **Duplicates of pending lessons** are skipped too (not only duplicates of active notes). The reason never shows another lesson's text or id.
+4. **Accept refuses** when an active note with the same text now exists (it would create two active records); the person rejects the lesson instead.
+5. **`amem capture`** (JSON list on stdin) is added so CLI-only agents can capture; the spec's "matching sentence" in the CLI protocol block needs a command to point at.
+6. **Counts.** `status` has `pending` (waiting, not expired) and `pending_expired` (expired, not yet swept); `session_start` has `pending_review` (the same live count). The spec's "how many of those have expired" means this second number.
+7. **Accept asks the person to type the word `accept`** (not y/n), and has no `--json`.
+8. **Unknown lesson keys** (including `priority` and `confidence`) skip the lesson.
+9. **`memory_session_end` result** gains a `capture` key only when lessons were passed (`[]` counts as none).
+10. **`reject` sweeps** expired lessons like `capture` and `accept` do.
+
+### 10.2 What was built beyond the spec's list
+
+- `amem capture [--session ID] [--json]` reads a JSON list of lessons on stdin (at most 1,000,000 bytes) so agents without MCP can capture. The CLI protocol block points at it. MCP gained `memory_capture_lessons`, so there are now eleven tools; the per-tool (400) and total (3,000) description limits still hold.
+- Protocol length limits, as chosen in `tests/test_installer_tools.py`: the MCP block is at most 1400 characters (the block is 1338; the limit was 1200 and the block 1198), the CLI block at most 1800 (the block is 1702; it was under 1600), and the combined `AGENTS.md` block is still at most 3000 (it is 2685). The golden files were regenerated.
+
+### 10.3 What the review rounds changed
+
+- Engine hardening after the Task 1 review: a pending add refuses `node_id`, and a pending `supersede` is refused, so a pending write can never replace an active note. A pending add forces status `pending` even when a kind's own `status` field says otherwise. `accept` registers the accepted note so that a later identical active write merges into it instead of creating a second record.
+- After the Task 5 review: `amem capture` reports deeply nested JSON as `invalid_argument` (no traceback). Ctrl-C or end of input during `amem review accept` stops asking, reports what was already promoted and the rest as skipped, and exits 2.
+
+### 10.4 Verification on the branch
+
+- Full suite: 890 passed, 6 skipped, 8 deselected (793 passed on `main` before this work).
+- Scorecard: recall 1.00, 0 leaks, abstention 1.00, held-out abstention 0.38, unchanged with about 66 pending lessons in the eval store (`tests/eval/test_pending_leak.py`).
+- Two real stdio servers on one store: a lesson captured through one is seen, and accepted, through the other (`tests/test_capture_two_process.py`).
+
+### 10.5 Known limits, deliberately left
+
+- `amem capture` run on a terminal waits for stdin without saying so.
+- Accepting or rejecting an unknown id in a repository with no store creates an empty store.
+- The `must` refusal in `review accept` and `review reject` is aimed at agents' permissions and is likely unreachable, because only a person reaches those commands.
+- Evidence is checked for presence and for its file or symbol anchors, not for truth; the reviewing person is the check.
+- The terminal check on `accept` is a strong barrier, not proof: a program that drives a pseudo-terminal could pass it (section 4.4).
+- Accepted lessons are stamped `reviewed` and are the only thing that clears `unreviewed`; legacy `amem add` notes still show as unreviewed.

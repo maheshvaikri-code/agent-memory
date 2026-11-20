@@ -78,15 +78,17 @@ write is durable when the call returns, against the process dying
 processes on their next read; two agents writing the same fact get one
 record; a process killed mid-write never corrupts the store.
 
-**Agent surface** — `amem serve` is a local stdio MCP server with ten
+**Agent surface** — `amem serve` is a local stdio MCP server with eleven
 `memory_*` tools (recall, check, remember, feedback, supersede, retract,
-verify, session start/end, status); the same operations are `amem` commands
+verify, session start/end, capture lessons, status); the same operations are `amem` commands
 with `--json` for agents without MCP. `amem install claude-code|cursor|codex|
 devin|generic` writes the MCP config and a marked instruction block (dry run
 by default, never touching text outside its markers), and `amem doctor`
 reports what is wired up. Recalled notes come back in a labelled
 untrusted-data block; no tool can delete, choose the store or name a file
-outside the repository. Two MCP servers on one store share writes with the
+outside the repository. Agents can hand over lessons at session end; they wait
+in a pending queue, never recalled, until a person runs `amem review accept` in
+a terminal. Two MCP servers on one store share writes with the
 right author (tested with real stdio processes), and the evaluation scores
 identically through this boundary as in-process.
 
