@@ -24,8 +24,15 @@ _NAME = re.compile(r"[A-Za-z0-9_.@-]{1,64}")
 _TIME = "%Y-%m-%dT%H:%M:%SZ"
 
 
+_STALE = object()                                      # "re-read on the next use"
+
+
 class TokenError(Exception):
     """A token file or token request that cannot be honoured. Never carries a token."""
+
+
+class _ReadError(TokenError):
+    """The file could not be read at all (as opposed to being read and found invalid)."""
 
 
 @dataclass(frozen=True)
@@ -67,7 +74,7 @@ class TokenFile:
     def __init__(self, path):
         self._path = Path(path)
         self._lock = threading.Lock()
-        self._signature = None
+        self._signature = _STALE
         self._entries: List[TokenEntry] = []
         self._error = ""
         self._generation = 0
@@ -94,29 +101,47 @@ class TokenFile:
     # -- reading ---------------------------------------------------------------
 
     def _refresh(self) -> None:
-        """Re-read the file when it changed. Any problem leaves no usable token (fail closed)."""
+        """Re-read the file when it changed. Any problem leaves no usable token (fail closed).
+
+        A failure to stat or read the file (an OSError) is not remembered, so the next call
+        retries; a file that reads but is invalid is remembered until it changes."""
         try:
             stat_result = os.stat(self._path)
             signature = (stat_result.st_mtime_ns, stat_result.st_size)
         except FileNotFoundError:
             signature = None
-        if signature == self._signature and self._generation:
+        except OSError as exc:
+            self._fail_transiently(exc)
             return
-        self._signature = signature
+        if signature == self._signature:
+            return
         self._generation += 1
         if signature is None:
+            self._signature = signature
             self._entries, self._error = [], ""
             return
         try:
             self._entries, self._error = self._parse_file(), ""
+        except _ReadError as exc:
+            self._fail_transiently(exc.__cause__ or exc)
+            return
         except TokenError as exc:
             self._entries, self._error = [], str(exc)
+        self._signature = signature
+
+    def _fail_transiently(self, exc: BaseException) -> None:
+        self._signature = _STALE
+        self._generation += 1
+        self._entries = []
+        self._error = f"the token file cannot be read: {type(exc).__name__}"
 
     def _parse_file(self) -> List[TokenEntry]:
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise TokenError(f"the token file cannot be read: {type(exc).__name__}") from None
+        except OSError as exc:
+            raise _ReadError(f"the token file cannot be read: {type(exc).__name__}") from exc
+        except ValueError:
+            raise TokenError("the token file is not valid JSON") from None
         if not isinstance(data, dict) or data.get("version") != FILE_VERSION \
                 or not isinstance(data.get("tokens"), list):
             raise TokenError("the token file is not a version 1 token file")
@@ -179,7 +204,7 @@ class TokenFile:
             os.chmod(self._path, 0o600)
         except OSError:
             pass                                       # best effort (Windows)
-        self._signature = None                         # force a re-read on the next use
+        self._signature = _STALE                       # force a re-read on the next use
 
     def create(self, name: str, role: str, expires_in_days: Optional[int] = None,
                now: Optional[datetime] = None) -> str:
@@ -192,7 +217,7 @@ class TokenFile:
             raise TokenError(f"expires-in is a whole number of days from 1 to {MAX_EXPIRY_DAYS}")
         now = now or datetime.now(timezone.utc)
         with self._lock:
-            self._signature = None
+            self._signature = _STALE
             self._refresh()
             if self._error:
                 raise TokenError(f"{self._error}; fix or remove it first")
@@ -206,7 +231,7 @@ class TokenFile:
 
     def revoke(self, name: str) -> bool:
         with self._lock:
-            self._signature = None
+            self._signature = _STALE
             self._refresh()
             if self._error:
                 raise TokenError(f"{self._error}; fix or remove it first")

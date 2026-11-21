@@ -2,6 +2,7 @@ import json
 import os
 import stat
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -114,3 +115,50 @@ def test_a_token_is_not_in_the_repr_or_an_error(tf):
     with pytest.raises(TokenError) as excinfo:
         tf.create("alice", "read-only")
     assert token not in str(excinfo.value)
+
+
+def test_a_transient_read_error_fails_closed_then_is_retried(tf, tmp_path, monkeypatch):
+    token = tf.create("alice", "read-write")
+    fresh = TokenFile(tf.path)
+    real, calls = Path.read_text, []
+
+    def flaky(self, *args, **kwargs):
+        if self == tf.path and len(calls) < 2:     # fails twice, each access retries
+            calls.append(1)
+            raise PermissionError("being replaced")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky)
+    assert fresh.verify(token) is None
+    assert "PermissionError" in fresh.error                  # the second attempt, also failing
+    assert calls == [1, 1]
+    assert fresh.verify(token) is not None and fresh.error == ""      # retried, file untouched
+
+
+def test_a_stat_error_fails_closed_without_raising_and_recovers(tf, monkeypatch):
+    token = tf.create("alice", "read-write")
+    fresh = TokenFile(tf.path)
+    real, failing = os.stat, [True]
+
+    def stat(path, *args, **kwargs):
+        if failing[0] and str(path) == str(tf.path):
+            raise PermissionError("denied")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+    assert fresh.verify(token) is None and fresh.usable() == 0 and fresh.entries() == []
+    assert "PermissionError" in fresh.error and fresh.generation >= 0
+    assert token not in fresh.error
+    failing[0] = False
+    assert fresh.verify(token) is not None and fresh.error == ""
+
+
+def test_create_and_revoke_refuse_a_damaged_file_and_leave_it_unchanged(tf):
+    tf.create("alice", "read-write")
+    tf.path.write_text("{ not json", encoding="utf-8")
+    before = tf.path.read_bytes()
+    with pytest.raises(TokenError, match="fix or remove it first"):
+        tf.create("bob", "read-only")
+    with pytest.raises(TokenError, match="fix or remove it first"):
+        tf.revoke("alice")
+    assert tf.path.read_bytes() == before
