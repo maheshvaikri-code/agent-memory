@@ -365,3 +365,16 @@ def test_a_one_shot_read_failure_inside_a_sweep_closes_nothing(base, tokens, mon
     assert principals.service_for(entries["bob"]) is bob
     assert principals.open_count == 1                              # only the revoked one went
     principals.close()
+
+
+def test_the_lifespan_shutdown_closes_every_service(base, tokens):
+    from agent_memory.service import ServiceError
+    token = tokens.create("alice", "read-write")
+    app, principals = build_app(base, tokens)
+    with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+        assert not tool(client, token, "memory_status")[0]
+        assert principals.open_count == 1
+    assert principals.open_count == 0                       # closed by the shutdown, not by us
+    principals.close()                                      # still idempotent
+    with pytest.raises(ServiceError):
+        principals.service_for(Principal("alice", "read-write", "x"))

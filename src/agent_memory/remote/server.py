@@ -104,6 +104,28 @@ class Principals:
             self._close_quietly(service)
 
 
+class CloseOnShutdown:
+    """Passes every scope through unchanged; for the lifespan scope it closes the per-token
+    services when the inner app reports its shutdown, before the server goes on to exit. uvicorn
+    re-raises the stop signal once it has shut down, which can end the process before any code
+    after `server.run()`; this runs inside the shutdown, so each service still leaves a checkpoint."""
+
+    def __init__(self, app, principals: "Principals"):
+        self.app, self.principals = app, principals
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "lifespan":
+            await self.app(scope, receive, send)
+            return
+
+        async def watching(message):
+            if message["type"] in ("lifespan.shutdown.complete", "lifespan.shutdown.failed"):
+                self.principals.close()                    # idempotent; the server is stopping anyway
+            await send(message)
+
+        await self.app(scope, receive, watching)
+
+
 def build_app(base: ServiceConfig, tokens: TokenFile, *, public_url: str = "",
               limiter: Optional[FailureLimiter] = None):
     """(asgi_app, principals). The app authenticates every request before anything else."""
@@ -130,7 +152,8 @@ def build_app(base: ServiceConfig, tokens: TokenFile, *, public_url: str = "",
                   "transport_security": TransportSecuritySettings(
                       enable_dns_rebinding_protection=True, allowed_hosts=hosts,
                       allowed_origins=[])})
-    return GuardMiddleware(server.streamable_http_app(), tokens, limiter), principals
+    guarded = GuardMiddleware(server.streamable_http_app(), tokens, limiter)
+    return CloseOnShutdown(guarded, principals), principals
 
 
 def is_loopback(host: str) -> bool:

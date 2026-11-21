@@ -1,5 +1,6 @@
 import asyncio
 import json
+import signal
 import socket
 import subprocess
 import sys
@@ -186,3 +187,55 @@ def test_amem_serve_http_runs_as_a_process_and_stops_cleanly(repo, tmp_path):
     assert "name=alice tool=memory_status outcome=ok" in err
     # No snapshot assertion: the store file exists from start-up, so it would pass vacuously, and
     # terminate() is a hard kill on Windows. A graceful stop leaving a checkpoint is not covered here.
+
+
+def test_a_graceful_stop_folds_the_journal_and_keeps_the_note(repo, tmp_path):
+    """SIGTERM (or Ctrl-Break on Windows) ends the process through uvicorn's signal handling,
+    which re-raises the signal after shutting down; the services must be closed before that."""
+    from agent_memory.service import MemoryService
+    tokens = TokenFile(tmp_path / "tokens.json")
+    token = tokens.create("alice", "read-write")
+    port = free_port()
+    flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "agent_memory.cli", "serve", "--http", "--port", str(port),
+         "--repo", str(repo), "--tokens", str(tokens.path)],
+        env=child_env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        creationflags=flags)
+    err = ""
+    try:
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+                break
+            except OSError:
+                time.sleep(0.2)
+
+        async def scenario():
+            async with streamablehttp_client(f"http://127.0.0.1:{port}/mcp",
+                                             headers={"Authorization": f"Bearer {token}"}) as (r, w, _):
+                async with ClientSession(r, w) as client:
+                    await client.initialize()
+                    made = await call(client, "memory_remember", kind="quirk",
+                                      fields={"description": "the zorblax queue drops items over 64KB"})
+                    status = await call(client, "memory_status")
+                    return made, json.loads(status[1])["unfolded_transactions"]
+
+        made, unfolded = run(scenario())
+        assert not made[0] and unfolded > 0                  # in the journal, not yet folded
+    finally:
+        proc.send_signal(signal.CTRL_BREAK_EVENT if sys.platform == "win32" else signal.SIGTERM)
+        try:
+            _, err = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            _, err = proc.communicate()
+    assert token not in err and "Traceback" not in err
+    service = MemoryService(resolve_config(repo=str(repo), agent="check", env={}))
+    try:
+        assert service.status()["unfolded_transactions"] == 0, f"no checkpoint on stop (rc={proc.returncode})"
+        found = service.recall(task="zorblax queue drops items")
+        assert any("zorblax" in json.dumps(item) for item in found["items"])
+    finally:
+        service.close()
