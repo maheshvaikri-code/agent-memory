@@ -112,3 +112,57 @@ def test_serve_http_refuses_stdio_only_options(needs_mcp, amem):
 def test_http_only_options_need_http(amem):
     out = amem("serve", "--port", "9000", expect=2)
     assert "--http" in out
+
+
+def test_create_still_shows_the_token_when_the_file_cannot_be_read_back(amem, repo, monkeypatch):
+    def unreadable(self):
+        raise OSError("the disk went away")
+
+    monkeypatch.setattr(TokenFile, "entries", unreadable)
+    out = amem("token", "create", "alice", "--role", "read-write", "--expires-in", "30")
+    token = next(word for word in out.split() if word.startswith("amt_"))
+    assert "shown once" in out and "Expires:         20" in out
+    monkeypatch.undo()
+    assert TokenFile(repo / ".agent-memory" / "tokens.json").verify(token).name == "alice"
+
+
+def test_create_json_survives_a_re_read_that_finds_nothing(amem, monkeypatch):
+    monkeypatch.setattr(TokenFile, "entries", lambda self: [])
+    made = amem("token", "create", "alice", "--role", "read-only", "--expires-in", "30", json_out=True)
+    assert made["token"].startswith("amt_") and made["expires_at"].startswith("20")
+
+
+@pytest.fixture
+def recorded_run(monkeypatch):
+    """Replace the real server runner: a test using it can never start uvicorn."""
+    pytest.importorskip("mcp")
+    from agent_memory.remote import server
+    calls = []
+    monkeypatch.setattr(server, "run_http", lambda *args, **kwargs: calls.append(args))
+    return calls
+
+
+def test_port_zero_means_port_zero_not_the_default(amem, recorded_run):
+    amem("serve", "--http", "--port", "0")
+    assert recorded_run[0][2:4] == ("127.0.0.1", 0)
+
+
+def test_the_defaults_apply_when_the_options_are_absent(amem, recorded_run):
+    amem("serve", "--http")
+    assert recorded_run[0][2:4] == ("127.0.0.1", 8765)
+
+
+def test_an_empty_host_is_refused_not_turned_into_loopback(amem, recorded_run):
+    out = amem("serve", "--http", "--host", "", expect=2)
+    assert "--host" in out and recorded_run == []
+
+
+def test_an_empty_tokens_path_is_refused(amem, recorded_run):
+    out = amem("serve", "--http", "--tokens", "", expect=2)
+    assert "--tokens" in out and recorded_run == []
+
+
+def test_http_only_options_with_falsy_values_still_need_http(amem):
+    assert "--http" in amem("serve", "--port", "0", expect=2)
+    assert "--http" in amem("serve", "--host", "", expect=2)
+    assert "--http" in amem("serve", "--public-url", "", expect=2)

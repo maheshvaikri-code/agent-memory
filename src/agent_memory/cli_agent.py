@@ -43,7 +43,7 @@ def serve(store, repo, agent, allow_must, http, host, port, tokens, public_url, 
         from .cli_remote import serve_http
         serve_http(store, repo, host, port, tokens, public_url, behind_tls)
         return
-    if host or port or tokens or public_url or behind_tls:
+    if any(value is not None for value in (host, port, tokens, public_url)) or behind_tls:
         _fail(ServiceError("invalid_argument", "--host, --port, --tokens, --public-url and "
                            "--behind-tls need --http"), False)
     try:

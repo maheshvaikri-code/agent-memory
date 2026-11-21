@@ -162,3 +162,33 @@ def test_create_and_revoke_refuse_a_damaged_file_and_leave_it_unchanged(tf):
     with pytest.raises(TokenError, match="fix or remove it first"):
         tf.revoke("alice")
     assert tf.path.read_bytes() == before
+
+
+_GOOD_ENTRY = {"name": "alice", "role": "read-write", "hash": "a" * 64,
+               "created_at": "2026-01-01T00:00:00Z", "expires_at": ""}
+
+
+@pytest.mark.parametrize("field", ["name", "role", "hash", "created_at", "expires_at"])
+@pytest.mark.parametrize("bad", [123, None, [], {}, 1.5, True])
+def test_a_hand_edited_entry_with_a_non_string_field_fails_closed(tf, field, bad):
+    token = tf.create("alice", "read-write")
+    entry = dict(_GOOD_ENTRY, **{field: bad})
+    tf.path.write_text(json.dumps({"version": 1, "tokens": [entry]}), encoding="utf-8")
+    assert tf.verify(token) is None and tf.verify("amt_" + "A" * 43) is None
+    assert tf.error == "a token entry has an invalid field type"
+    assert tf.entries() == [] and tf.usable() == 0 and tf.generation >= 0
+
+
+def test_a_hash_made_of_sixty_four_digits_but_not_a_string_fails_closed(tf):
+    tf.path.write_text(json.dumps({"version": 1, "tokens": [dict(_GOOD_ENTRY, hash=10 ** 63)]}),
+                       encoding="utf-8")
+    assert tf.verify("amt_" + "A" * 43) is None
+    assert tf.error == "a token entry has an invalid field type"
+
+
+def test_create_entry_returns_the_token_and_its_entry_and_create_keeps_its_return_value(tf):
+    token, entry = tf.create_entry("alice", "read-only", expires_in_days=5)
+    assert token.startswith(TOKEN_PREFIX) and entry.name == "alice" and entry.role == "read-only"
+    assert entry.hash == hash_token(token) and entry.expires_at
+    assert tf.entries() == [entry]
+    assert isinstance(tf.create("bob", "read-write"), str)

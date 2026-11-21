@@ -54,11 +54,10 @@ def token_create(name, role, expires_in, url, tokens, store, repo, as_json):
     """Make a token. It is shown once; only its hash is kept."""
     file = TokenFile(_tokens_path(tokens, store, repo))
     try:
-        token = file.create(name, role, expires_in_days=expires_in)
+        token, entry = file.create_entry(name, role, expires_in_days=expires_in)
     except TokenError as exc:
         _die(str(exc), as_json)
         return
-    entry = next(e for e in file.entries() if e.name == name)
     if as_json:
         click.echo(json.dumps({"name": name, "role": role, "token": token,
                                "expires_at": entry.expires_at, "file": str(file.path)}, indent=2))
@@ -116,10 +115,15 @@ def serve_http(store, repo, host, port, tokens, public_url, behind_tls) -> None:
         click.echo(f"the remote server needs the optional 'mcp' package (Python 3.10+): {exc}",
                    err=True)
         sys.exit(1)
+    for option, value in (("--host", host), ("--tokens", tokens)):
+        if value is not None and not value.strip():
+            click.echo(f"error: {option} is empty; give a value or leave the option out", err=True)
+            sys.exit(2)
     config = resolve_config(store=store, repo=repo, agent="remote", allow_must=False)
     file = TokenFile(_tokens_path(tokens, store, repo))
     try:
-        run_http(config, file, host or "127.0.0.1", port or 8765, public_url or "", behind_tls)
+        run_http(config, file, "127.0.0.1" if host is None else host, 8765 if port is None else port,
+                 "" if public_url is None else public_url, behind_tls)
     except StartupError as exc:
         click.echo(f"error: {exc}", err=True)
         sys.exit(2)

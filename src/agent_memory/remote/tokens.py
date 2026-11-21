@@ -12,7 +12,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from ..storage.atomic import atomic_write_text
 
@@ -152,6 +152,9 @@ class TokenFile:
                                    raw.get("expires_at", ""))
             except (KeyError, TypeError):
                 raise TokenError("a token entry is missing a field") from None
+            if not all(isinstance(value, str) for value in (
+                    entry.name, entry.role, entry.hash, entry.created_at, entry.expires_at)):
+                raise TokenError("a token entry has an invalid field type")
             if not _NAME.fullmatch(str(entry.name)) or entry.role not in ROLES \
                     or not re.fullmatch(r"[0-9a-f]{64}", str(entry.hash)) \
                     or entry.name in names:
@@ -208,6 +211,11 @@ class TokenFile:
 
     def create(self, name: str, role: str, expires_in_days: Optional[int] = None,
                now: Optional[datetime] = None) -> str:
+        return self.create_entry(name, role, expires_in_days, now)[0]
+
+    def create_entry(self, name: str, role: str, expires_in_days: Optional[int] = None,
+                     now: Optional[datetime] = None) -> Tuple[str, TokenEntry]:
+        """Like `create`, and also the stored entry, so a caller needs no re-read of the file."""
         if not isinstance(name, str) or not _NAME.fullmatch(name):
             raise TokenError("a name is 1-64 letters, digits or _.@-")
         if role not in ROLES:
@@ -225,9 +233,9 @@ class TokenFile:
                 raise TokenError(f"a token named {name!r} already exists")
             token = new_token()
             expires = _stamp(now + timedelta(days=expires_in_days)) if expires_in_days else ""
-            self._write(self._entries + [TokenEntry(name, role, hash_token(token), _stamp(now),
-                                                    expires)])
-        return token
+            entry = TokenEntry(name, role, hash_token(token), _stamp(now), expires)
+            self._write(self._entries + [entry])
+        return token, entry
 
     def revoke(self, name: str) -> bool:
         with self._lock:
