@@ -123,7 +123,8 @@ class MemoryWriter:
     def add(self, kind: str, fields: Dict[str, Any], *, node_id=None,
             anchors: Iterable = (), scope: Optional[List[str]] = None, evidence: str = "",
             priority: Optional[str] = None, confidence: Optional[float] = None,
-            source: str = "explicit", status: str = "active") -> WriteResult:
+            source: str = "explicit", status: str = "active",
+            rejected_before: str = "") -> WriteResult:
         if kind not in KINDS:
             raise ValueError(f"Unknown memory kind {kind!r}. Valid kinds: {', '.join(sorted(KINDS))}")
         if priority is not None and priority not in PRIORITIES:
@@ -177,6 +178,11 @@ class MemoryWriter:
         props["review"] = envelope["review"]
         if pending:
             props.update(STORED_PENDING)
+        # the label is the memory's own: a field of that name is dropped, and only a pending
+        # add can carry one
+        props.pop("rejected_before", None)
+        if pending and rejected_before:
+            props["rejected_before"] = rejected_before
         self.graph.add_node(kind, new_id, **props)
         ref = (kind, new_id)
         if norm and not pending:
@@ -235,6 +241,21 @@ class MemoryWriter:
                 return rec.ref, "active"
             pending_hit = pending_hit or (rec.ref, "pending")
         return pending_hit
+
+    def find_retracted(self, kind: str, fields: Dict[str, Any]) -> Optional[str]:
+        """"<id> on <date>" of the most recently retracted record of `kind` with the text these
+        fields build, or None. A superseded or archived record is not a rejection."""
+        props = {k: ("" if v is None else v) for k, v in fields.items()}
+        norm = normalize_text(build_text(kind, props))
+        if not norm:
+            return None
+        best: Optional[MemoryRecord] = None
+        for node in self.graph.nodes(kind):
+            rec = MemoryRecord.from_node(node)
+            if rec.status == "retracted" and normalize_text(rec.text) == norm:
+                if best is None or rec.updated_at >= best.updated_at:   # a tie: the later node
+                    best = rec
+        return None if best is None else f"{best.id} on {best.updated_at[:10]}"
 
     def pending(self) -> List[MemoryRecord]:
         """Every record waiting for review, oldest first."""

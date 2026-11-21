@@ -28,7 +28,9 @@ from .shaping import (UNREVIEWED_NOTE, escape_id, item_to_dict, neutralize, unes
 
 AGENT_KINDS = ("convention", "decision", "bug_pattern", "alternative", "quirk", "workaround",
                "refactoring_attempt", "open_question", "blocker", "partial_work")
-RESERVED_FIELDS = frozenset(ENVELOPE_FIELDS) | {"id"}
+# `files` and `symbols` are lesson keys: as field names they would draw a second, look-alike
+# line on the review screen
+RESERVED_FIELDS = frozenset(ENVELOPE_FIELDS) | {"id", "files", "symbols", "text"}
 MAX_FIELD_CHARS = 2000
 MAX_FIELDS = 12
 MAX_TASK_CHARS = 2000
@@ -43,6 +45,9 @@ WRAPPER_TOKENS = 110      # the labelled untrusted block's own cost
 MIN_INNER_TOKENS = 90
 UNBOUNDED_TOKENS = 10 ** 6   # only to learn whether an empty recall dropped notes for budget
 _KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,40}")
+# what the writer stamps in `rejected_before`; anything else in that property (an older build
+# let an agent write it) is not shown as the memory's own label
+_REJECTED_BEFORE = re.compile(r"[^\n\r]{1,200} on \d{4}-\d{2}-\d{2}")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 MAX_LESSONS_PER_CALL = 10
 MAX_PENDING = 100
@@ -445,6 +450,7 @@ class MemoryService:
                     skipped.append({"index": index,
                                     "reason": neutralize(f"{exc.code}: {exc.message}")})
             captured: List[str] = []
+            repeats: List[str] = []
             pending = None
             if prepared:
                 outcome = self._call(lambda: self.memory.capture(
@@ -455,14 +461,20 @@ class MemoryService:
                         "a person must accept or reject some (amem review list) before more "
                         "can be captured")
                 captured = [escape_id(str(c["id"])) for c in outcome["captured"]]
+                repeats = [escape_id(str(c["id"])) for c in outcome["captured"]
+                           if c["rejected_before"]]
                 for item in outcome["skipped"]:
                     skipped.append({"index": prepared[item["index"]][0],
                                     "reason": neutralize(self._skip_reason(item))})
                 pending = outcome["pending"]
             if pending is None:
                 pending = self._call(self._pending_counts)[0]
-            return {"captured": captured, "skipped": sorted(skipped, key=lambda s: s["index"]),
-                    "pending": pending}
+            result = {"captured": captured,
+                      "skipped": sorted(skipped, key=lambda s: s["index"]), "pending": pending}
+            if repeats:
+                # captured lessons whose text a person retracted or rejected before
+                result["rejected_before"] = repeats
+            return result
 
     def _pending_counts(self) -> Tuple[int, int]:
         """(waiting, expired but not yet swept)."""
@@ -479,11 +491,14 @@ class MemoryService:
     # `accept` insists on an interactive terminal.
 
     def _review_entry(self, record: MemoryRecord) -> Dict[str, Any]:
-        return {"id": escape_id(str(record.id)), "kind": neutralize(str(record.kind)),
-                "text": neutralize(record.text), "agent": neutralize(str(record.agent)),
-                "session_id": neutralize(str(record.session_id)),
-                "created_at": neutralize(str(record.created_at)),
-                "expired": pending_expired(record.created_at)}
+        entry = {"id": escape_id(str(record.id)), "kind": neutralize(str(record.kind)),
+                 "text": neutralize(record.text), "agent": neutralize(str(record.agent)),
+                 "session_id": neutralize(str(record.session_id)),
+                 "created_at": neutralize(str(record.created_at)),
+                 "expired": pending_expired(record.created_at)}
+        if _REJECTED_BEFORE.fullmatch(record.rejected_before):
+            entry["rejected_before"] = neutralize(record.rejected_before)
+        return entry
 
     def review_list(self) -> Dict[str, Any]:
         with self._lock:

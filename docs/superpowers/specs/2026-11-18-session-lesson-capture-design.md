@@ -172,12 +172,19 @@ Built as sub-project 3c (commits `fb9c5ce` to `6edef31`). Where the plan had to 
 
 ### 10.5 Known limits, deliberately left
 
-- `amem capture` run on a terminal waits for stdin without saying so.
-- Accepting or rejecting an unknown id in a repository with no store creates an empty store.
+- (Closed by the capture cleanup, 10.6: `amem capture` now says it is waiting; accepting or rejecting in a repository with no store fails with `not_found` and creates nothing.)
 - The `must` refusal in `review accept` and `review reject` is aimed at agents' permissions and is likely unreachable, because only a person reaches those commands.
 - Evidence is checked for presence and for its file or symbol anchors, not for truth; the reviewing person is the check.
 - The terminal check on `accept` is a strong barrier, not proof: a program that drives a pseudo-terminal could pass it (section 4.4).
 - Accepted lessons are stamped `reviewed` and are the only thing that clears `unreviewed`; legacy `amem add` notes still show as unreviewed.
 - Legacy readers (`amem check`, `amem list`, the store helpers) skip waiting lessons but still show retracted and superseded records, as they did before this work.
-- Every process sharing a store should run a 3c build. An older build reads a waiting lesson as archived (fails safe) and an accepted one as an ordinary active note.
-- Parked: a rejected lesson can be captured again (a person may see the same rejected text each session); needs a product decision.
+- Every process sharing a store should run a 3c build. An older build reads a waiting lesson as archived: its recall and MCP tools never return it. Its legacy readers (`amem check`, `amem list`, `check_suggestion`, session context) still list it like any archived record, because they never looked at status. An accepted lesson is an ordinary active note for every build.
+- A rejected lesson can be captured again; the person is told (10.6) but the repeat still costs a review.
+
+### 10.6 Capture cleanup (after 3c)
+
+- **Rejected before.** Capture still queues a lesson whose text matches a `retracted` note of the same kind (a lesson a person rejected, or a note retracted through `memory_retract`; superseded and archived notes do not count). It stamps the reserved envelope property `rejected_before` (`"<id> on <date>"`, the most recent such note). The capture result gains `rejected_before: [ids]` only when non-empty; `amem review list` flags `[rejected before]`, and `amem review show` and the accept prompt print `rejected before: ...`. The label is the memory's own: it is a reserved name, so an agent cannot set it as a field, and a pending add drops a field of that name.
+- **Forged line.** The description line of `review show` is labelled `text:`, and `files` and `symbols` are reserved field names (for `remember` too), so a lesson cannot draw a second look-alike `evidence:` or `files:` line.
+- **Small items.** `amem capture` on a terminal prints a waiting hint on stderr; `amem review accept|reject` with no store fails with `not_found` and creates nothing; Ctrl-C while a lesson is being promoted is reported as an interruption (exit 2) like Ctrl-C at the prompt.
+- **After review of the cleanup.** `text` is a reserved field name too. The notices the memory draws itself (`rejected before:`, `EXPIRED`) start with `! `, which no field name can, and a stored field named `text`, `evidence`, `files` or `symbols` (an older build let an agent choose any name) is shown as `field NAME`. A stored `rejected_before` is shown only when it has the form `<id> on <date>`. `amem review accept|reject` treat a journal without its snapshot as a damaged store for the normal open to report, not as a missing one.
+- **Left, with cost.** An older build sharing the store can still write a well-formed `rejected_before`, so the label is a hint, not proof; the cost is a reviewer being told a note was rejected before when it was not. Ctrl-C landing just after a promotion was saved lists that lesson as skipped though it is active (`amem review list` shows the truth). The label counts a note an agent retracted too, and the text says "retracted or rejected".

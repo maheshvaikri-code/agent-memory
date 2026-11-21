@@ -380,10 +380,12 @@ class AgentMemory:
                 skipped.append({"index": index, "code": "queue_full", "of": None,
                                 "of_status": None})
             else:
+                before = self.writer.find_retracted(item["kind"], item["fields"]) or ""
                 result = self.writer.add(item["kind"], item["fields"], anchors=item["anchors"],
                                          evidence=item["evidence"], source="extracted",
-                                         status="pending")
-                captured.append({"index": index, "id": result.id})
+                                         status="pending", rejected_before=before)
+                captured.append({"index": index, "id": result.id,
+                                 "rejected_before": before})
                 room -= 1
         return {"captured": captured, "skipped": skipped, "full": False, "swept": swept,
                 "pending": total + len(captured)}

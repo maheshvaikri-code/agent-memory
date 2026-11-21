@@ -225,6 +225,10 @@ and the `accept` prompt print every further line of a multi-line value behind ` 
 lesson's text cannot pass for a field, its evidence or another lesson; symbols with control
 characters are refused at capture.
 
+If a captured lesson repeats a note a person retracted or rejected before, it is still queued
+but flagged: the capture result lists it under `rejected_before`, and `amem review list`,
+`show` and the accept prompt say which note and when, so you can reject it quickly.
+
 Agents without MCP use `amem capture`: a JSON list of lessons on stdin (`amem capture
 --session ID`, `--json` for machine output).
 
@@ -241,8 +245,9 @@ many have expired but are not yet swept.
 
 Every process that shares a store should run a build with lessons. A waiting lesson is stored
 with status `archived` and a separate `review: pending` mark, so an older build reads it as
-archived: never recalled, checked or counted as active. A mixed fleet therefore fails safe;
-the older build just does not see the lessons. A lesson a person accepts becomes an ordinary
+archived: its recall and MCP tools never return it. Its older commands (`amem check`, `amem
+list`, `check_suggestion`, the session summary) still list it like any archived record, since
+they never looked at status. A lesson a person accepts becomes an ordinary
 active note that every build reads. In the other direction, a record whose status this build
 does not know is read as archived (with a load warning), never as active.
 

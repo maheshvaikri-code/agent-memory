@@ -24,7 +24,7 @@ SOURCE_CONFIDENCE = {"explicit": 0.7, "reviewed": 0.7, "extracted": 0.5, "bootst
 PENDING_TTL_DAYS = 30      # a lesson nobody reviewed in this long is archived (see writer.expire_pending)
 ENVELOPE_FIELDS = ("created_at", "updated_at", "agent", "session_id", "source",
                    "evidence", "commit", "scope", "priority", "confidence",
-                   "status", "invalid_at", "helpful", "harmful", "review")
+                   "status", "invalid_at", "helpful", "harmful", "review", "rejected_before")
 
 # How a lesson waiting for review is stored: status "archived" plus review "pending". A build
 # from before lessons existed reads it as archived (never recalled, checked or carried), so a
@@ -211,6 +211,7 @@ class MemoryRecord:
     invalid_at: str = ""
     helpful: int = 0
     harmful: int = 0
+    rejected_before: str = ""    # "<id> on <date>" of a retracted note this lesson repeats
 
     @property
     def ref(self) -> NodeRef:
@@ -289,4 +290,5 @@ class MemoryRecord:
             source=source, evidence=text_of("evidence"), commit=text_of("commit"),
             scope=scope, priority=priority, confidence=confidence, status=status,
             invalid_at=text_of("invalid_at"), helpful=count("helpful"), harmful=count("harmful"),
+            rejected_before=text_of("rejected_before"),
         )
