@@ -327,3 +327,41 @@ def test_a_token_file_outage_keeps_every_service_and_a_revoked_one_goes_when_it_
     principals.service_for(entries["bob"])
     assert principals.open_count == 1                              # only the revoked one went
     principals.close()
+
+
+def test_a_one_shot_read_failure_inside_a_sweep_closes_nothing(base, tokens, monkeypatch):
+    import os
+    from agent_memory.remote import tokens as token_module
+    principals = Principals(base, tokens)
+    tokens.create("alice", "read-write")
+    tokens.create("bob", "read-write")
+    entries = {e.name: Principal(e.name, e.role, e.created_at) for e in tokens.entries()}
+    alice, bob = principals.service_for(entries["alice"]), principals.service_for(entries["bob"])
+    assert principals.open_count == 2
+    armed = {"on": False}
+    parse, read_entries = TokenFile._parse_file, TokenFile.entries
+
+    def parse_once_broken(self):
+        if armed["on"]:
+            armed["on"] = False
+            raise token_module._ReadError("the token file cannot be read: PermissionError")
+        return parse(self)
+
+    def entries_after_a_replace(self):               # the file is replaced just before this read
+        self._signature = token_module._STALE
+        armed["on"] = True
+        return read_entries(self)
+
+    stat = os.stat(tokens.path)
+    os.utime(tokens.path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))   # a new generation
+    monkeypatch.setattr(TokenFile, "_parse_file", parse_once_broken)
+    monkeypatch.setattr(TokenFile, "entries", entries_after_a_replace)
+    assert principals.service_for(entries["bob"]) is bob
+    monkeypatch.undo()
+    assert principals.open_count == 2                              # nothing closed or recreated
+    assert principals.service_for(entries["alice"]) is alice
+    assert principals.service_for(entries["bob"]) is bob
+    tokens.revoke("alice")
+    assert principals.service_for(entries["bob"]) is bob
+    assert principals.open_count == 1                              # only the revoked one went
+    principals.close()

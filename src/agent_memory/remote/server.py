@@ -73,16 +73,18 @@ class Principals:
         return ReadOnlyView(service) if principal.role == "read-only" else service
 
     def _sweep(self) -> None:
-        """Close the services of tokens that left the file. While the file is unreadable it lists
-        no tokens, so nothing is closed (requests still fail closed at the guard) and the
-        generation is not recorded: the sweep runs once the file reads cleanly again."""
+        """Close the services of tokens that left the file, but only on a consistent, clean
+        snapshot: no error before the read and the same generation around it (every refresh
+        that changes anything bumps it, so the entries came from one clean read). Otherwise do
+        nothing and do not record the generation, so the next call retries. An outage lists no
+        tokens; closing then would lose every session (requests still fail closed at the guard)."""
+        before = self._tokens.generation
         if self._tokens.error:
             return
-        generation = self._tokens.generation
         entries = self._tokens.entries()
-        if self._tokens.error or generation == self._generation:
-            return                         # an outage began meanwhile, or nothing changed
-        self._generation = generation
+        if self._tokens.generation != before or before == self._generation:
+            return                         # the file changed or failed meanwhile, or nothing new
+        self._generation = before
         live = {(e.name, e.role, e.created_at) for e in entries}
         for key in [k for k in self._services if k not in live]:
             self._close_quietly(self._services.pop(key))
