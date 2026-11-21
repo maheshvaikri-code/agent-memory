@@ -219,3 +219,47 @@ def test_an_oversized_credential_is_audited_as_invalid(client, tokens, caplog):
         client.post("/mcp", json={}, headers=bearer(secret))
     text = "\n".join(record.getMessage() for record in caplog.records)
     assert "reason=invalid" in text and secret not in text
+
+
+def _drive(guard, scope, incoming):
+    """Run the guard on a raw scope with a scripted receive; return what it sent."""
+    sent = []
+    queue = list(incoming)
+
+    async def receive():
+        return queue.pop(0) if queue else {"type": "websocket.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(guard(scope, receive, send))
+    return sent
+
+
+def _recording_app():
+    calls = []
+
+    async def app(scope, receive, send):
+        calls.append(scope["type"])
+
+    return app, calls
+
+
+def test_a_websocket_is_closed_and_never_reaches_the_app(tokens):
+    app, calls = _recording_app()
+    token = tokens.create("alice", "read-write")
+    scope = {"type": "websocket", "headers": [(b"authorization", f"Bearer {token}".encode())]}
+    sent = _drive(GuardMiddleware(app, tokens), scope, [{"type": "websocket.connect"}])
+    assert calls == [] and sent == [{"type": "websocket.close", "code": 1008}]
+
+
+def test_an_unknown_scope_type_never_reaches_the_app(tokens):
+    app, calls = _recording_app()
+    sent = _drive(GuardMiddleware(app, tokens), {"type": "future", "headers": []}, [])
+    assert calls == [] and sent == []
+
+
+def test_the_lifespan_scope_reaches_the_app_directly(tokens):
+    app, calls = _recording_app()
+    _drive(GuardMiddleware(app, tokens), {"type": "lifespan"}, [])
+    assert calls == ["lifespan"]

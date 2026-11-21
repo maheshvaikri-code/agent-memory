@@ -81,8 +81,15 @@ class GuardMiddleware:
         self.limiter = limiter if limiter is not None else FailureLimiter()
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":                       # lifespan and anything else
+        kind = scope["type"]
+        if kind == "lifespan":                            # the only scope passed unauthenticated
             await self.app(scope, receive, send)
+            return
+        if kind == "websocket":                           # no websocket is served: refuse the handshake
+            await receive()
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        if kind != "http":                                # anything unknown is refused, not passed on
             return
         token, reason = _bearer(scope["headers"])
         principal = self.tokens.verify(token) if token else None
