@@ -5,7 +5,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Callable, Mapping, Optional
 
 
 @dataclass(frozen=True)
@@ -18,12 +18,36 @@ class ServiceConfig:
     # is loaded (snapshot plus journal replayed) and never checkpointed, and every write
     # method refuses. For read-only commands (`amem status`, `recall`, `guard`).
     read_only: bool = False
+    # Show the caller no absolute path of this machine (remote serving): `status` reports file
+    # and directory names only, and the adapter scrubs error messages with path_scrubber.
+    redact_paths: bool = False
 
 
 def sanitize_agent(name: str) -> str:
     """A safe author name: letters, digits and _.@- only, at most 64 characters."""
     cleaned = re.sub(r"[^A-Za-z0-9_.@-]", "-", str(name or "").strip())[:64]
     return cleaned or "agent"
+
+
+def path_scrubber(config: ServiceConfig) -> Callable[[str], str]:
+    """A function that replaces this service's store path, store directory and repo root in a
+    text (also in their forward-slash and resolved forms) with their last path component."""
+    pairs = []
+    for full in {config.store_path, os.path.dirname(config.store_path), config.repo_root}:
+        if not full:
+            continue
+        for variant in {full, full.replace("\\", "/"), os.path.realpath(full)}:
+            name = os.path.basename(variant.rstrip("/\\")) or "."
+            pairs.append((variant, name))
+    pairs.sort(key=lambda pair: -len(pair[0]))       # the longest path first
+
+    def scrub(text: str) -> str:
+        for old, new in pairs:
+            if old and old in text:
+                text = text.replace(old, new)
+        return text
+
+    return scrub
 
 
 def find_repo_root(start: Optional[str] = None) -> str:

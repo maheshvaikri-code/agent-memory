@@ -21,7 +21,7 @@ from ..record import ENVELOPE_FIELDS, KINDS, PRIORITIES, MemoryRecord, pending_e
 from ..retrieval.render import render
 from ..storage import JournalBackend, journal
 from ..storage.errors import StoreCorrupt, StoreInUse, StoreLockTimeout
-from .config import ServiceConfig, sanitize_agent
+from .config import ServiceConfig, path_scrubber, sanitize_agent
 from .errors import ServiceError
 from .shaping import (UNREVIEWED_NOTE, escape_id, item_to_dict, neutralize, unescape_id, wrap,
                       wrap_items)
@@ -748,14 +748,19 @@ class MemoryService:
                         expired += 1
                     else:
                         pending += 1
-        return {"store": self.config.store_path, "store_exists": self._store_exists,
-                "repo_root": self.config.repo_root,
+        store, root, warnings = self.config.store_path, self.config.repo_root, self.memory.warnings
+        if self.config.redact_paths:
+            scrub = path_scrubber(self.config)
+            store, root = scrub(store), scrub(root)
+            warnings = [scrub(str(w)) for w in warnings]
+        return {"store": store, "store_exists": self._store_exists,
+                "repo_root": root,
                 "agent": self.config.agent, "shared": shared,
                 "session": self._session, "counts": counts,
                 "total_active": sum(counts.values()), "last_write": last,
                 "unfolded_transactions": unfolded,
                 "pending": pending, "pending_expired": expired,
-                "warnings": self.memory.warnings, "schema": 1}
+                "warnings": warnings, "schema": 1}
 
     def close(self) -> None:
         """Leave a complete snapshot behind and release the store (only if this service opened

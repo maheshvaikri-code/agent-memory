@@ -251,6 +251,98 @@ they never looked at status. A lesson a person accepts becomes an ordinary
 active note that every build reads. In the other direction, a record whose status this build
 does not know is read as archived (with a load warning), never as active.
 
+### Remote server
+
+Use it when an agent runs on someone else's machine and can only reach a URL (Base44 first;
+Devin possibly). The server runs on a machine that has a checkout of the repository, because
+file anchors are verified against that checkout exactly as over stdio. It serves the same
+eleven tools over streamable HTTP at `/mcp`, behind bearer tokens.
+
+```bash
+pip install 'agent-memory[mcp]'                      # Python 3.10+; brings uvicorn and starlette
+
+amem token create base44-prod --role read-write --url https://memory.example.com
+amem token list
+amem token revoke base44-prod
+
+amem serve --http                                    # 127.0.0.1:8765, loopback only
+amem serve --http --public-url https://memory.example.com --behind-tls
+```
+
+`amem token create` prints the token once (`amt_...`), the MCP server URL and a paste-ready
+`Authorization` header; only a hash is kept, in `tokens.json` beside the store (override with
+`--tokens PATH` or `$AGENT_MEMORY_TOKENS`). Only `amem install` gitignores the default
+`<repo>/.agent-memory/tokens.json`: keep the token file untracked (add
+`.agent-memory/tokens.json` to `.gitignore`) or put it outside the checkout with `--tokens`.
+`--expires-in DAYS` limits a token's life. The
+token's name is the agent name stamped on every note it writes, whatever the client calls
+itself. The server refuses to start with no usable token (there is no anonymous mode), and
+refuses a non-loopback `--host` without `--behind-tls`, which states that a TLS proxy or tunnel
+fronts it. `--public-url` (it must look like `https://host[:port]`, or the server refuses to
+start) adds that URL's host, lower-cased, to the hosts the server accepts. On a successful start
+the server prints one line to stderr: the listen address, the token file, the number of usable
+tokens and the allowed hosts (never a token).
+
+| Role | Tools |
+| --- | --- |
+| `read-only` | `memory_recall`, `memory_check`, `memory_status` |
+| `read-write` | all eleven |
+
+A read-only token calling any other tool gets the tool error `forbidden`.
+
+The server speaks plain HTTP, so put a TLS proxy or tunnel in front of it. Caddy:
+
+```
+memory.example.com {
+    reverse_proxy 127.0.0.1:8765
+}
+```
+
+Cloudflare Tunnel (a quick tunnel; use a named tunnel for a stable hostname):
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8765
+```
+
+With a proxy or tunnel, pass the public hostname with `--public-url`: a request whose Host is
+not loopback or that URL's host gets 421, and a request with an Origin header gets 403.
+
+**Base44:** add a custom MCP server by URL, `https://memory.example.com/mcp`, with the header
+`Authorization: Bearer <token>`. **Devin:** unverified; the same URL and header.
+
+**Audit log.** One line per event on stderr (`<time>` is UTC, `...Z`): `<time> call name=<token name> tool=<tool>
+outcome=<ok or an error code> ms=<duration>`, and `<time> auth denied reason=<missing|invalid>`
+(with `throttled=yes` when the failure limiter answered). It never holds an argument, a result
+or a token. A wrong, missing, expired or revoked token gets the same 401 with a fixed body.
+
+**What a remote agent cannot do.** Accept, reject or promote a lesson (`memory_capture_lessons`
+and the `lessons` argument queue them as pending; `amem review accept` stays on the machine
+with the store), set `priority: must`, choose the repository or the store, or see the server's
+paths (`memory_status` shows the store's file name and the repository's directory name only).
+Request bodies over 1 MB get 413, and a bearer value over 512 characters is refused as invalid.
+
+**Known limits.**
+
+- Tokens are checked at request time. Revoking one stops it at the next request; its service
+  closes at the next call after a clean read of the token file. A revoke during an in-flight
+  request can leave a service open for the revoked token until the next token-file change or
+  shutdown (the guard still refuses the token).
+- The failure limiter is global, not per address: 20 failed authentications in 60 seconds make
+  further invalid tokens get 429. A valid token always passes.
+- The token file mode (0600) is best effort on Windows; keep the file in a private directory.
+- One store and one repository per server, fixed at start-up.
+- Plain HTTP only: a TLS proxy or tunnel is required off loopback.
+- `created_at` has one-second resolution: revoking and re-creating a token with the same name
+  and role within one second reuses the old service.
+- `--public-url` is validated and its host lower-cased; a trailing dot or a Host header in upper
+  case is not normalised and is refused with 421.
+- Calls are served one at a time; a slow call (for example a store-lock wait of up to 10 s while
+  another process checkpoints) delays all callers, including authentication of new requests.
+- Every throttled request still writes one WARNING line to the audit log.
+- Reaching a server from a different `amem`: if `amem token` or `amem serve --http` is not
+  found, the `amem` on your PATH may come from another checkout than the one in front of you.
+  Run `python -m agent_memory.cli ...` from the repository, or reinstall with `pip install -e .`.
+
 ### The same through the command line
 
 The memory commands (`recall`, `guard`, `remember`, `feedback`, `retract`, `verify`,
@@ -321,9 +413,8 @@ a plain `.memory` file without converting it to a shared one.
 
 ### Known limits
 
-- Local only: the server speaks stdio to a client on the same machine. Hosted agents that
-  need an MCP server by URL (Base44) need the remote transport, which is a later sub-project
-  and not built. Local filesystems only (no NFS or SMB), and the store's lock is not fair: a
+- The stdio server talks to a client on the same machine; hosted agents that need an MCP
+  server by URL (Base44) use the remote server (see "Remote server"). Local filesystems only (no NFS or SMB), and the store's lock is not fair: a
   process writing in a tight loop can make another wait until `store_busy`.
 - Tool support for Devin, Codex and Cursor beyond the files written here comes from secondary
   sources and is unverified; Replit Agent's MCP support is unknown, so use the `generic`
