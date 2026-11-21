@@ -1,6 +1,6 @@
 # Remote MCP server (sub-project 3b): design
 
-Status: approved in conversation (sections 1-3), written 2026-11-20. Builds on the agent surface (3a, `2026-11-17-agent-surface-design.md`), concurrency-safe storage (`2026-11-17-concurrency-safe-storage-design.md`) and lesson capture (3c, `2026-11-18-session-lesson-capture-design.md`).
+Status: implemented (branch `feature/remote-mcp`); approved in conversation (sections 1-3), written 2026-11-20. Builds on the agent surface (3a, `2026-11-17-agent-surface-design.md`), concurrency-safe storage (`2026-11-17-concurrency-safe-storage-design.md`) and lesson capture (3c, `2026-11-18-session-lesson-capture-design.md`).
 
 ## 1. Purpose and success
 
@@ -31,13 +31,14 @@ It is deliberately small: one transport and an auth layer over the existing `Mem
 agent_memory/
   remote/
     tokens.py    token file: create, list, revoke, verify (hash only)
-    server.py    HTTP app (FastMCP streamable HTTP), per-token services, limits, audit log
+    limits.py    ASGI guard in front of the MCP app: bearer check, fixed 401, 1 MB cap, failure limiter, audit log
+    server.py    HTTP app (FastMCP streamable HTTP behind the guard), per-token services, startup rules
   cli_remote.py  amem token create|list|revoke ; amem serve --http
   mcp_server.py  build_server gains a service provider and trust_client_name (stdio unchanged)
 ```
 
 - `MemoryService` stays the security boundary and is not changed, except for the status redaction in 6.5 and the new error code `forbidden`.
-- `mcp_server.build_server(service)` keeps working for stdio. Underneath it takes a provider: a callable that returns the service (and role) for the current request. The stdio provider returns the one fixed service and trusts the client-reported name, as today. The HTTP provider reads the verified token of the request, returns that token's service, and does not trust the client-reported name.
+- `mcp_server.build_server(service)` keeps working for stdio. Underneath it takes a provider: a callable that returns the service (and role) for the current request. The stdio provider returns the one fixed service and trusts the client-reported name, as today. The HTTP provider reads the verified token of the request, returns that token's service, and does not trust the client-reported name: a provider-based server ignores the client-reported name unless asked to trust it. The token is verified by our own ASGI guard (`remote/limits.py`), not by the SDK's token verifier (ruling 7), and reaches the provider through a context variable.
 - Python 3.10+ and the `mcp` extra are required, as for stdio. `uvicorn` and `starlette` come with `mcp`. The core package stays 3.9+.
 
 ## 4. Tokens
@@ -60,10 +61,11 @@ agent_memory/
 
 - **Startup refuses to run** when: Python or `mcp` is missing; the token file has no unexpired token (there is no anonymous mode and no flag for one); the repo root or store directory is unusable; or `--host` is not a loopback address and `--behind-tls` is absent (the message explains that a bearer token over plain HTTP can be read on the network).
 - **Endpoint.** Streamable HTTP at `/mcp`, in stateless JSON mode (`stateless_http=True`, `json_response=True`): no MCP session state lives in the server, so a restart loses nothing and a client may retry.
-- **Host and Origin.** DNS-rebinding protection is on. Allowed hosts are `127.0.0.1:*`, `localhost:*`, `[::1]:*` and the host of `--public-url`. No CORS headers are sent.
-- **Per-token services.** A `MemoryService` is opened lazily the first time a token is used, cached by (name, role, creation time), and closed when its token is gone (a sweep at each token-file reload) and at shutdown, which leaves a checkpoint. The services share one store through the journal and OS lock described in the storage spec, exactly like separate processes do. A token's service keeps its own session, so each agent has the session semantics of a stdio agent.
+- **Host and Origin.** DNS-rebinding protection is on. Allowed hosts are `127.0.0.1:*`, `localhost:*`, `[::1]:*` and the host of `--public-url`; a Host that is not allowed gets 421, and any Origin header gets 403 (no origin is allowed). No CORS headers are sent.
+- **Guard scope.** The guard passes only `lifespan` scopes through unauthenticated. It closes a websocket handshake with code 1008 and refuses any scope type it does not know. A bearer credential over 512 characters is refused as invalid without being hashed.
+- **Per-token services.** A `MemoryService` is opened lazily the first time a token is used, cached by (name, role, creation time), and closed when its token is gone (a sweep at the next call) and at shutdown, which leaves a checkpoint. The sweep never closes a service while the token file is unreadable or a read was inconsistent: it needs a clean snapshot, bracketed by the file's generation counter, so an outage does not lose every session. The services share one store through the journal and OS lock described in the storage spec, exactly like separate processes do. A token's service keeps its own session, so each agent has the session semantics of a stdio agent.
 - **Role enforcement.** The role is read from the verified token of the request, before the service is reached. A read-only token calling any tool outside its three gets the tool error `forbidden`. The read-only service object is also a facade that exposes only `recall`, `check` and `status`, so no write method is reachable from it.
-- **Identity.** The service for a token is built with that token's name as its agent. The client-reported name (`clientInfo`) is ignored on HTTP.
+- **Identity.** The service for a token is built with that token's name as its agent. The client-reported name (`clientInfo`) is ignored on HTTP (`build_server` ignores it on the provider path unless asked).
 - **Fixed, not configurable.** `allow_must` is always off. No review tool exists. The repo root and store path come only from startup arguments.
 - **Limits.** Request bodies over 1 MB get 413 (a content-length check plus a counting wrapper for chunked bodies). Failed authentications are counted in a sliding 60-second window; past 20 failures a request with an invalid token gets 429 without further work, and a valid token always passes, so an attacker cannot lock real agents out. The window is global, not per address, because behind a proxy every request shares an address. Its purpose is to bound log noise and slow guessing; the real protection is that a token has 256 bits of entropy.
 - **Audit log.** One line to stderr per call: time, token name, tool, outcome code (`ok` or the error code), duration in milliseconds. It never contains arguments, results, the token or any part of it. Authentication failures log a count and the reason class (`missing`, `invalid`), never the presented value.
@@ -92,7 +94,8 @@ agent_memory/
 | Missing, wrong, expired or revoked token | 401, `WWW-Authenticate: Bearer`, one fixed body |
 | Throttled invalid token | 429 |
 | Body over 1 MB | 413 |
-| Host or Origin not allowed | 421 |
+| Host not allowed | 421 |
+| Origin not allowed | 403 |
 | Write tool with a read-only token | tool error `forbidden` |
 | Any other service error | the same `{"error": {"code", "message"}}` as stdio |
 | Internal failure | the generic message only; detail in the operator's log |
@@ -127,10 +130,20 @@ OAuth flows; built-in TLS; more than one store or repo per server; more than two
 4. **Token file fails closed on any read error.** Cost: a half-written edit locks every agent out until fixed; the log says why.
 5. **Global failure limiter.** Cost: a flood of bad tokens makes other bad tokens get 429, which is the intent; valid tokens are unaffected.
 6. **Plain HTTP with an explicit flag instead of built-in TLS.** Cost: the operator must run a proxy or tunnel.
+7. **Own guard instead of the SDK token verifier.** Cost: about 150 lines of authentication plumbing we maintain and test; benefit: a fixed 401 with no OAuth routes and a single audited path.
 
-## 12. To confirm while implementing
+### Known limits left
 
-- The access token of the current request is readable from tool code in FastMCP 1.25 (`get_access_token`) when `stateless_http=True`; if not, the provider reads it from the request scope.
-- `AuthSettings` needs an issuer and resource URL even for a bare token verifier; the values come from `--public-url` and no OAuth endpoint is served. If FastMCP would publish OAuth metadata routes that point nowhere, they are disabled.
-- Starlette middleware ordering for the body cap and Host check relative to FastMCP's own checks.
-- Windows behaviour of the token file mode and of two services in one process locking the same store (the storage spec tested two processes).
+- A revoke during an in-flight request can leave a service open for the revoked key until the next token-file change or shutdown (not a bypass: the guard refuses the token).
+- `created_at` has one-second resolution, so revoking and re-creating a same-name same-role token within one second inherits the old service.
+- `--public-url` host matching is by exact netloc (userinfo, upper case, trailing dot, IPv6 without port are not normalised and fail closed with 421).
+- The inner app still receives the Authorization header in its ASGI scope.
+- `amem token create` re-reads the file after writing (a transient read failure then loses the displayed token; revoke and recreate).
+
+## 12. Findings from the spike and the build
+
+- **Own ASGI guard, not the SDK's verifier.** FastMCP's token verifier is shaped for OAuth: it wants an issuer and resource URL and would publish OAuth metadata routes that point nowhere. Our guard serves no OAuth route, answers a fixed 401, and is the one audited path for authentication, the body cap and the failure limiter. Host and Origin checks stay with FastMCP's transport security, inside the guard.
+- **Identity through a context variable.** The guard sets the verified principal in a context variable; FastMCP's stateless mode propagates it to the tool code (anyio copies the context in `task_group.start`), so the provider reads the caller of the current request.
+- **One run per app.** `FastMCP.session_manager.run()` runs only once per instance, so tests build a new app each time.
+- **Two services, one store.** Two services in one process share a store safely through the journal and the OS lock, and keep separate sessions. This was confirmed on Windows.
+- **Dependencies.** `uvicorn` and `starlette` come with `mcp`; no new dependency is added.
