@@ -10,7 +10,7 @@ pytest.importorskip("mcp")
 from starlette.testclient import TestClient                          # noqa: E402
 
 from agent_memory.remote.server import (Principals, ReadOnlyView, StartupError, build_app,  # noqa: E402
-                                        check_startup, is_loopback)
+                                        check_startup, is_loopback, public_hosts, startup_banner)
 from agent_memory.remote.limits import FailureLimiter                # noqa: E402
 from agent_memory.remote.tokens import Principal, TokenFile          # noqa: E402
 from agent_memory.service import resolve_config                      # noqa: E402
@@ -378,3 +378,176 @@ def test_the_lifespan_shutdown_closes_every_service(base, tokens):
     principals.close()                                      # still idempotent
     with pytest.raises(ServiceError):
         principals.service_for(Principal("alice", "read-write", "x"))
+
+
+# -- start-up checks the store ----------------------------------------------------------------
+
+def test_startup_refuses_a_corrupt_store_file(base, tokens):
+    import os
+    tokens.create("alice", "read-write")
+    os.makedirs(os.path.dirname(base.store_path), exist_ok=True)
+    with open(base.store_path, "wb") as handle:
+        handle.write(b"this is not a store\n" * 20)
+    with pytest.raises(StartupError, match="store"):
+        check_startup(base, tokens, "127.0.0.1", behind_tls=False)
+
+
+def test_startup_refuses_a_store_directory_that_is_a_file(base, tokens):
+    import os
+    tokens.create("alice", "read-write")
+    parent = os.path.dirname(base.store_path)
+    os.makedirs(os.path.dirname(parent), exist_ok=True)
+    with open(parent, "w", encoding="utf-8") as handle:             # the store's parent is a regular file
+        handle.write("x")
+    with pytest.raises(StartupError, match="store"):
+        check_startup(base, tokens, "127.0.0.1", behind_tls=False)
+
+
+def test_a_healthy_repo_passes_startup_and_the_check_leaves_nothing_open(base, tokens):
+    import os
+    tokens.create("alice", "read-write")
+    check_startup(base, tokens, "127.0.0.1", behind_tls=False)
+    check_startup(base, tokens, "127.0.0.1", behind_tls=False)       # repeatable: nothing is held
+    assert os.path.exists(base.store_path)
+
+
+def test_a_startup_error_never_carries_a_token(base, tokens):
+    import os
+    token = tokens.create("alice", "read-write")
+    os.makedirs(os.path.dirname(base.store_path), exist_ok=True)
+    with open(base.store_path, "wb") as handle:
+        handle.write(b"garbage" * 30)
+    with pytest.raises(StartupError) as error:
+        check_startup(base, tokens, "127.0.0.1", behind_tls=False)
+    assert token not in str(error.value)
+
+
+# -- --public-url is validated and normalised ---------------------------------------------------
+
+@pytest.mark.parametrize("url", ["memory.example.com", "memory.example.com:8443", "localhost:8765",
+                                 "//memory.example.com", "https://", "https:///mcp",
+                                 "ftp://memory.example.com", "https://memory.example.com:notaport",
+                                 "https://memory.example.com:99999", "   "])
+def test_a_bad_public_url_is_refused_at_startup(base, tokens, url):
+    tokens.create("alice", "read-write")
+    with pytest.raises(StartupError, match="--public-url must look like https://host"):
+        public_hosts(url)
+    with pytest.raises(StartupError, match="--public-url must look like https://host"):
+        check_startup(base, tokens, "127.0.0.1", False, url)
+    with pytest.raises(StartupError, match="--public-url"):
+        build_app(base, tokens, public_url=url)
+
+
+def test_public_hosts_normalises():
+    assert public_hosts("") == []
+    assert public_hosts("https://Memory.Example.com") == ["memory.example.com", "memory.example.com:*"]
+    assert public_hosts("https://memory.example.com:8443/base") == [
+        "memory.example.com", "memory.example.com:*", "memory.example.com:8443"]
+    assert public_hosts("http://[::1]:9000") == ["[::1]", "[::1]:*", "[::1]:9000"]
+    assert public_hosts("https://user:pw@memory.example.com") == ["memory.example.com",
+                                                                  "memory.example.com:*"]
+
+
+def test_a_mixed_case_public_url_lets_the_lowercase_host_through(base, tokens):
+    app, principals = build_app(base, tokens, public_url="https://Memory.Example.com")
+    token = tokens.create("alice", "read-write")
+    with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+        assert rpc(client, token, "tools/list", headers={"Host": "memory.example.com"}).status_code == 200
+        assert rpc(client, token, "tools/list", headers={"Host": "evil.example.org"}).status_code == 421
+    principals.close()
+
+
+def test_a_public_url_with_a_port_allows_that_port(base, tokens):
+    app, principals = build_app(base, tokens, public_url="https://memory.example.com:8443")
+    token = tokens.create("alice", "read-write")
+    with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+        for host in ("memory.example.com:8443", "memory.example.com"):
+            assert rpc(client, token, "tools/list", headers={"Host": host}).status_code == 200
+        assert rpc(client, token, "tools/list", headers={"Host": "evil.example.org:8443"}).status_code == 421
+    principals.close()
+
+
+def test_a_public_url_that_is_an_ipv6_literal_works(base, tokens):
+    app, principals = build_app(base, tokens, public_url="https://[2001:db8::1]:8443")
+    token = tokens.create("alice", "read-write")
+    with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+        assert rpc(client, token, "tools/list", headers={"Host": "[2001:db8::1]:8443"}).status_code == 200
+        assert rpc(client, token, "tools/list", headers={"Host": "[2001:db8::2]:8443"}).status_code == 421
+    principals.close()
+
+
+# -- the start-up line, the server header, the audit timestamp ----------------------------------
+
+def test_the_startup_banner_has_the_address_file_count_and_hosts_but_no_token(tokens):
+    token = tokens.create("alice", "read-write")
+    line = startup_banner("127.0.0.1", 8765, tokens.path, 1, ["127.0.0.1:*", "memory.example.com"])
+    assert line.startswith("agent-memory remote: listening on http://127.0.0.1:8765/mcp")
+    assert str(tokens.path) in line and "1 usable token(s)" in line
+    assert "allowed hosts: 127.0.0.1:*, memory.example.com" in line
+    assert "\n" not in line and token not in line and "amt_" not in line
+    assert "http://[::1]:9/mcp" in startup_banner("::1", 9, tokens.path, 2, [])
+
+
+@pytest.fixture
+def audit_state():
+    """run_http configures the process-wide audit logger; leave it as it was found."""
+    from agent_memory.remote.limits import audit_log
+    saved = (list(audit_log.handlers), audit_log.level, audit_log.propagate,
+             logging.getLogger("mcp").level)
+    yield
+    audit_log.handlers, audit_log.level, audit_log.propagate = saved[:3]
+    logging.getLogger("mcp").setLevel(saved[3])
+
+
+def test_run_http_prints_one_startup_line_and_turns_the_server_header_off(base, tokens, monkeypatch,
+                                                                         capsys, audit_state):
+    import uvicorn
+    from agent_memory.remote import server as server_module
+    seen = {}
+
+    class FakeServer:
+        def __init__(self, config):
+            seen["config"] = config
+
+        def run(self):
+            seen["ran"] = True
+
+    monkeypatch.setattr(uvicorn, "Server", FakeServer)
+    token = tokens.create("alice", "read-write")
+    server_module.run_http(base, tokens, "127.0.0.1", 0, "https://Memory.Example.com")
+    assert seen["ran"] and seen["config"].server_header is False and seen["config"].port == 0
+    err = capsys.readouterr().err
+    lines = [line for line in err.splitlines() if "listening on" in line]
+    assert len(lines) == 1 and "http://127.0.0.1:0/mcp" in lines[0]
+    assert "memory.example.com" in lines[0] and "Memory.Example" not in lines[0]
+    assert token not in err
+
+
+def test_run_http_prints_nothing_when_startup_is_refused(base, tokens, monkeypatch, capsys):
+    from agent_memory.remote import server as server_module
+    with pytest.raises(StartupError):
+        server_module.run_http(base, tokens, "127.0.0.1", 8765)
+    assert "listening" not in capsys.readouterr().err
+
+
+def test_the_audit_timestamp_is_utc_with_a_zone_mark():
+    from agent_memory.remote.server import _audit_formatter
+    record = logging.LogRecord("agent_memory.remote.audit", logging.INFO, __file__, 1,
+                               "call name=x tool=y outcome=ok ms=1", None, None)
+    record.created = 86400.0 * 365                       # 1971-01-01T00:00:00 UTC, whatever the zone
+    assert _audit_formatter().format(record) == "1971-01-01T00:00:00Z call name=x tool=y outcome=ok ms=1"
+
+
+def test_the_configured_audit_log_writes_utc_lines(capsys):
+    import re
+    from agent_memory.remote import server as server_module
+    from agent_memory.remote.limits import audit_log
+    saved = (list(audit_log.handlers), audit_log.level, audit_log.propagate)
+    audit_log.handlers = []
+    try:
+        server_module._configure_audit_log()
+        audit_log.info("call name=x tool=y outcome=ok ms=1")
+    finally:
+        audit_log.handlers, audit_log.level, audit_log.propagate = saved
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ call name=x tool=y outcome=ok ms=1\n",
+                        capsys.readouterr().err)

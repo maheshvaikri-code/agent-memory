@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -195,7 +196,8 @@ def test_the_principal_is_not_left_set_after_a_request(tokens):
         async def send(message):
             pass
 
-        scope = {"type": "http", "headers": [(b"authorization", f"Bearer {token}".encode())]}
+        scope = {"type": "http", "method": "POST",
+                 "headers": [(b"authorization", f"Bearer {token}".encode())]}
         await guard(scope, receive, send)
         return current_principal.get()
 
@@ -263,3 +265,73 @@ def test_the_lifespan_scope_reaches_the_app_directly(tokens):
     app, calls = _recording_app()
     _drive(GuardMiddleware(app, tokens), {"type": "lifespan"}, [])
     assert calls == ["lifespan"]
+
+
+def _chunked(guard_tokens, token, chunks, max_body=100):
+    """Drive the guard with a valid token and a body split over http.request messages."""
+    app_calls = []
+
+    async def app(scope, receive, send):
+        body = b""
+        while True:
+            message = await receive()
+            body += message.get("body", b"")
+            if not message.get("more_body", False):
+                break
+        app_calls.append(len(body))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    scope = {"type": "http", "method": "POST", "path": "/mcp",
+             "headers": [(b"authorization", f"Bearer {token}".encode())]}
+    incoming = [{"type": "http.request", "body": chunk, "more_body": index < len(chunks) - 1}
+                for index, chunk in enumerate(chunks)]
+    sent = _drive(GuardMiddleware(app, guard_tokens, max_body=max_body), scope, incoming)
+    return sent, app_calls
+
+
+def test_the_cap_counts_a_body_across_chunks(tokens):
+    token = tokens.create("alice", "read-write")
+    sent, calls = _chunked(tokens, token, [b"a" * 60, b"b" * 60])
+    assert sent[0]["status"] == 413 and calls == []
+    assert json.loads(sent[1]["body"]) == {"error": "payload_too_large"}
+
+
+def test_a_body_of_exactly_the_cap_across_chunks_passes_whole(tokens):
+    token = tokens.create("alice", "read-write")
+    sent, calls = _chunked(tokens, token, [b"a" * 60, b"b" * 40])
+    assert sent[0]["status"] == 200 and calls == [100]
+
+
+@pytest.mark.parametrize("method", ["GET", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"])
+def test_after_authentication_only_post_is_served(tokens, method):
+    token = tokens.create("alice", "read-write")
+    app, calls = _recording_app()
+    scope = {"type": "http", "method": method, "path": "/mcp",
+             "headers": [(b"authorization", f"Bearer {token}".encode())]}
+    sent = _drive(GuardMiddleware(app, tokens), scope, [])      # no receive() may be needed
+    assert calls == []
+    assert sent[0]["status"] == 405
+    assert (b"allow", b"POST") in sent[0]["headers"]
+    assert json.loads(sent[1]["body"]) == {"error": "method_not_allowed"}
+
+
+def test_a_405_applies_to_any_path_and_unauthenticated_requests_still_get_401(tokens):
+    token = tokens.create("alice", "read-write")
+    app, calls = _recording_app()
+    guard = GuardMiddleware(app, tokens)
+    other = _drive(guard, {"type": "http", "method": "GET", "path": "/elsewhere",
+                           "headers": [(b"authorization", f"Bearer {token}".encode())]}, [])
+    assert other[0]["status"] == 405
+    for method in ("GET", "PUT", "DELETE", "HEAD", "OPTIONS"):
+        sent = _drive(guard, {"type": "http", "method": method, "path": "/mcp", "headers": []}, [])
+        assert sent[0]["status"] == 401
+    assert calls == []
+
+
+def test_a_valid_post_is_unchanged(client, tokens):
+    token = tokens.create("alice", "read-write")
+    assert client.post("/mcp", json={}, headers=bearer(token)).status_code == 200
+    assert client.get("/mcp", headers=bearer(token)).status_code == 405
+    assert client.get("/mcp", headers=bearer(token)).headers["allow"] == "POST"
+    assert client.get("/mcp").status_code == 401

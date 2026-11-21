@@ -103,6 +103,9 @@ class GuardMiddleware:
             audit_log.warning("auth denied reason=%s", reason)
             await _respond(send, 401, {"error": "unauthorized"}, [(b"www-authenticate", b"Bearer")])
             return
+        if scope.get("method") != "POST":                 # stateless server: nothing to GET or stream
+            await _respond(send, 405, {"error": "method_not_allowed"}, [(b"allow", b"POST")])
+            return
         body = await self._read_body(scope, receive, send)
         if body is None:
             return

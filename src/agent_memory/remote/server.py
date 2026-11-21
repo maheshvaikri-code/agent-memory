@@ -7,8 +7,9 @@ import logging
 import os
 import sys
 import threading
+import time
 from dataclasses import replace
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from mcp.server.transport_security import TransportSecuritySettings
@@ -126,14 +127,33 @@ class CloseOnShutdown:
         await self.app(scope, receive, watching)
 
 
+def public_hosts(public_url: str) -> List[str]:
+    """The Host values `--public-url` allows: the lower-cased host with and without a port, and the
+    exact port when the URL names one. An empty URL allows nothing extra; a URL that is not
+    http(s)://host[:port] is refused, since it would otherwise be silently ineffective."""
+    if not public_url:
+        return []
+    problem = StartupError("--public-url must look like https://host[:port]")
+    try:
+        parsed = urlparse(public_url)
+        host, port = parsed.hostname, parsed.port
+    except ValueError:
+        raise problem from None
+    if parsed.scheme not in ("http", "https") or not host:
+        raise problem
+    if ":" in host:
+        host = f"[{host}]"                                 # an IPv6 literal, as a Host header writes it
+    hosts = [host, host + ":*"]
+    if port is not None:
+        hosts.append(f"{host}:{port}")
+    return hosts
+
+
 def build_app(base: ServiceConfig, tokens: TokenFile, *, public_url: str = "",
               limiter: Optional[FailureLimiter] = None):
     """(asgi_app, principals). The app authenticates every request before anything else."""
     principals = Principals(base, tokens)
-    hosts = list(LOOPBACK_HOSTS)
-    public_host = urlparse(public_url).netloc if public_url else ""
-    if public_host:
-        hosts += [public_host] + ([] if ":" in public_host else [public_host + ":*"])
+    hosts = LOOPBACK_HOSTS + public_hosts(public_url)
 
     def provider():
         principal = current_principal.get()
@@ -166,7 +186,8 @@ def is_loopback(host: str) -> bool:
         return False
 
 
-def check_startup(base: ServiceConfig, tokens: TokenFile, host: str, behind_tls: bool) -> None:
+def check_startup(base: ServiceConfig, tokens: TokenFile, host: str, behind_tls: bool,
+                  public_url: str = "") -> None:
     if not is_loopback(host) and not behind_tls:
         raise StartupError(
             f"binding {host or 'an empty host'} exposes a bearer token over plain HTTP. Put a TLS "
@@ -177,30 +198,59 @@ def check_startup(base: ServiceConfig, tokens: TokenFile, host: str, behind_tls:
     if tokens.usable() == 0:
         raise StartupError(f"no usable token in {tokens.path}; run `amem token create NAME "
                            "--role read-write` first (there is no anonymous mode)")
+    public_hosts(public_url)                           # refuses a URL that would silently not work
     if not os.path.isdir(base.repo_root):
         raise StartupError(f"the repo root {base.repo_root} is not a directory")
+    try:                                               # the first request would open the store: do it now
+        MemoryService(replace(base, agent="startup-check", allow_must=False, read_only=False,
+                              redact_paths=True)).close()
+    except (ServiceError, OSError) as exc:
+        detail = f"{type(exc).__name__}: {exc}" if isinstance(exc, OSError) else f"{exc.code}: {exc}"
+        raise StartupError(f"the memory store is unusable ({detail[:300]}); fix or remove it, "
+                           "or point --store/--repo elsewhere") from None
+
+
+def startup_banner(host: str, port: int, token_path, usable: int, hosts: List[str]) -> str:
+    shown = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    return (f"agent-memory remote: listening on http://{shown}:{port}/mcp, token file {token_path}, "
+            f"{usable} usable token(s), allowed hosts: {', '.join(hosts)}")
+
+
+def _audit_formatter() -> logging.Formatter:
+    formatter = logging.Formatter("%(asctime)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%SZ")
+    formatter.converter = time.gmtime                  # UTC, and the Z says so
+    return formatter
 
 
 def _configure_audit_log() -> None:
     if audit_log.handlers:
         return
     handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    handler.setFormatter(_audit_formatter())
     audit_log.addHandler(handler)
     audit_log.setLevel(logging.INFO)
     audit_log.propagate = False
     logging.getLogger("mcp").setLevel(logging.WARNING)
 
 
+def _say(line: str) -> None:
+    """One line to stderr that never fails on a character the stream cannot encode."""
+    encoding = getattr(sys.stderr, "encoding", None) or "utf-8"
+    print(line.encode(encoding, errors="replace").decode(encoding, errors="replace"),
+          file=sys.stderr, flush=True)
+
+
 def run_http(base: ServiceConfig, tokens: TokenFile, host: str, port: int, public_url: str = "",
              behind_tls: bool = False) -> None:
     import uvicorn
 
-    check_startup(base, tokens, host, behind_tls)
+    check_startup(base, tokens, host, behind_tls, public_url)
     _configure_audit_log()
     app, principals = build_app(base, tokens, public_url=public_url)
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning",
-                                           access_log=False))
+                                           access_log=False, server_header=False))
+    _say(startup_banner(host, port, tokens.path, tokens.usable(),
+                        LOOPBACK_HOSTS + public_hosts(public_url)))
     try:
         server.run()
     finally:
