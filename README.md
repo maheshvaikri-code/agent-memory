@@ -271,11 +271,17 @@ amem serve --http --public-url https://memory.example.com --behind-tls
 
 `amem token create` prints the token once (`amt_...`), the MCP server URL and a paste-ready
 `Authorization` header; only a hash is kept, in `tokens.json` beside the store (override with
-`--tokens PATH` or `$AGENT_MEMORY_TOKENS`). `--expires-in DAYS` limits a token's life. The
+`--tokens PATH` or `$AGENT_MEMORY_TOKENS`). Only `amem install` gitignores the default
+`<repo>/.agent-memory/tokens.json`: keep the token file untracked (add
+`.agent-memory/tokens.json` to `.gitignore`) or put it outside the checkout with `--tokens`.
+`--expires-in DAYS` limits a token's life. The
 token's name is the agent name stamped on every note it writes, whatever the client calls
 itself. The server refuses to start with no usable token (there is no anonymous mode), and
 refuses a non-loopback `--host` without `--behind-tls`, which states that a TLS proxy or tunnel
-fronts it. `--public-url` adds that URL's host to the hosts the server accepts.
+fronts it. `--public-url` (it must look like `https://host[:port]`, or the server refuses to
+start) adds that URL's host, lower-cased, to the hosts the server accepts. On a successful start
+the server prints one line to stderr: the listen address, the token file, the number of usable
+tokens and the allowed hosts (never a token).
 
 | Role | Tools |
 | --- | --- |
@@ -304,7 +310,7 @@ not loopback or that URL's host gets 421, and a request with an Origin header ge
 **Base44:** add a custom MCP server by URL, `https://memory.example.com/mcp`, with the header
 `Authorization: Bearer <token>`. **Devin:** unverified; the same URL and header.
 
-**Audit log.** One line per event on stderr: `<time> call name=<token name> tool=<tool>
+**Audit log.** One line per event on stderr (`<time>` is UTC, `...Z`): `<time> call name=<token name> tool=<tool>
 outcome=<ok or an error code> ms=<duration>`, and `<time> auth denied reason=<missing|invalid>`
 (with `throttled=yes` when the failure limiter answered). It never holds an argument, a result
 or a token. A wrong, missing, expired or revoked token gets the same 401 with a fixed body.
@@ -328,10 +334,11 @@ Request bodies over 1 MB get 413, and a bearer value over 512 characters is refu
 - Plain HTTP only: a TLS proxy or tunnel is required off loopback.
 - `created_at` has one-second resolution: revoking and re-creating a token with the same name
   and role within one second reuses the old service.
-- `--public-url` is matched by its exact host and port text; userinfo, upper case, a trailing
-  dot or an IPv6 address without a port are not normalised and are refused with 421.
-- `amem token create` re-reads the file after writing; if that read fails the token is not
-  displayed. Revoke it and create it again.
+- `--public-url` is validated and its host lower-cased; a trailing dot or a Host header in upper
+  case is not normalised and is refused with 421.
+- Calls are served one at a time; a slow call (for example a store-lock wait of up to 10 s while
+  another process checkpoints) delays all callers, including authentication of new requests.
+- Every throttled request still writes one WARNING line to the audit log.
 - Reaching a server from a different `amem`: if `amem token` or `amem serve --http` is not
   found, the `amem` on your PATH may come from another checkout than the one in front of you.
   Run `python -m agent_memory.cli ...` from the repository, or reinstall with `pip install -e .`.
