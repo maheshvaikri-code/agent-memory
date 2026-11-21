@@ -17,7 +17,7 @@ from mcp.client.streamable_http import streamablehttp_client          # noqa: E4
 
 from agent_memory.remote.server import build_app                      # noqa: E402
 from agent_memory.remote.tokens import TokenFile                      # noqa: E402
-from agent_memory.service import resolve_config                       # noqa: E402
+from agent_memory.service import MemoryService, resolve_config                       # noqa: E402
 from storage_helpers import SRC, child_env                            # noqa: E402
 
 
@@ -130,23 +130,46 @@ def test_a_stdio_server_and_the_http_server_share_one_store(live, repo):
     params = StdioServerParameters(command=sys.executable, args=["-m", "agent_memory.cli", "serve",
                                    "--repo", str(repo)], env=child_env())
 
+    stdio_phrase, http_phrase = "the quuxblat cache evicts early", "the zibblefrit retry loop stalls"
+
     async def scenario():
         async with stdio_client(params) as (sr, sw):
             async with ClientSession(sr, sw, client_info=types.Implementation(name="claude-code", version="1")) as local:
                 await local.initialize()
-                await call(local, "memory_remember", kind="quirk",
-                           fields={"description": "written over stdio, read over http"})
+                wrote_stdio = await call(local, "memory_remember", kind="quirk",
+                                         fields={"description": stdio_phrase})
                 async with streamablehttp_client(url, headers={"Authorization": f"Bearer {token}"}) as (r, w, _):
                     async with ClientSession(r, w) as remote:
                         await remote.initialize()
-                        seen = await call(remote, "memory_recall", task="written over stdio read over http")
-                        await call(remote, "memory_remember", kind="quirk",
-                                   fields={"description": "written over http, read over stdio"})
-                back = await call(local, "memory_recall", task="written over http read over stdio")
-                return seen, back
+                        http_sees_stdio = await call(remote, "memory_recall", task="quuxblat cache evicts early")
+                        http_sees_other = await call(remote, "memory_recall", task="zibblefrit retry loop stalls")
+                        wrote_http = await call(remote, "memory_remember", kind="quirk",
+                                                fields={"description": http_phrase})
+                stdio_sees_http = await call(local, "memory_recall", task="zibblefrit retry loop stalls")
+                stdio_sees_own = await call(local, "memory_recall", task="quuxblat cache evicts early")
+                return (wrote_stdio, wrote_http, http_sees_stdio, http_sees_other, stdio_sees_http,
+                        stdio_sees_own)
 
-    seen, back = run(scenario())
-    assert json.loads(seen[1])["items"] and json.loads(back[1])["items"]
+    wrote_stdio, wrote_http, http_sees_stdio, http_sees_other, stdio_sees_http, stdio_sees_own = run(scenario())
+    stdio_id, http_id = json.loads(wrote_stdio[1])["id"], json.loads(wrote_http[1])["id"]
+    assert stdio_id != http_id
+
+    def ids(result):
+        return [item["id"] for item in json.loads(result[1])["items"]]
+
+    assert ids(http_sees_stdio) == [stdio_id]        # stdio to http: the stdio note, nothing else
+    assert ids(http_sees_other) == []                # the http note did not exist yet: no false match
+    assert ids(stdio_sees_http) == [http_id]         # http to stdio: only the note the http side wrote
+    assert ids(stdio_sees_own) == [stdio_id]         # and the other note is not returned for its words
+    # who wrote each: the stdio client's own name, and the token's name for the http writer
+    service = MemoryService(resolve_config(repo=str(repo), agent="check", env={}))
+    try:
+        authors = {item["id"]: item["agent"] for item in
+                   (service.recall(task="quuxblat cache evicts early")["items"]
+                    + service.recall(task="zibblefrit retry loop stalls")["items"])}
+    finally:
+        service.close()
+    assert authors == {stdio_id: "claude-code", http_id: "alice"}
 
 
 def test_amem_serve_http_runs_as_a_process_and_stops_cleanly(repo, tmp_path):
@@ -192,7 +215,6 @@ def test_amem_serve_http_runs_as_a_process_and_stops_cleanly(repo, tmp_path):
 def test_a_graceful_stop_folds_the_journal_and_keeps_the_note(repo, tmp_path):
     """SIGTERM (or Ctrl-Break on Windows) ends the process through uvicorn's signal handling,
     which re-raises the signal after shutting down; the services must be closed before that."""
-    from agent_memory.service import MemoryService
     tokens = TokenFile(tmp_path / "tokens.json")
     token = tokens.create("alice", "read-write")
     port = free_port()
