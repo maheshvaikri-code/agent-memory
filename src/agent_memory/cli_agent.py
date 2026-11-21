@@ -25,8 +25,27 @@ MAX_CONTEXT_BYTES = MAX_CONTEXT_CHARS * 4 + 8
 @click.option("--repo", default=None, help="Repository root.")
 @click.option("--agent", default=None, help="Default agent name (an MCP client's own name wins).")
 @click.option("--allow-must", is_flag=True, help="Let agents record priority 'must' notes.")
-def serve(store, repo, agent, allow_must):
-    """Serve the memory over MCP (stdio). Started by an MCP client, not by hand."""
+@click.option("--http", "http", is_flag=True,
+              help="Serve over streamable HTTP with bearer tokens (see `amem token`).")
+@click.option("--host", default=None, help="With --http: bind address (default 127.0.0.1).")
+@click.option("--port", default=None, type=int, help="With --http: port (default 8765).")
+@click.option("--tokens", default=None, help="With --http: the token file.")
+@click.option("--public-url", default=None, help="With --http: the URL clients use (allows its host).")
+@click.option("--behind-tls", is_flag=True,
+              help="With --http: a TLS proxy or tunnel fronts this server (needed to bind publicly).")
+def serve(store, repo, agent, allow_must, http, host, port, tokens, public_url, behind_tls):
+    """Serve the memory over MCP: stdio (started by an MCP client), or HTTP with --http."""
+    if http:
+        if agent or allow_must:
+            _fail(ServiceError("invalid_argument", "with --http the agent name comes from each "
+                               "token and --allow-must is never available to remote callers; "
+                               "drop --agent and --allow-must"), False)
+        from .cli_remote import serve_http
+        serve_http(store, repo, host, port, tokens, public_url, behind_tls)
+        return
+    if host or port or tokens or public_url or behind_tls:
+        _fail(ServiceError("invalid_argument", "--host, --port, --tokens, --public-url and "
+                           "--behind-tls need --http"), False)
     try:
         from .mcp_server import serve as run_server
     except ImportError as exc:
