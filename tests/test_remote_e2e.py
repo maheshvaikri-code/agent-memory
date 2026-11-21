@@ -1,11 +1,14 @@
 import asyncio
 import json
+import re
 import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 
 import pytest
 
@@ -18,7 +21,7 @@ from mcp.client.streamable_http import streamablehttp_client          # noqa: E4
 from agent_memory.remote.server import build_app                      # noqa: E402
 from agent_memory.remote.tokens import TokenFile                      # noqa: E402
 from agent_memory.service import MemoryService, resolve_config                       # noqa: E402
-from storage_helpers import SRC, child_env                            # noqa: E402
+from storage_helpers import child_env                            # noqa: E402
 
 
 @pytest.fixture
@@ -56,6 +59,19 @@ def live(repo, tmp_path):
     server.should_exit = True
     thread.join(10)
     principals.close()
+
+
+def wait_listening(port, proc, seconds=30):
+    """Block until the child accepts a connection; fail loudly if it never does or it died."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        assert proc.poll() is None, f"the server exited early (rc={proc.returncode})"
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+            return
+        except OSError:
+            time.sleep(0.2)
+    raise AssertionError(f"the server did not listen on port {port} within {seconds} s")
 
 
 def run(coro):
@@ -104,7 +120,7 @@ def test_a_wrong_token_never_gets_a_session(live):
 
     with pytest.raises(BaseException) as refused:
         run(scenario())
-    assert "401" in repr(refused.value)                 # refused by the guard, not some other failure
+    assert "401 Unauthorized" in repr(refused.value)    # refused by the guard, not some other failure
 
 
 def test_revoking_a_token_cuts_a_running_server_off_without_a_restart(live):
@@ -121,7 +137,7 @@ def test_revoking_a_token_cuts_a_running_server_off_without_a_restart(live):
     tokens.revoke("alice")
     with pytest.raises(BaseException) as refused:
         run(attempt())
-    assert "401" in repr(refused.value)
+    assert "401 Unauthorized" in repr(refused.value)
 
 
 def test_a_stdio_server_and_the_http_server_share_one_store(live, repo):
@@ -172,7 +188,7 @@ def test_a_stdio_server_and_the_http_server_share_one_store(live, repo):
     assert authors == {stdio_id: "claude-code", http_id: "alice"}
 
 
-def test_amem_serve_http_runs_as_a_process_and_stops_cleanly(repo, tmp_path):
+def test_amem_serve_http_serves_and_audits(repo, tmp_path):
     from agent_memory.remote.tokens import TokenFile as TF
     tokens = TF(tmp_path / "tokens.json")
     token = tokens.create("alice", "read-write")
@@ -183,13 +199,7 @@ def test_amem_serve_http_runs_as_a_process_and_stops_cleanly(repo, tmp_path):
         env=child_env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         url = f"http://127.0.0.1:{port}/mcp"
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            try:
-                socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
-                break
-            except OSError:
-                time.sleep(0.2)
+        wait_listening(port, proc)
 
         async def scenario():
             async with streamablehttp_client(url, headers={"Authorization": f"Bearer {token}"}) as (r, w, _):
@@ -199,6 +209,9 @@ def test_amem_serve_http_runs_as_a_process_and_stops_cleanly(repo, tmp_path):
 
         is_error, text = run(scenario())
         assert not is_error and json.loads(text)["agent"] == "alice"
+        with pytest.raises(urllib.error.HTTPError) as denied:      # the 401 names no server software
+            urllib.request.urlopen(urllib.request.Request(url, data=b"{}", method="POST"), timeout=10)
+        assert denied.value.code == 401 and denied.value.headers.get("server") is None
     finally:
         proc.terminate()
         try:
@@ -208,6 +221,8 @@ def test_amem_serve_http_runs_as_a_process_and_stops_cleanly(repo, tmp_path):
             _, err = proc.communicate()
     assert token not in err and "Traceback" not in err
     assert "name=alice tool=memory_status outcome=ok" in err
+    assert err.count("agent-memory remote: listening on http://127.0.0.1:") == 1
+    assert re.search(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ call name=alice ", err, re.M)
     # No snapshot assertion: the store file exists from start-up, so it would pass vacuously, and
     # terminate() is a hard kill on Windows. A graceful stop leaving a checkpoint is not covered here.
 
@@ -226,13 +241,7 @@ def test_a_graceful_stop_folds_the_journal_and_keeps_the_note(repo, tmp_path):
         creationflags=flags)
     err = ""
     try:
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            try:
-                socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
-                break
-            except OSError:
-                time.sleep(0.2)
+        wait_listening(port, proc)
 
         async def scenario():
             async with streamablehttp_client(f"http://127.0.0.1:{port}/mcp",

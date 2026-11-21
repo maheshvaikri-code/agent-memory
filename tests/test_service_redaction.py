@@ -57,3 +57,21 @@ def test_path_scrubber_replaces_every_form_of_the_server_paths(repo):
 def test_path_scrubber_leaves_other_text_alone(repo):
     scrub = path_scrubber(resolve_config(repo=str(repo), agent="a", env={}))
     assert scrub("a note about src/cache.py") == "a note about src/cache.py"
+
+
+def test_status_warnings_are_scrubbed_of_the_store_path_and_the_repo_root(repo, tmp_path):
+    config = resolve_config(repo=str(repo), agent="a", env={})
+    svc = MemoryService(ServiceConfig(config.store_path, config.repo_root, "a", False, False,
+                                      redact_paths=True))
+    try:
+        store, root = config.store_path, config.repo_root
+        svc.memory.load_warnings.append(
+            f"snapshot {store} cannot be read; {root.replace(os.sep, '/')}/src/x.py is odd; "
+            f"journal {store}.journal under {root}")
+        status = svc.status()
+    finally:
+        svc.close()
+    blob = " ".join(status["warnings"])
+    assert "cannot be read" in blob and "project.memory" in blob and "secretrepo" in blob
+    for form in (store, root, root.replace(os.sep, "/"), str(tmp_path), tmp_path.as_posix()):
+        assert form not in blob
