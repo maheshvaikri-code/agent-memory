@@ -102,6 +102,38 @@ def test_the_client_reported_name_is_ignored_when_not_trusted(repo):
     assert node.properties["agent"] == "alice"
 
 
+def test_a_provider_server_ignores_the_client_reported_name_by_default(repo):
+    service = MemoryService(resolve_config(repo=str(repo), agent="alice", env={}))
+
+    async def scenario():
+        server = build_server(provider=lambda: (service, "read-write"))
+        async with create_connected_server_and_client_session(
+                server, client_info=types.Implementation(name="evil-bot", version="1")) as client:
+            return await call(client, "memory_remember", kind="quirk",
+                              fields={"description": "who wrote me"})
+
+    _, text = run(scenario())
+    node = service.memory.graph.get_node("quirk", json.loads(text)["id"])
+    service.close()
+    assert node.properties["agent"] == "alice"
+
+
+def test_a_provider_server_can_opt_in_to_the_client_reported_name(repo):
+    service = MemoryService(resolve_config(repo=str(repo), agent="alice", env={}))
+
+    async def scenario():
+        server = build_server(provider=lambda: (service, "read-write"), trust_client_name=True)
+        async with create_connected_server_and_client_session(
+                server, client_info=types.Implementation(name="claude-code", version="1")) as client:
+            return await call(client, "memory_remember", kind="quirk",
+                              fields={"description": "who wrote me"})
+
+    _, text = run(scenario())
+    node = service.memory.graph.get_node("quirk", json.loads(text)["id"])
+    service.close()
+    assert node.properties["agent"] == "claude-code"
+
+
 def test_the_client_reported_name_is_still_used_for_stdio(repo):
     service = MemoryService(resolve_config(repo=str(repo), agent="cli", env={}))
 

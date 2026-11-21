@@ -49,16 +49,18 @@ def _tool_error(code: str, message: str) -> ToolError:
 # a context or evidence that happens to look like JSON would be rejected or turned into None.
 def build_server(service: Optional[MemoryService] = None, *,
                  provider: Optional[Callable[[], Tuple[Any, str]]] = None,
-                 trust_client_name: bool = True,
+                 trust_client_name: Optional[bool] = None,
                  observer: Optional[Callable[[str, str, int], None]] = None,
                  scrub: Optional[Callable[[str], str]] = None,
                  settings: Optional[Dict[str, Any]] = None) -> FastMCP:
     """`service` serves stdio: one service, read-write, the client's own name stamped on writes.
-    A `provider` serves many callers: it returns (service, role) for the current call, and the
-    client-reported name is not trusted unless asked. `observer` hears every call's outcome and
-    `scrub` cleans every error message that leaves."""
+    A `provider` serves many callers: it returns (service, role) for the current call. The
+    client-reported name is trusted only when `trust_client_name` says so; left unset it is
+    trusted for a plain `service` and ignored for a `provider`. `observer` hears every call's
+    outcome and `scrub` cleans every error message that leaves."""
     if (service is None) == (provider is None):
         raise ValueError("pass either a service or a provider")
+    trust = (service is not None) if trust_client_name is None else trust_client_name
     if provider is None:
         provider = lambda: (service, "read-write")           # noqa: E731
     app = FastMCP("agent-memory", instructions=block("mcp"), **(settings or {}))
@@ -70,7 +72,7 @@ def build_server(service: Optional[MemoryService] = None, *,
             if role != "read-write" and tool not in READ_ONLY_TOOLS:
                 raise ServiceError("forbidden", "this token is read-only: it can recall, check "
                                                 "and read the status, not change the memory")
-            if trust_client_name:
+            if trust:
                 target.set_client(_client_name(ctx))
             return getattr(target, TOOL_METHODS[tool])(**kwargs)
         except ServiceError as exc:
