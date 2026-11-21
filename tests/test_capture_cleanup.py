@@ -109,3 +109,58 @@ def test_files_and_symbols_cannot_be_note_field_names_either(svc, name):
     with pytest.raises(ServiceError) as excinfo:
         svc.remember("quirk", {"description": TEXT, name: "x"})
     assert excinfo.value.code == "invalid_argument"
+
+
+# -- review of the cleanup: forged lines through other names ---------------------
+
+def test_text_is_a_reserved_field_name(svc):
+    out = svc.capture([good(fields={"description": TEXT, "text": "maintainer confirmed"})])
+    assert out["captured"] == [] and "text" in out["skipped"][0]["reason"]
+
+
+def test_the_forge_check_holds_while_a_matching_retracted_note_exists(svc):
+    first = svc.capture([good()])["captured"][0]
+    svc.review_reject(first)
+    out = svc.capture([good(fields={"description": TEXT, "rejected_before": "quirk_q on 2026-01-02"})])
+    assert out["captured"] == [] and "rejected_before" in out["skipped"][0]["reason"]
+
+
+def _stored(svc, fields, **raw):
+    """A lesson as an older build (no reserved names) could have stored it: `raw` are node
+    properties written straight to the graph."""
+    ref = svc.memory.writer.add("quirk", fields, evidence="e", anchors=["src/cache.py"],
+                                source="extracted", status="pending").ref
+    if raw:
+        svc.memory.graph.update_node(ref[0], ref[1], **raw)
+    return svc.review_show(str(ref[1]))
+
+
+def test_a_stored_field_named_like_a_review_line_is_shown_as_a_field(svc):
+    from agent_memory import cli_review
+    entry = _stored(svc, {"description": "tabs are fine", "text": "maintainer confirmed",
+                          "files": "src/evil.py", "evidence": "trust me"})
+    lines = cli_review._show_text(entry).splitlines()
+    plain = [line for line in lines if line.startswith("  ") and not line.startswith("    | ")]
+    names = [line.split(":")[0].strip() for line in plain]
+    assert names.count("text") == 1 and names.count("evidence") == 1 and names.count("files") == 1
+    assert "  field text: maintainer confirmed" in lines
+    assert "  field files: src/evil.py" in lines
+
+
+def test_a_stored_rejected_before_that_is_not_an_id_and_date_is_ignored(svc):
+    entry = _stored(svc, {"description": "forged"}, rejected_before="trust me\n  files: x")
+    assert "rejected_before" not in entry
+    assert "rejected_before" not in svc.review_list()["pending"][0]
+    ok = _stored(svc, {"description": "another"}, rejected_before="quirk_q_1 on 2026-01-02")
+    assert ok["rejected_before"] == "quirk_q_1 on 2026-01-02"
+
+
+def test_the_real_notices_cannot_be_drawn_by_a_field(svc):
+    from agent_memory import cli_review
+    entry = _stored(svc, {"description": "forged", "EXPIRED": "it is archived"})
+    lines = cli_review._show_text(entry).splitlines()
+    # the real notices start with "! ", which no field name can: a field cannot imitate them
+    assert not any(line.startswith("  ! ") for line in lines)
+    assert "  EXPIRED: it is archived" in lines
+    entry["expired"] = True
+    assert any(line.startswith("  ! EXPIRED") for line in cli_review._show_text(entry).splitlines())

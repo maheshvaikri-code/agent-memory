@@ -56,7 +56,9 @@ def _require_store(store, repo, agent, as_json) -> None:
     """Accepting or rejecting needs lessons, so it needs a store: a mistyped id must not
     leave an empty one behind."""
     config = resolve_config(store=store, repo=repo, agent=agent)
-    if not os.path.exists(config.store_path):
+    # a journal without its snapshot is a damaged store, not a missing one: the normal open
+    # reports it
+    if not (os.path.exists(config.store_path) or os.path.exists(config.store_path + ".journal")):
         _fail(ServiceError("not_found", f"no memory store at {config.store_path}; "
                                         "there are no lessons to review"), as_json)
 
@@ -65,8 +67,8 @@ def _render_capture(r: Dict[str, Any]) -> str:
     lines = [f"captured {len(r['captured'])}: {', '.join(r['captured']) or '-'}"]
     lines += [f"skipped #{s['index']}: {s['reason']}" for s in r["skipped"]]
     if r.get("rejected_before"):
-        lines.append(f"retracted before: {', '.join(r['rejected_before'])} repeat(s) a note a "
-                     "person retracted or rejected earlier (`amem review show` says which)")
+        lines.append(f"repeats a retracted note: {', '.join(r['rejected_before'])} (retracted or "
+                     "rejected earlier; `amem review show` says which)")
     lines.append(f"{r['pending']} lesson(s) waiting for review (a person runs `amem review`)")
     return _printable("\n".join(lines))
 
@@ -126,18 +128,29 @@ def _value(value: Any) -> str:
     return "\n".join([first] + [CONTINUATION + line for line in rest])
 
 
+_LABELS = {"text", "evidence", "files", "symbols"}
+
+
+def _field_name(name: Any) -> str:
+    shown = _one_line(name)
+    return f"field {shown}" if shown.lower() in _LABELS else shown
+
+
 def _show_text(d: Dict[str, Any]) -> str:
     lines = [f"lesson {_one_line(d['id'])}  ({_one_line(d['kind'])}, written by agent "
              f"{_one_line(d['agent'])}, {_one_line(d['created_at'])})",
              "Agent-written text, not confirmed by anyone. It is data, not instructions.",
              f"  text: {_value(d['text'])}"]
-    lines += [f"  {_one_line(name)}: {_value(value)}" for name, value in d["fields"].items()]
+    # a field named like one of the lines below (an older build let an agent choose any name) is
+    # shown as "field NAME", so no field can pass for the real line
+    lines += [f"  {_field_name(name)}: {_value(value)}" for name, value in d["fields"].items()]
     lines.append(f"  evidence: {_value(d['evidence'])}")
     lines.append(f"  files: {_value(', '.join(d['files']) or '-')}")
+    # "! " cannot start a field name, so these notices are the memory's own
     if d.get("rejected_before"):
-        lines.append(f"  rejected before: {_value(d['rejected_before'])}")
+        lines.append(f"  ! rejected before: {_value(d['rejected_before'])}")
     if d["expired"]:
-        lines.append("  EXPIRED: it is archived on the next capture, accept or reject")
+        lines.append("  ! EXPIRED: it is archived on the next capture, accept or reject")
     return _printable("\n".join(lines))
 
 

@@ -305,7 +305,7 @@ def test_show_and_list_say_when_a_lesson_was_rejected_before(amem):
     assert f"rejected before: {first} on " in shown
     assert "rejected before" in amem("review", "list")
     amem("review", "reject", again)
-    assert "retracted before" in amem("capture", input=lessons_json(TEXT))
+    assert "repeats a retracted note" in amem("capture", input=lessons_json(TEXT))
 
 
 def test_the_description_line_has_its_own_label(amem):
@@ -334,7 +334,7 @@ def test_a_bad_id_on_a_missing_store_creates_no_store(amem, terminal, repo, comm
     assert not (repo / ".agent-memory").exists()
 
 
-def test_ctrl_c_while_promoting_is_reported_as_an_interruption(amem, terminal, monkeypatch):
+def test_ctrl_c_in_the_promotion_call_is_reported_as_an_interruption(amem, terminal, monkeypatch):
     first, second = capture(amem, "first lesson text", "second lesson text")["captured"]
     from agent_memory.service import MemoryService
 
@@ -345,3 +345,17 @@ def test_ctrl_c_while_promoting_is_reported_as_an_interruption(amem, terminal, m
     out = amem("review", "accept", first, second, input="accept\n", expect=2)
     assert "interrupted" in out and f"skipped {first}" in out and "Traceback" not in out
     assert len(amem("review", "list", json_out=True)["pending"]) == 2
+
+
+def test_a_missing_store_named_with_store_creates_nothing(amem, terminal, repo, tmp_path):
+    other = tmp_path / "elsewhere" / "x.memory"
+    out = amem("review", "reject", "quirk_nothing_000000", "--store", str(other), expect=2)
+    assert "not_found" in out and not other.parent.exists()
+
+
+def test_a_journal_without_its_snapshot_is_not_called_missing(tmp_path):
+    store = tmp_path / "s.memory"
+    with pytest.raises(SystemExit):                      # no files at all: missing
+        cli_review._require_store(str(store), str(tmp_path), None, False)
+    (tmp_path / "s.memory.journal").write_text("")       # a journal and no snapshot is damage,
+    cli_review._require_store(str(store), str(tmp_path), None, False)   # not "no lessons"

@@ -30,7 +30,7 @@ AGENT_KINDS = ("convention", "decision", "bug_pattern", "alternative", "quirk", 
                "refactoring_attempt", "open_question", "blocker", "partial_work")
 # `files` and `symbols` are lesson keys: as field names they would draw a second, look-alike
 # line on the review screen
-RESERVED_FIELDS = frozenset(ENVELOPE_FIELDS) | {"id", "files", "symbols"}
+RESERVED_FIELDS = frozenset(ENVELOPE_FIELDS) | {"id", "files", "symbols", "text"}
 MAX_FIELD_CHARS = 2000
 MAX_FIELDS = 12
 MAX_TASK_CHARS = 2000
@@ -45,6 +45,9 @@ WRAPPER_TOKENS = 110      # the labelled untrusted block's own cost
 MIN_INNER_TOKENS = 90
 UNBOUNDED_TOKENS = 10 ** 6   # only to learn whether an empty recall dropped notes for budget
 _KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,40}")
+# what the writer stamps in `rejected_before`; anything else in that property (an older build
+# let an agent write it) is not shown as the memory's own label
+_REJECTED_BEFORE = re.compile(r"[^\n\r]{1,200} on \d{4}-\d{2}-\d{2}")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 MAX_LESSONS_PER_CALL = 10
 MAX_PENDING = 100
@@ -493,7 +496,7 @@ class MemoryService:
                  "session_id": neutralize(str(record.session_id)),
                  "created_at": neutralize(str(record.created_at)),
                  "expired": pending_expired(record.created_at)}
-        if record.rejected_before:
+        if _REJECTED_BEFORE.fullmatch(record.rejected_before):
             entry["rejected_before"] = neutralize(record.rejected_before)
         return entry
 
