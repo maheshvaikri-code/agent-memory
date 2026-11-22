@@ -1,0 +1,458 @@
+{
+ "tasks": [
+  {
+   "world": "mobile",
+   "task": "add jitter to the sync retry backoff and make the 60 s cap configurable",
+   "files": [
+    "src/sync/syncEngine.ts"
+   ],
+   "relevant": [
+    "bp-sync-loop",
+    "fix-backoff"
+   ],
+   "acceptable": [
+    "tc-sync-fake-timers",
+    "rtc-outbox",
+    "quirk-netinfo"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "users report the same waypoint appearing twice after a bad-signal sync, find out why and fix it",
+   "files": [
+    "src/sync/outbox.ts"
+   ],
+   "relevant": [
+    "bug-outbox-dup",
+    "fix-idempotency"
+   ],
+   "acceptable": [
+    "rtc-outbox",
+    "module-sync-engine"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "raise the sync push batch size from 50 to 200 rows to cut round trips",
+   "files": [
+    "src/sync/syncEngine.ts"
+   ],
+   "relevant": [
+    "perf-sync-batch"
+   ],
+   "acceptable": [
+    "module-sync-engine"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "",
+   "files": [
+    "src/sync/conflicts.ts"
+   ],
+   "relevant": [
+    "dec-lww"
+   ],
+   "acceptable": [
+    "module-sync-engine"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "don't start a sync when the phone is on captive portal wifi",
+   "files": [],
+   "relevant": [
+    "quirk-netinfo",
+    "wk-netinfo"
+   ],
+   "acceptable": [
+    "module-sync-engine"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "write tests for the sync retry and backoff logic",
+   "files": [
+    "tests/sync/syncEngine.test.ts"
+   ],
+   "relevant": [
+    "tc-sync-fake-timers",
+    "rtc-outbox"
+   ],
+   "acceptable": [
+    "fix-backoff",
+    "bug-outbox-dup"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "add a cached elevation gain column to the tracks table so we stop recomputing it on every open",
+   "files": [
+    "src/storage/db.ts"
+   ],
+   "relevant": [
+    "conv-migrations",
+    "bug-migrate-crash",
+    "fix-migrate-crash",
+    "rtc-migrate"
+   ],
+   "acceptable": [
+    "td-json-columns",
+    "dec-schema-version",
+    "module-db"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "record a track point every second instead of every 15 meters so the line looks smoother",
+   "files": [
+    "src/location/backgroundLocation.ts"
+   ],
+   "relevant": [
+    "dec-distance-filter"
+   ],
+   "acceptable": [
+    "perf-track-write",
+    "module-bg-location"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "background recording dies on Android 14 after about 20 minutes with the screen off",
+   "files": [],
+   "relevant": [
+    "bug-android-fgs",
+    "fix-fgs"
+   ],
+   "acceptable": [
+    "module-bg-location"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "",
+   "files": [
+    "android/app/src/main/AndroidManifest.xml"
+   ],
+   "relevant": [
+    "bug-android-fgs",
+    "fix-fgs"
+   ],
+   "acceptable": [
+    "module-bg-location"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "filter out the GPS jumps that inflate the distance in the track stats",
+   "files": [
+    "src/location/trackRecorder.ts"
+   ],
+   "relevant": [
+    "bp-gps-spike",
+    "fix-gps-spike"
+   ],
+   "acceptable": [
+    "conv-accuracy",
+    "perf-track-write",
+    "td-location-singleton"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "allow a hike recording and a bike recording to run at the same time",
+   "files": [
+    "src/location/trackRecorder.ts"
+   ],
+   "relevant": [
+    "td-location-singleton"
+   ],
+   "acceptable": [
+    "perf-track-write",
+    "conv-accuracy"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "ask for Always location during onboarding so recording can start right away",
+   "files": [
+    "src/permissions/permissionGate.ts"
+   ],
+   "relevant": [
+    "dec-perm-sequence",
+    "alt-always-first"
+   ],
+   "acceptable": [
+    "conv-permission-copy"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "the location permission screen keeps re-rendering after the user picked Don't ask again on Android",
+   "files": [],
+   "relevant": [
+    "bug-blocked-loop",
+    "fix-blocked-loop"
+   ],
+   "acceptable": [
+    "module-permission-gate",
+    "conv-permission-copy"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "include the trail name and the last known position in the weather alert notification",
+   "files": [
+    "src/push/notifications.ts"
+   ],
+   "relevant": [
+    "conv-push-payload"
+   ],
+   "acceptable": [
+    "module-notifications"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "a user reinstalled the app and no longer gets trail alerts, check how the push token is registered",
+   "files": [
+    "src/push/notifications.ts"
+   ],
+   "relevant": [
+    "bug-push-token-stale"
+   ],
+   "acceptable": [
+    "dec-fcm-both",
+    "module-notifications"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "add a lifetime Pro purchase to the IAP flow",
+   "files": [
+    "src/iap/purchases.ts"
+   ],
+   "relevant": [
+    "dec-server-receipt",
+    "rtc-iap",
+    "bug-pending-purchase",
+    "fix-pending-purchase"
+   ],
+   "acceptable": [
+    "module-purchases"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "raise the tile cache limit to 2 GB for tablets",
+   "files": [
+    "src/maps/tileCache.ts"
+   ],
+   "relevant": [
+    "dec-tile-cache-500"
+   ],
+   "acceptable": [
+    "module-tile-cache"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "map tiles don't pick up the provider's latest map data even after the app refetches them, make them refresh",
+   "files": [],
+   "relevant": [
+    "quirk-tile-etag",
+    "wk-tile-stale"
+   ],
+   "acceptable": [
+    "module-tile-cache"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "let users download a whole country for offline use",
+   "files": [
+    "src/maps/offlineRegions.ts"
+   ],
+   "relevant": [
+    "dec-region-limit"
+   ],
+   "acceptable": [
+    "dp-download-queue",
+    "dec-tile-cache-500"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "upload source maps from CI after each build so Sentry can symbolicate crashes",
+   "files": [
+    "src/crash/reporter.ts",
+    ".github/workflows/release.yml"
+   ],
+   "relevant": [
+    "conv-release-name",
+    "bug-sourcemaps",
+    "fix-sourcemaps"
+   ],
+   "acceptable": [
+    "dec-sentry",
+    "conv-build-number"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "make the GPX import accept files up to 100 MB",
+   "files": [
+    "cli/trailmate_cli/gpx_import.py"
+   ],
+   "relevant": [
+    "bug-gpx-xxe",
+    "fix-gpx-xxe",
+    "perf-gpx-stream"
+   ],
+   "acceptable": [
+    "tc-gpx-fixtures"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "exporting a track to GPX and importing it again shifts the times by a few hours",
+   "files": [
+    "cli/trailmate_cli/gpx_import.py"
+   ],
+   "relevant": [
+    "bp-gpx-naive-time",
+    "fix-gpx-naive-time"
+   ],
+   "acceptable": [
+    "dec-gpx-11",
+    "tc-gpx-fixtures"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "Play Console rejected the bundle because the versionCode is not higher than the last track, so set versionCode to 200",
+   "files": [
+    "android/app/build.gradle"
+   ],
+   "relevant": [
+    "conv-build-number",
+    "quirk-play-version"
+   ],
+   "acceptable": [
+    "module-fastfile"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "the iOS archive job in CI started failing after the runner image changed",
+   "files": [
+    ".github/workflows/release.yml"
+   ],
+   "relevant": [
+    "bug-ci-runner",
+    "fix-ci-runner"
+   ],
+   "acceptable": [
+    "module-fastfile"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "add snapshot tests for the onboarding carousel",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "mobile",
+   "task": "migrate the onboarding screens from class components to hooks",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "mobile",
+   "task": "add an option to export the favourites list as a PDF from the profile screen",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "mobile",
+   "task": "write the release notes for 1.8.0 for the store listing",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "mobile",
+   "task": "handle the Android hardware back button on the trail detail screen",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "mobile",
+   "task": "set up the jest config so component tests can find the shared test utils",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "mobile",
+   "task": "show a skeleton loader on the trail detail screen while the elevation profile loads",
+   "files": [],
+   "relevant": [],
+   "acceptable": [
+    "td-json-columns"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "add a Spanish translation for the onboarding strings",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "mobile",
+   "task": "tidy the imports and fix the lint warnings in the API client",
+   "files": [
+    "src/api/client.ts"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "dec-api-errors"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "rename MIN_ZOOM and MAX_ZOOM so their meaning is clearer",
+   "files": [
+    "src/maps/offlineRegions.ts"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "module-offline-regions"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "add a CHANGELOG entry and bump versionName to 1.7.1",
+   "files": [
+    "android/app/build.gradle"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "conv-build-number"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "add a share button to the track summary screen that shares a screenshot of the map",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  }
+ ]
+}
