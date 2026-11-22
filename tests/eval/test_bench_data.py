@@ -49,3 +49,18 @@ def test_world_texts_are_not_near_duplicates(worlds, name):
         text = " ".join(str(v) for v in r.fields.values()).lower()
         assert text not in seen, f"{r.key} repeats {seen[text]}"
         seen[text] = r.key
+
+
+def test_generic_words_recur_across_worlds(worlds):
+    """The worlds must share ordinary vocabulary, or document frequency means nothing."""
+    assert set(worlds) == set(model.WORLDS), "all three worlds must exist"
+    stems = {tokenize(word)[0] for word in GENERIC}
+    reused = 0
+    for stem in stems:
+        in_worlds = 0
+        for w in worlds.values():
+            hits = sum(1 for r in w.records
+                       if stem in tokenize(" ".join(str(v) for v in r.fields.values())))
+            in_worlds += hits >= 2
+        reused += in_worlds >= 2
+    assert reused >= 10, f"only {reused} of {len(stems)} generic words recur in two worlds"
