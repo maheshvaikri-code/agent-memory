@@ -1,0 +1,1413 @@
+{
+ "split": "dev",
+ "model": "BAAI/bge-small-en-v1.5",
+ "revision": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a",
+ "runs": {
+  "baseline": {
+   "final retriever": {
+    "hits": 158,
+    "total": 160,
+    "noise_tokens": 947.8288288288288,
+    "noise_records": 15.207207207207206,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 741.0540540540541,
+    "noise_tokens_nonempty": 1051.2162162162163,
+    "missed": [
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ],
+     [
+      "pipeline",
+      "the orders freshness check keeps alerting on Mondays, tune it",
+      "sunday-drop-late"
+     ]
+    ]
+   }
+  },
+  "lever6": {
+   "0.25": {
+    "hits": 158,
+    "total": 160,
+    "noise_tokens": 918.3693693693693,
+    "noise_records": 14.72072072072072,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 721.5135135135135,
+    "noise_tokens_nonempty": 1016.7972972972973,
+    "missed": [
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ],
+     [
+      "pipeline",
+      "the orders freshness check keeps alerting on Mondays, tune it",
+      "sunday-drop-late"
+     ]
+    ]
+   },
+   "0.5": {
+    "hits": 136,
+    "total": 160,
+    "noise_tokens": 447.92792792792795,
+    "noise_records": 7.1891891891891895,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 494.9189189189189,
+    "noise_tokens_nonempty": 424.43243243243245,
+    "missed": [
+     [
+      "saas",
+      "batch the Slack messages when a user moves a lot of cards at once",
+      "slack-429-requeue"
+     ],
+     [
+      "saas",
+      "",
+      "expand-then-contract"
+     ],
+     [
+      "saas",
+      "",
+      "slack-429-requeue"
+     ],
+     [
+      "saas",
+      "add a queue for generating thumbnails of image attachments",
+      "job-idempotent"
+     ],
+     [
+      "pipeline",
+      "speed up the Bravo orders pull by fetching several pages in parallel",
+      "cursor-paging-fix"
+     ],
+     [
+      "pipeline",
+      "wire a quality gate and a publish step into the nightly_ingest DAG for the orders table",
+      "severity-levels"
+     ],
+     [
+      "pipeline",
+      "wire a quality gate and a publish step into the nightly_ingest DAG for the orders table",
+      "compact-after-load"
+     ],
+     [
+      "pipeline",
+      "the sessionize stage sometimes runs for three hours, make it faster",
+      "salt-the-key"
+     ],
+     [
+      "pipeline",
+      "add a loader function that COPYs the Charlie partner's returns file into the warehouse",
+      "replace-partition-load"
+     ],
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ],
+     [
+      "pipeline",
+      "resume the fact_orders backfill that stopped in March",
+      "fx-weekend-gap"
+     ],
+     [
+      "pipeline",
+      "add a /v2/metrics/compare endpoint that returns two ds ranges side by side",
+      "gold-read-model"
+     ],
+     [
+      "pipeline",
+      "build a customer export of the orders data as Parquet",
+      "micros-timestamp-fix"
+     ],
+     [
+      "pipeline",
+      "the orders freshness check keeps alerting on Mondays, tune it",
+      "sunday-drop-late"
+     ],
+     [
+      "pipeline",
+      "generate one ingest task per partner from the partner config service when the DAG file loads",
+      "lazy-dag-config"
+     ],
+     [
+      "mobile",
+      "add jitter to the sync retry backoff and make the 60 s cap configurable",
+      "fix-backoff"
+     ],
+     [
+      "mobile",
+      "users report the same waypoint appearing twice after a bad-signal sync, find out why and fix it",
+      "fix-idempotency"
+     ],
+     [
+      "mobile",
+      "add a cached elevation gain column to the tracks table so we stop recomputing it on every open",
+      "fix-migrate-crash"
+     ],
+     [
+      "mobile",
+      "background recording dies on Android 14 after about 20 minutes with the screen off",
+      "fix-fgs"
+     ],
+     [
+      "mobile",
+      "filter out the GPS jumps that inflate the distance in the track stats",
+      "fix-gps-spike"
+     ],
+     [
+      "mobile",
+      "add a lifetime Pro purchase to the IAP flow",
+      "fix-pending-purchase"
+     ],
+     [
+      "mobile",
+      "upload source maps from CI after each build so Sentry can symbolicate crashes",
+      "fix-sourcemaps"
+     ],
+     [
+      "mobile",
+      "make the GPX import accept files up to 100 MB",
+      "fix-gpx-xxe"
+     ],
+     [
+      "mobile",
+      "exporting a track to GPX and importing it again shifts the times by a few hours",
+      "fix-gpx-naive-time"
+     ]
+    ]
+   },
+   "0.75": {
+    "hits": 101,
+    "total": 160,
+    "noise_tokens": 172.15315315315314,
+    "noise_records": 2.774774774774775,
+    "clean": 1,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 228.40540540540542,
+    "noise_tokens_nonempty": 144.02702702702703,
+    "missed": [
+     [
+      "saas",
+      "batch the Slack messages when a user moves a lot of cards at once",
+      "slack-bulk-update-bug"
+     ],
+     [
+      "saas",
+      "batch the Slack messages when a user moves a lot of cards at once",
+      "slack-429-requeue"
+     ],
+     [
+      "saas",
+      "raise the export row limit to a million rows for enterprise workspaces",
+      "export-row-cap"
+     ],
+     [
+      "saas",
+      "after dragging cards around a lot in one column the order is wrong on reload, find out why",
+      "position-rebalance-fix"
+     ],
+     [
+      "saas",
+      "seat counts sometimes show the old number right after a plan upgrade",
+      "provider-event-order"
+     ],
+     [
+      "saas",
+      "seat counts sometimes show the old number right after a plan upgrade",
+      "provider-event-fix"
+     ],
+     [
+      "saas",
+      "build the Asana importer",
+      "import-row-errors"
+     ],
+     [
+      "saas",
+      "make search include comment text",
+      "comment-index-question"
+     ],
+     [
+      "saas",
+      "cache each workspace's plan limits in Redis",
+      "cache-shared-plan"
+     ],
+     [
+      "saas",
+      "we changed the task list serializer and now some users get errors loading the board after the deploy",
+      "cache-version-bump"
+     ],
+     [
+      "saas",
+      "",
+      "expand-then-contract"
+     ],
+     [
+      "saas",
+      "",
+      "import-row-errors"
+     ],
+     [
+      "saas",
+      "",
+      "slack-429-requeue"
+     ],
+     [
+      "saas",
+      "add a queue for generating thumbnails of image attachments",
+      "job-idempotent"
+     ],
+     [
+      "pipeline",
+      "add a DAG for the new Charlie partner's daily SFTP drop; they say the file lands around 04:00 Berlin time",
+      "dag-retry-backoff"
+     ],
+     [
+      "pipeline",
+      "speed up the Bravo orders pull by fetching several pages in parallel",
+      "cursor-paging-fix"
+     ],
+     [
+      "pipeline",
+      "partner API calls sometimes hang for hours, add sensible timeouts and retries to the REST client",
+      "stalled-page-hang"
+     ],
+     [
+      "pipeline",
+      "log the response body when a partner API call fails so we can debug it",
+      "email-in-task-logs"
+     ],
+     [
+      "pipeline",
+      "log the response body when a partner API call fails so we can debug it",
+      "structured-log-line"
+     ],
+     [
+      "pipeline",
+      "wire a quality gate and a publish step into the nightly_ingest DAG for the orders table",
+      "severity-levels"
+     ],
+     [
+      "pipeline",
+      "wire a quality gate and a publish step into the nightly_ingest DAG for the orders table",
+      "compact-after-load"
+     ],
+     [
+      "pipeline",
+      "the sessionize stage sometimes runs for three hours, make it faster",
+      "salt-the-key"
+     ],
+     [
+      "pipeline",
+      "the sessionize stage sometimes runs for three hours, make it faster",
+      "shuffle-partitions-400"
+     ],
+     [
+      "pipeline",
+      "add Canadian dollars to the currency conversion in the orders transform",
+      "float-money-pattern"
+     ],
+     [
+      "pipeline",
+      "write a new incremental transform that rolls orders up into a weekly customer summary",
+      "declare-grain"
+     ],
+     [
+      "pipeline",
+      "turn customer_region into a proper enum backed by a lookup table",
+      "shadow-table-migration"
+     ],
+     [
+      "pipeline",
+      "turn customer_region into a proper enum backed by a lookup table",
+      "region-free-text"
+     ],
+     [
+      "pipeline",
+      "add a loader function that COPYs the Charlie partner's returns file into the warehouse",
+      "replace-partition-load"
+     ],
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ],
+     [
+      "pipeline",
+      "resume the fact_orders backfill that stopped in March",
+      "orders-backfill-progress"
+     ],
+     [
+      "pipeline",
+      "resume the fact_orders backfill that stopped in March",
+      "fx-weekend-gap"
+     ],
+     [
+      "pipeline",
+      "add a /v2/metrics/compare endpoint that returns two ds ranges side by side",
+      "gold-read-model"
+     ],
+     [
+      "pipeline",
+      "build a customer export of the orders data as Parquet",
+      "micros-timestamp-fix"
+     ],
+     [
+      "pipeline",
+      "a customer emailed asking us to erase everything we hold about them, handle the ticket",
+      "erasure-request"
+     ],
+     [
+      "pipeline",
+      "a customer emailed asking us to erase everything we hold about them, handle the ticket",
+      "hmac-tokens"
+     ],
+     [
+      "pipeline",
+      "the orders freshness check keeps alerting on Mondays, tune it",
+      "sunday-drop-late"
+     ],
+     [
+      "pipeline",
+      "generate one ingest task per partner from the partner config service when the DAG file loads",
+      "lazy-dag-config"
+     ],
+     [
+      "mobile",
+      "add jitter to the sync retry backoff and make the 60 s cap configurable",
+      "fix-backoff"
+     ],
+     [
+      "mobile",
+      "users report the same waypoint appearing twice after a bad-signal sync, find out why and fix it",
+      "bug-outbox-dup"
+     ],
+     [
+      "mobile",
+      "users report the same waypoint appearing twice after a bad-signal sync, find out why and fix it",
+      "fix-idempotency"
+     ],
+     [
+      "mobile",
+      "don't start a sync when the phone is on captive portal wifi",
+      "wk-netinfo"
+     ],
+     [
+      "mobile",
+      "add a cached elevation gain column to the tracks table so we stop recomputing it on every open",
+      "conv-migrations"
+     ],
+     [
+      "mobile",
+      "add a cached elevation gain column to the tracks table so we stop recomputing it on every open",
+      "fix-migrate-crash"
+     ],
+     [
+      "mobile",
+      "add a cached elevation gain column to the tracks table so we stop recomputing it on every open",
+      "rtc-migrate"
+     ],
+     [
+      "mobile",
+      "background recording dies on Android 14 after about 20 minutes with the screen off",
+      "bug-android-fgs"
+     ],
+     [
+      "mobile",
+      "background recording dies on Android 14 after about 20 minutes with the screen off",
+      "fix-fgs"
+     ],
+     [
+      "mobile",
+      "",
+      "fix-fgs"
+     ],
+     [
+      "mobile",
+      "filter out the GPS jumps that inflate the distance in the track stats",
+      "fix-gps-spike"
+     ],
+     [
+      "mobile",
+      "allow a hike recording and a bike recording to run at the same time",
+      "td-location-singleton"
+     ],
+     [
+      "mobile",
+      "ask for Always location during onboarding so recording can start right away",
+      "alt-always-first"
+     ],
+     [
+      "mobile",
+      "the location permission screen keeps re-rendering after the user picked Don't ask again on Android",
+      "bug-blocked-loop"
+     ],
+     [
+      "mobile",
+      "a user reinstalled the app and no longer gets trail alerts, check how the push token is registered",
+      "bug-push-token-stale"
+     ],
+     [
+      "mobile",
+      "add a lifetime Pro purchase to the IAP flow",
+      "fix-pending-purchase"
+     ],
+     [
+      "mobile",
+      "upload source maps from CI after each build so Sentry can symbolicate crashes",
+      "bug-sourcemaps"
+     ],
+     [
+      "mobile",
+      "upload source maps from CI after each build so Sentry can symbolicate crashes",
+      "fix-sourcemaps"
+     ],
+     [
+      "mobile",
+      "make the GPX import accept files up to 100 MB",
+      "bug-gpx-xxe"
+     ],
+     [
+      "mobile",
+      "make the GPX import accept files up to 100 MB",
+      "fix-gpx-xxe"
+     ],
+     [
+      "mobile",
+      "exporting a track to GPX and importing it again shifts the times by a few hours",
+      "fix-gpx-naive-time"
+     ],
+     [
+      "mobile",
+      "the iOS archive job in CI started failing after the runner image changed",
+      "fix-ci-runner"
+     ]
+    ]
+   }
+  },
+  "armA": {
+   "0.35": {
+    "hits": 157,
+    "total": 160,
+    "noise_tokens": 1390.2522522522522,
+    "noise_records": 22.36036036036036,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 1523.162162162162,
+    "noise_tokens_nonempty": 1323.7972972972973,
+    "missed": [
+     [
+      "pipeline",
+      "speed up the Bravo orders pull by fetching several pages in parallel",
+      "cursor-paging-fix"
+     ],
+     [
+      "pipeline",
+      "wire a quality gate and a publish step into the nightly_ingest DAG for the orders table",
+      "compact-after-load"
+     ],
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ]
+    ]
+   },
+   "0.45": {
+    "hits": 157,
+    "total": 160,
+    "noise_tokens": 1390.2522522522522,
+    "noise_records": 22.36036036036036,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 1523.162162162162,
+    "noise_tokens_nonempty": 1323.7972972972973,
+    "missed": [
+     [
+      "pipeline",
+      "speed up the Bravo orders pull by fetching several pages in parallel",
+      "cursor-paging-fix"
+     ],
+     [
+      "pipeline",
+      "wire a quality gate and a publish step into the nightly_ingest DAG for the orders table",
+      "compact-after-load"
+     ],
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ]
+    ]
+   },
+   "0.55": {
+    "hits": 157,
+    "total": 160,
+    "noise_tokens": 1381.3333333333333,
+    "noise_records": 22.225225225225227,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 1511.1891891891892,
+    "noise_tokens_nonempty": 1316.4054054054054,
+    "missed": [
+     [
+      "pipeline",
+      "speed up the Bravo orders pull by fetching several pages in parallel",
+      "cursor-paging-fix"
+     ],
+     [
+      "pipeline",
+      "wire a quality gate and a publish step into the nightly_ingest DAG for the orders table",
+      "compact-after-load"
+     ],
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ]
+    ]
+   },
+   "0.65": {
+    "hits": 158,
+    "total": 160,
+    "noise_tokens": 1010.8018018018018,
+    "noise_records": 16.036036036036037,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 802.7837837837837,
+    "noise_tokens_nonempty": 1114.8108108108108,
+    "missed": [
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ],
+     [
+      "pipeline",
+      "the orders freshness check keeps alerting on Mondays, tune it",
+      "sunday-drop-late"
+     ]
+    ]
+   },
+   "0.75": {
+    "hits": 158,
+    "total": 160,
+    "noise_tokens": 945.8828828828829,
+    "noise_records": 15.17117117117117,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 741.0540540540541,
+    "noise_tokens_nonempty": 1048.2972972972973,
+    "missed": [
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ],
+     [
+      "pipeline",
+      "the orders freshness check keeps alerting on Mondays, tune it",
+      "sunday-drop-late"
+     ]
+    ]
+   }
+  },
+  "armB": {
+   "0.3": {
+    "hits": 158,
+    "total": 160,
+    "noise_tokens": 947.8288288288288,
+    "noise_records": 15.207207207207206,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 741.0540540540541,
+    "noise_tokens_nonempty": 1051.2162162162163,
+    "missed": [
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ],
+     [
+      "pipeline",
+      "the orders freshness check keeps alerting on Mondays, tune it",
+      "sunday-drop-late"
+     ]
+    ]
+   },
+   "0.4": {
+    "hits": 158,
+    "total": 160,
+    "noise_tokens": 945.8738738738739,
+    "noise_records": 15.17117117117117,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 741.0540540540541,
+    "noise_tokens_nonempty": 1048.2837837837837,
+    "missed": [
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ],
+     [
+      "pipeline",
+      "the orders freshness check keeps alerting on Mondays, tune it",
+      "sunday-drop-late"
+     ]
+    ]
+   },
+   "0.5": {
+    "hits": 158,
+    "total": 160,
+    "noise_tokens": 903.5225225225225,
+    "noise_records": 14.504504504504505,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 707.5405405405405,
+    "noise_tokens_nonempty": 1001.5135135135135,
+    "missed": [
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ],
+     [
+      "pipeline",
+      "the orders freshness check keeps alerting on Mondays, tune it",
+      "sunday-drop-late"
+     ]
+    ]
+   },
+   "0.6": {
+    "hits": 157,
+    "total": 160,
+    "noise_tokens": 661.0360360360361,
+    "noise_records": 10.594594594594595,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 432.4054054054054,
+    "noise_tokens_nonempty": 775.3513513513514,
+    "missed": [
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ],
+     [
+      "pipeline",
+      "resume the fact_orders backfill that stopped in March",
+      "fx-weekend-gap"
+     ],
+     [
+      "pipeline",
+      "the orders freshness check keeps alerting on Mondays, tune it",
+      "sunday-drop-late"
+     ]
+    ]
+   },
+   "0.7": {
+    "hits": 153,
+    "total": 160,
+    "noise_tokens": 493.7027027027027,
+    "noise_records": 7.7207207207207205,
+    "clean": 5,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 247.83783783783784,
+    "noise_tokens_nonempty": 616.6351351351351,
+    "missed": [
+     [
+      "saas",
+      "rename tasks.status to tasks.state",
+      "expand-then-contract"
+     ],
+     [
+      "pipeline",
+      "write a new incremental transform that rolls orders up into a weekly customer summary",
+      "declare-grain"
+     ],
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ],
+     [
+      "pipeline",
+      "resume the fact_orders backfill that stopped in March",
+      "fx-weekend-gap"
+     ],
+     [
+      "pipeline",
+      "a customer emailed asking us to erase everything we hold about them, handle the ticket",
+      "erasure-request"
+     ],
+     [
+      "pipeline",
+      "a customer emailed asking us to erase everything we hold about them, handle the ticket",
+      "hmac-tokens"
+     ],
+     [
+      "pipeline",
+      "the orders freshness check keeps alerting on Mondays, tune it",
+      "sunday-drop-late"
+     ]
+    ]
+   }
+  },
+  "armA with query instruction,": {
+   "0.35": {
+    "hits": 157,
+    "total": 160,
+    "noise_tokens": 1405.117117117117,
+    "noise_records": 22.243243243243242,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 1565.8108108108108,
+    "noise_tokens_nonempty": 1324.7702702702702,
+    "missed": [
+     [
+      "pipeline",
+      "speed up the Bravo orders pull by fetching several pages in parallel",
+      "cursor-paging-fix"
+     ],
+     [
+      "pipeline",
+      "wire a quality gate and a publish step into the nightly_ingest DAG for the orders table",
+      "compact-after-load"
+     ],
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ]
+    ]
+   },
+   "0.45": {
+    "hits": 157,
+    "total": 160,
+    "noise_tokens": 1405.117117117117,
+    "noise_records": 22.243243243243242,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 1565.8108108108108,
+    "noise_tokens_nonempty": 1324.7702702702702,
+    "missed": [
+     [
+      "pipeline",
+      "speed up the Bravo orders pull by fetching several pages in parallel",
+      "cursor-paging-fix"
+     ],
+     [
+      "pipeline",
+      "wire a quality gate and a publish step into the nightly_ingest DAG for the orders table",
+      "compact-after-load"
+     ],
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ]
+    ]
+   },
+   "0.55": {
+    "hits": 157,
+    "total": 160,
+    "noise_tokens": 1322.7927927927929,
+    "noise_records": 20.9009009009009,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 1393.1891891891892,
+    "noise_tokens_nonempty": 1287.5945945945946,
+    "missed": [
+     [
+      "pipeline",
+      "speed up the Bravo orders pull by fetching several pages in parallel",
+      "cursor-paging-fix"
+     ],
+     [
+      "pipeline",
+      "wire a quality gate and a publish step into the nightly_ingest DAG for the orders table",
+      "compact-after-load"
+     ],
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ]
+    ]
+   },
+   "0.65": {
+    "hits": 158,
+    "total": 160,
+    "noise_tokens": 965.4414414414415,
+    "noise_records": 15.36036036036036,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 755.4864864864865,
+    "noise_tokens_nonempty": 1070.418918918919,
+    "missed": [
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ],
+     [
+      "pipeline",
+      "the orders freshness check keeps alerting on Mondays, tune it",
+      "sunday-drop-late"
+     ]
+    ]
+   },
+   "0.75": {
+    "hits": 158,
+    "total": 160,
+    "noise_tokens": 946.7027027027027,
+    "noise_records": 15.18918918918919,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 741.0540540540541,
+    "noise_tokens_nonempty": 1049.527027027027,
+    "missed": [
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ],
+     [
+      "pipeline",
+      "the orders freshness check keeps alerting on Mondays, tune it",
+      "sunday-drop-late"
+     ]
+    ]
+   }
+  },
+  "armB with query instruction,": {
+   "0.3": {
+    "hits": 158,
+    "total": 160,
+    "noise_tokens": 947.8288288288288,
+    "noise_records": 15.207207207207206,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 741.0540540540541,
+    "noise_tokens_nonempty": 1051.2162162162163,
+    "missed": [
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ],
+     [
+      "pipeline",
+      "the orders freshness check keeps alerting on Mondays, tune it",
+      "sunday-drop-late"
+     ]
+    ]
+   },
+   "0.4": {
+    "hits": 158,
+    "total": 160,
+    "noise_tokens": 945.2252252252252,
+    "noise_records": 15.162162162162161,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 741.0540540540541,
+    "noise_tokens_nonempty": 1047.3108108108108,
+    "missed": [
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ],
+     [
+      "pipeline",
+      "the orders freshness check keeps alerting on Mondays, tune it",
+      "sunday-drop-late"
+     ]
+    ]
+   },
+   "0.5": {
+    "hits": 158,
+    "total": 160,
+    "noise_tokens": 875.1261261261261,
+    "noise_records": 14.018018018018019,
+    "clean": 0,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 680.4864864864865,
+    "noise_tokens_nonempty": 972.4459459459459,
+    "missed": [
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ],
+     [
+      "pipeline",
+      "the orders freshness check keeps alerting on Mondays, tune it",
+      "sunday-drop-late"
+     ]
+    ]
+   },
+   "0.6": {
+    "hits": 156,
+    "total": 160,
+    "noise_tokens": 579.7117117117117,
+    "noise_records": 9.162162162162161,
+    "clean": 2,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 331.97297297297297,
+    "noise_tokens_nonempty": 703.581081081081,
+    "missed": [
+     [
+      "pipeline",
+      "write a new incremental transform that rolls orders up into a weekly customer summary",
+      "declare-grain"
+     ],
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ],
+     [
+      "pipeline",
+      "resume the fact_orders backfill that stopped in March",
+      "fx-weekend-gap"
+     ],
+     [
+      "pipeline",
+      "the orders freshness check keeps alerting on Mondays, tune it",
+      "sunday-drop-late"
+     ]
+    ]
+   },
+   "0.7": {
+    "hits": 153,
+    "total": 160,
+    "noise_tokens": 492.8018018018018,
+    "noise_records": 7.702702702702703,
+    "clean": 6,
+    "empty": 37,
+    "leaks": 0,
+    "noise_tokens_empty": 244.75675675675674,
+    "noise_tokens_nonempty": 616.8243243243244,
+    "missed": [
+     [
+      "saas",
+      "rename tasks.status to tasks.state",
+      "expand-then-contract"
+     ],
+     [
+      "pipeline",
+      "write a new incremental transform that rolls orders up into a weekly customer summary",
+      "declare-grain"
+     ],
+     [
+      "pipeline",
+      "backfill fact_orders for the last 90 days after the fx fix",
+      "backfill-billing-night"
+     ],
+     [
+      "pipeline",
+      "resume the fact_orders backfill that stopped in March",
+      "fx-weekend-gap"
+     ],
+     [
+      "pipeline",
+      "a customer emailed asking us to erase everything we hold about them, handle the ticket",
+      "erasure-request"
+     ],
+     [
+      "pipeline",
+      "a customer emailed asking us to erase everything we hold about them, handle the ticket",
+      "hmac-tokens"
+     ],
+     [
+      "pipeline",
+      "the orders freshness check keeps alerting on Mondays, tune it",
+      "sunday-drop-late"
+     ]
+    ]
+   }
+  }
+ },
+ "load_seconds": 20.46441080002114,
+ "index": {
+  "plain": {
+   "saas": [
+    89,
+    1.2224290000740439
+   ],
+   "pipeline": [
+    85,
+    0.9868822999997064
+   ],
+   "mobile": [
+    86,
+    0.9151715999469161
+   ]
+  },
+  "with query instruction, ": {
+   "saas": [
+    89,
+    0.8530389000661671
+   ],
+   "pipeline": [
+    85,
+    0.9961476000025868
+   ],
+   "mobile": [
+    86,
+    0.8520808999892324
+   ]
+  }
+ },
+ "query_ms": {
+  "plain": {
+   "median": 31.81439999025315,
+   "max": 73.31370003521442
+  },
+  "with query instruction, ": {
+   "median": 47.84239991568029,
+   "max": 99.46950001176447
+  }
+ },
+ "insample": {
+  "plain": [
+   {
+    "mode": "none",
+    "value": null,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "12/12",
+    "held": "12/16",
+    "failures": []
+   },
+   {
+    "mode": "channel",
+    "value": 0.35,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "0/12",
+    "held": "0/16",
+    "failures": [
+     "[absent] 'add a dark mode toggle to the settings screen' []",
+     "[absent] 'generate PDF invoices with a watermark' []",
+     "[absent] 'translate onboarding copy into German' []",
+     "[absent] 'upgrade the kubernetes ingress controller' []",
+     "[absent] 'add a GraphQL subscription for inventory levels' []",
+     "[absent] 'resize uploaded avatars to thumbnails' []",
+     "[irrelevant] 'tidy the changelog formatting' ['docs/CHANGELOG.md']",
+     "[irrelevant] 'bump the copyright year in the footer' ['site/footer.html']",
+     "[irrelevant] 'rename the CI job for lint' ['.github/workflows/lint.yml']",
+     "[irrelevant] 'fix a typo in the contributor guide' ['docs/CONTRIBUTING.md']",
+     "[irrelevant] 'adjust editor indentation settings' ['.editorconfig']",
+     "[irrelevant] 'add a license banner to the scripts' ['scripts/release.sh']"
+    ]
+   },
+   {
+    "mode": "channel",
+    "value": 0.45,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "0/12",
+    "held": "0/16",
+    "failures": [
+     "[absent] 'add a dark mode toggle to the settings screen' []",
+     "[absent] 'generate PDF invoices with a watermark' []",
+     "[absent] 'translate onboarding copy into German' []",
+     "[absent] 'upgrade the kubernetes ingress controller' []",
+     "[absent] 'add a GraphQL subscription for inventory levels' []",
+     "[absent] 'resize uploaded avatars to thumbnails' []",
+     "[irrelevant] 'tidy the changelog formatting' ['docs/CHANGELOG.md']",
+     "[irrelevant] 'bump the copyright year in the footer' ['site/footer.html']",
+     "[irrelevant] 'rename the CI job for lint' ['.github/workflows/lint.yml']",
+     "[irrelevant] 'fix a typo in the contributor guide' ['docs/CONTRIBUTING.md']",
+     "[irrelevant] 'adjust editor indentation settings' ['.editorconfig']",
+     "[irrelevant] 'add a license banner to the scripts' ['scripts/release.sh']"
+    ]
+   },
+   {
+    "mode": "channel",
+    "value": 0.55,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "0/12",
+    "held": "0/16",
+    "failures": [
+     "[absent] 'add a dark mode toggle to the settings screen' []",
+     "[absent] 'generate PDF invoices with a watermark' []",
+     "[absent] 'translate onboarding copy into German' []",
+     "[absent] 'upgrade the kubernetes ingress controller' []",
+     "[absent] 'add a GraphQL subscription for inventory levels' []",
+     "[absent] 'resize uploaded avatars to thumbnails' []",
+     "[irrelevant] 'tidy the changelog formatting' ['docs/CHANGELOG.md']",
+     "[irrelevant] 'bump the copyright year in the footer' ['site/footer.html']",
+     "[irrelevant] 'rename the CI job for lint' ['.github/workflows/lint.yml']",
+     "[irrelevant] 'fix a typo in the contributor guide' ['docs/CONTRIBUTING.md']",
+     "[irrelevant] 'adjust editor indentation settings' ['.editorconfig']",
+     "[irrelevant] 'add a license banner to the scripts' ['scripts/release.sh']"
+    ]
+   },
+   {
+    "mode": "channel",
+    "value": 0.65,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "11/12",
+    "held": "9/16",
+    "failures": [
+     "[irrelevant] 'fix a typo in the contributor guide' ['docs/CONTRIBUTING.md']"
+    ]
+   },
+   {
+    "mode": "channel",
+    "value": 0.75,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "12/12",
+    "held": "12/16",
+    "failures": []
+   },
+   {
+    "mode": "filter",
+    "value": 0.3,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "12/12",
+    "held": "12/16",
+    "failures": []
+   },
+   {
+    "mode": "filter",
+    "value": 0.4,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "12/12",
+    "held": "12/16",
+    "failures": []
+   },
+   {
+    "mode": "filter",
+    "value": 0.5,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "12/12",
+    "held": "12/16",
+    "failures": []
+   },
+   {
+    "mode": "filter",
+    "value": 0.6,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "12/12",
+    "held": "12/16",
+    "failures": []
+   },
+   {
+    "mode": "filter",
+    "value": 0.7,
+    "hits": 28,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "12/12",
+    "held": "15/16",
+    "failures": [
+     "[task_only] 'write a database migration for the orders table' []",
+     "[superseded] 'what is our logging convention' []"
+    ]
+   }
+  ],
+  "with query instruction, ": [
+   {
+    "mode": "none",
+    "value": null,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "12/12",
+    "held": "12/16",
+    "failures": []
+   },
+   {
+    "mode": "channel",
+    "value": 0.35,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "0/12",
+    "held": "0/16",
+    "failures": [
+     "[absent] 'add a dark mode toggle to the settings screen' []",
+     "[absent] 'generate PDF invoices with a watermark' []",
+     "[absent] 'translate onboarding copy into German' []",
+     "[absent] 'upgrade the kubernetes ingress controller' []",
+     "[absent] 'add a GraphQL subscription for inventory levels' []",
+     "[absent] 'resize uploaded avatars to thumbnails' []",
+     "[irrelevant] 'tidy the changelog formatting' ['docs/CHANGELOG.md']",
+     "[irrelevant] 'bump the copyright year in the footer' ['site/footer.html']",
+     "[irrelevant] 'rename the CI job for lint' ['.github/workflows/lint.yml']",
+     "[irrelevant] 'fix a typo in the contributor guide' ['docs/CONTRIBUTING.md']",
+     "[irrelevant] 'adjust editor indentation settings' ['.editorconfig']",
+     "[irrelevant] 'add a license banner to the scripts' ['scripts/release.sh']"
+    ]
+   },
+   {
+    "mode": "channel",
+    "value": 0.45,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "0/12",
+    "held": "0/16",
+    "failures": [
+     "[absent] 'add a dark mode toggle to the settings screen' []",
+     "[absent] 'generate PDF invoices with a watermark' []",
+     "[absent] 'translate onboarding copy into German' []",
+     "[absent] 'upgrade the kubernetes ingress controller' []",
+     "[absent] 'add a GraphQL subscription for inventory levels' []",
+     "[absent] 'resize uploaded avatars to thumbnails' []",
+     "[irrelevant] 'tidy the changelog formatting' ['docs/CHANGELOG.md']",
+     "[irrelevant] 'bump the copyright year in the footer' ['site/footer.html']",
+     "[irrelevant] 'rename the CI job for lint' ['.github/workflows/lint.yml']",
+     "[irrelevant] 'fix a typo in the contributor guide' ['docs/CONTRIBUTING.md']",
+     "[irrelevant] 'adjust editor indentation settings' ['.editorconfig']",
+     "[irrelevant] 'add a license banner to the scripts' ['scripts/release.sh']"
+    ]
+   },
+   {
+    "mode": "channel",
+    "value": 0.55,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "3/12",
+    "held": "1/16",
+    "failures": [
+     "[absent] 'generate PDF invoices with a watermark' []",
+     "[absent] 'translate onboarding copy into German' []",
+     "[absent] 'upgrade the kubernetes ingress controller' []",
+     "[absent] 'add a GraphQL subscription for inventory levels' []",
+     "[irrelevant] 'tidy the changelog formatting' ['docs/CHANGELOG.md']",
+     "[irrelevant] 'rename the CI job for lint' ['.github/workflows/lint.yml']",
+     "[irrelevant] 'fix a typo in the contributor guide' ['docs/CONTRIBUTING.md']",
+     "[irrelevant] 'adjust editor indentation settings' ['.editorconfig']",
+     "[irrelevant] 'add a license banner to the scripts' ['scripts/release.sh']"
+    ]
+   },
+   {
+    "mode": "channel",
+    "value": 0.65,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "12/12",
+    "held": "12/16",
+    "failures": []
+   },
+   {
+    "mode": "channel",
+    "value": 0.75,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "12/12",
+    "held": "12/16",
+    "failures": []
+   },
+   {
+    "mode": "filter",
+    "value": 0.3,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "12/12",
+    "held": "12/16",
+    "failures": []
+   },
+   {
+    "mode": "filter",
+    "value": 0.4,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "12/12",
+    "held": "12/16",
+    "failures": []
+   },
+   {
+    "mode": "filter",
+    "value": 0.5,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "12/12",
+    "held": "12/16",
+    "failures": []
+   },
+   {
+    "mode": "filter",
+    "value": 0.6,
+    "hits": 30,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "12/12",
+    "held": "13/16",
+    "failures": []
+   },
+   {
+    "mode": "filter",
+    "value": 0.7,
+    "hits": 27,
+    "total": 30,
+    "leaks": 0,
+    "abstain": "12/12",
+    "held": "16/16",
+    "failures": [
+     "[task_only] 'write a database migration for the orders table' []",
+     "[superseded] 'add logging to the order handler' []",
+     "[superseded] 'what is our logging convention' []"
+    ]
+   }
+  ]
+ },
+ "peak_mb": 1092.7109375
+}
