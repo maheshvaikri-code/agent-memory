@@ -100,6 +100,7 @@ Found in review of the locked test split. Not corrected in place; the locked lab
 | baseline | 0.9875 (158/160) | 1139.4 | 0.0000 (0/37) | 0 |
 | lever 1: drop weak-only, RARE_SHARE=0.15 (SMALL_STORE=25, whole-identifier rule, pinned exempt) | 0.9875 (158/160) | 1078.6 | 0.0000 (0/37) | 0 |
 | lever 5: small-store rule, SMALL_STORE=25 (set in the lever 1 commit; pinned by boundary tests here) | 0.9875 (158/160) | 1078.6 | 0.0000 (0/37) | 0 |
+| lever 2: graph seeds from strong and medium survivors only (no effect on the benchmark; kept because weak survivors exist in small stores and for weakly matched pinned records) | 0.9875 (158/160) | 1078.6 | 0.0000 (0/37) | 0 |
 
 ### Lever 1: RARE_SHARE grid (dev split, SMALL_STORE=25, with the identifier rule)
 

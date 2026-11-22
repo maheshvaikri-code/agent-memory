@@ -439,10 +439,13 @@ class Retriever:
 
         linked: Dict[NodeRef, NodeRef] = {}
         inherited_scores: Dict[NodeRef, float] = {}
-        if not strict and survivors:
-            # the top GRAPH_SEEDS, ties broken by ref so the result never depends on dict order
-            floor = heapq.nlargest(GRAPH_SEEDS, survivors.values())[-1]
-            seeds = dict(sorted(((ref, v) for ref, v in survivors.items() if v >= floor),
+        pool = {ref: v for ref, v in survivors.items() if tiers.get(ref) != WEAK}
+        if not strict and pool:
+            # the top GRAPH_SEEDS of the strong and medium survivors, ties broken by ref so the
+            # result never depends on dict order; a weak survivor (a small store, or a pinned
+            # record that matched weakly) does not pull its neighbours in
+            floor = heapq.nlargest(GRAPH_SEEDS, pool.values())[-1]
+            seeds = dict(sorted(((ref, v) for ref, v in pool.items() if v >= floor),
                                 key=lambda kv: (-kv[1], str(kv[0])))[:GRAPH_SEEDS])
             for ref, (inherited, seed) in graph_neighbours(self.graph, seeds, cands).items():
                 if ref not in survivors:

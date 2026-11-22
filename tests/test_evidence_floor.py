@@ -177,3 +177,29 @@ def test_small_store_is_counted_per_role_not_over_the_whole_store(tmp_path):
                                 "context": f"chosen for reason{n}"})
     assert "gizmo" not in texts(m.recall(task="process image uploads", files=[]))
     assert "gizmo" in texts(m.recall(task="process image uploads", files=[], kinds=["decision"]))
+
+
+def test_a_weak_survivor_does_not_pull_its_neighbours_in(tmp_path):
+    m = AgentMemory("g", repo_root=str(tmp_path))
+    weak = m.remember("bug_pattern", {"name": "a", "signature": "process step widget leaks"})
+    fix = m.remember("fix_pattern", {"fix_template": "zzyzx remedy", "caveats": ""})
+    m.graph.add_edge("FIX_FOR", fix.ref, weak.ref)
+    for n in range(6):                      # a small store, so the weak match survives
+        conv(m, f"c{n}", f"process step{n} runs through widget{n}")
+    result = m.recall(task="process image uploads", files=[])
+    assert "widget leaks" in texts(result)          # the weak record itself is shown (small store)
+    assert "zzyzx" not in texts(result)             # but its fix is not dragged in
+
+
+def test_a_weakly_matched_pinned_record_does_not_pull_its_neighbours_in(tmp_path):
+    """The pinned exemption keeps a weak pinned record as a survivor, but it must not seed the graph.
+    The store is not small, and the pinned rule shares only the common word "process"."""
+    m = store(tmp_path)
+    pinned = m.remember("convention", {"category": "ops", "rule": "never process secrets in plain text",
+                                       "enforced_by": "manual", "exceptions": ""},
+                        priority="must", scope=["*"])
+    fix = m.remember("fix_pattern", {"fix_template": "zzyzx remedy", "caveats": ""})
+    m.graph.add_edge("FIX_FOR", fix.ref, pinned.ref)
+    result = m.recall(task="process image uploads", files=[], kinds=["convention", "fix_pattern"])
+    assert "never process secrets" in texts(result)         # the pinned record itself is still returned
+    assert "zzyzx" not in texts(result)                     # but its neighbour is not pulled in
