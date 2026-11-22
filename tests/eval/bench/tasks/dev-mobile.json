@@ -92,12 +92,12 @@
    ],
    "relevant": [
     "conv-migrations",
-    "bug-migrate-crash",
     "fix-migrate-crash",
-    "rtc-migrate"
+    "rtc-migrate",
+    "td-json-columns"
    ],
    "acceptable": [
-    "td-json-columns",
+    "bug-migrate-crash",
     "dec-schema-version",
     "module-db"
    ]
