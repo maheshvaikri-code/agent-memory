@@ -64,3 +64,13 @@ def test_an_identifier_never_lowers_a_tier():
     assert c(in_scope=True, concepts=0, rarest_df=None, identifier=True) == STRONG
     assert c(concepts=2, rarest_df=40, identifier=True) == STRONG
     assert c(rarest_df=1, identifier=True) == MEDIUM
+
+
+def test_the_generic_word_list_is_exactly_the_registered_one():
+    registered = set("""write handle configure refactor improve export import process document set
+    setup run build create remove delete implement support enable disable get show display load
+    save read parse format convert move clean optimize speed""".split())   # "rename" removed: see RESULTS.md
+    assert set(evidence.GENERIC_WORDS) == registered, (
+        "the list changed: record each dev-split edit in tests/eval/bench/RESULTS.md and update "
+        "this test with it")
+    assert evidence.GENERIC_STEMS == evidence.stems(registered)

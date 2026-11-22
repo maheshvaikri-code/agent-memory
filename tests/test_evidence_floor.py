@@ -203,3 +203,37 @@ def test_a_weakly_matched_pinned_record_does_not_pull_its_neighbours_in(tmp_path
     result = m.recall(task="process image uploads", files=[], kinds=["convention", "fix_pattern"])
     assert "never process secrets" in texts(result)         # the pinned record itself is still returned
     assert "zzyzx" not in texts(result)                     # but its neighbour is not pulled in
+
+
+def store_with_billing_note(tmp_path):
+    m = store(tmp_path)
+    m.remember("decision", {"title": "Billing export writes CSV nightly", "context": "finance pulls it"})
+    return m
+
+
+def test_a_generic_word_alone_does_not_keep_a_record_even_when_it_is_rare(tmp_path):
+    m = store_with_billing_note(tmp_path)
+    result = m.recall(task="write a script to resize images", files=[])
+    assert "Billing export" not in texts(result)
+
+
+def test_a_generic_word_still_counts_with_a_second_concept(tmp_path):
+    m = store_with_billing_note(tmp_path)
+    result = m.recall(task="write the billing csv", files=[])
+    assert "Billing export" in texts(result)
+
+
+def test_a_record_matched_only_by_generic_words_is_weak_however_many(tmp_path):
+    m = store_with_billing_note(tmp_path)
+    result = m.recall(task="write export", files=[])
+    assert "Billing export" not in texts(result)
+
+
+def test_a_generic_word_that_is_a_records_own_compound_token_does_not_lift_it(tmp_path):
+    """"setup" is a generic task word; a record that spells it as the compound token setUp is
+    not made evidence by a caller symbol "setup"."""
+    Path(tmp_path).mkdir(parents=True, exist_ok=True)
+    m = AgentMemory("t", repo_root=str(tmp_path))
+    for n in range(35):
+        conv(m, f"t{n}", f"call setUp before test {n} runs")
+    assert m.recall(task="push the change", files=[], symbols=["setup"]).items == []

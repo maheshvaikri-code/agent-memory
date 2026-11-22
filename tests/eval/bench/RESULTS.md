@@ -101,6 +101,50 @@ Found in review of the locked test split. Not corrected in place; the locked lab
 | lever 1: drop weak-only, RARE_SHARE=0.15 (SMALL_STORE=25, whole-identifier rule, pinned exempt) | 0.9875 (158/160) | 1078.6 | 0.0000 (0/37) | 0 |
 | lever 5: small-store rule, SMALL_STORE=25 (set in the lever 1 commit; pinned by boundary tests here) | 0.9875 (158/160) | 1078.6 | 0.0000 (0/37) | 0 |
 | lever 2: graph seeds from strong and medium survivors only (no effect on the benchmark; kept because weak survivors exist in small stores and for weakly matched pinned records) | 0.9875 (158/160) | 1078.6 | 0.0000 (0/37) | 0 |
+| lever 3: generic task-word list (pre-registered list minus `rename`; a generic word counts toward a record with a second concept, spec reading) | 0.9875 (158/160) | 1013.6 | 0.0000 (0/37) | 0 |
+
+### Lever 3: the generic task-word list (dev split)
+
+Dev trial, saved run `tests/eval/bench/runs/dev-lever3.json` (`--label lever3`). Noise falls from 1078.6
+to 1013.6 tokens per task (6%; 11% against the baseline's 1139.4). Clean-abstain stays 0/37: the
+remaining noise on empty tasks is mostly ordinary topic words (`call`, `file`, `screen`, `customer`,
+`test`) that are not task-opening words. In-sample scorecard unchanged: recall 30/30, leaks 0, abstention 12/12.
+
+Counting variants (R9). The spec says a generic word still counts toward a record that has a second matched
+concept; the plan's code counts only informative concepts. Both were measured on dev with the final list:
+
+| Variant | Recall | Noise tokens per task | Clean-abstain | Leaks |
+|---|---|---|---|---|
+| spec reading: `concepts` = all distinct matched concepts, provided one is informative; only-generic means weak | 0.9875 (158/160) | 1013.6 | 0/37 | 0 |
+| plan's stricter reading: `concepts` = informative concepts only | 0.9875 (158/160) | 1009.1 | 0/37 | 0 |
+
+The difference is 4.5 tokens per task (0.4% of noise), far below the 3-point threshold, so the spec
+reading ships. The same change makes the whole-identifier rule test the informative terms: a generic word
+that is also a record's own compound token (a caller symbol `setup` against a record that writes `setUp`)
+no longer lifts that record by itself.
+
+List edits (dev split only; every edit is mirrored in `test_the_generic_word_list_is_exactly_the_registered_one`):
+
+- Removed `rename`. With the full pre-registered list, dev recall fell to 0.9812 (157/160): the task
+  "rename tasks.status to tasks.state" (saas) lost its relevant record `expand-then-contract`, which it
+  matched only on `renam`. Without `rename`: recall 0.9875 (158/160), noise 1013.6 (with it, 1012.4).
+- Added nothing. Candidate additions were measured one at a time on dev (baseline for this comparison:
+  1013.6 tokens per task, empty-task noise 792 tokens; recall stayed 158/160 and leaks 0 for each):
+
+  | Candidate | Dev empty tasks it matched in | Noise tokens per task | Clean-abstain |
+  |---|---|---|---|
+  | `test` | saas, pipeline, mobile | 987.0 | 0/37 |
+  | `call` | saas, pipeline | 1000.6 | 1/37 |
+  | `up` | saas, pipeline, mobile | 1000.9 | 0/37 |
+  | `file` | saas, pipeline | 1008.7 | 0/37 |
+  | `name` | saas, mobile | 1007.3 | 0/37 |
+
+  None was added. `test` is a topic with its own records (test conventions are relevant to "add a unit
+  test"), not a task-opening word; `up` is a particle, not a coding verb or noun; `call`, `file` and `name`
+  are topic words that match by coincidence ("on-call", "calls /healthz") and gain at most 1.3% each. A
+  short list that rests on the pre-registered words beats one fitted to the dev noise.
+
+Saved run: `tests/eval/bench/runs/dev-lever3.json`.
 
 ### Lever 1: RARE_SHARE grid (dev split, SMALL_STORE=25, with the identifier rule)
 

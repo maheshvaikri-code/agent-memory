@@ -415,16 +415,18 @@ class Retriever:
                 return False
             informative = matched - GENERIC_STEMS
             rec = cands.get(ref)
+            # generic words count toward a record that also has an informative concept; a record
+            # matched only by generic words is weak
             args: Dict[str, Any] = dict(
                 in_scope=in_scope, semantic=ref in semantic,
-                concepts=_concepts(informative, words),
+                concepts=_concepts(matched, words) if informative else 0,
                 rarest_df=min((bm25.df[t] for t in informative), default=None),
                 n=bm25.n, distinctive_df=DISTINCTIVE_DF)
             tier = classify(**args)
-            if tier == WEAK and matched and (
-                    not identifiers.isdisjoint(matched)
+            if tier == WEAK and informative and (
+                    not identifiers.isdisjoint(informative)
                     or (rec is not None and symbol_terms
-                        and not (matched & symbol_terms).isdisjoint(compound_tokens(rec.text)))):
+                        and not (informative & symbol_terms).isdisjoint(compound_tokens(rec.text)))):
                 # a whole identifier is evidence however common it is in the store: a camelCase
                 # word the task writes, or a symbol / context identifier (the service lower-cases
                 # those) that the record spells as one compound token. A plain task word never
