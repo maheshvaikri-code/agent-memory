@@ -34,9 +34,11 @@ def classify(*, in_scope: bool, semantic: bool, concepts: int, rarest_df: Option
 
     `concepts` counts the informative matched concepts (generic words excluded);
     `rarest_df` is the document frequency of the rarest informative matched term, or None;
-    `n` is the number of candidate records. `identifier` is True when the record matched a
-    precise identifier (a camelCase word) written in the task: that is evidence however common
-    the identifier is in the store, so it lifts a weak match to medium and never lowers a tier.
+    `n` is the number of candidate records. `identifier` is True when the record matched a whole
+    identifier: a camelCase word the task writes, or a symbol / context identifier (lower-cased
+    by the service) that the record spells as one compound token. That is evidence however
+    common the identifier is in the store, so it lifts a weak match to medium and never lowers
+    a tier. The caller decides what counts: a plain task word never does.
     """
     if in_scope or semantic:
         return STRONG

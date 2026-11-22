@@ -96,3 +96,49 @@ def test_a_precise_identifier_in_the_task_keeps_records_however_common_it_is(tmp
         conv(m, f"pay{n}", f"StripeSignatureError note {n} means the secret rotated")
     assert "StripeSignatureError" in texts(m.recall(task="fix the StripeSignatureError", files=[]))
     assert "StripeSignatureError" not in texts(m.recall(task="fix the error", files=[]))
+
+
+def test_the_pinned_rule_that_only_shares_a_common_word_is_still_ranked(tmp_path):
+    """Review focus 2, for real: the pinned rule shares one common word ("process") with eight
+    other records, so its match is weak. With `kinds` restricted the always-on pinned set is
+    off, so only the ranking can return it: the exemption keeps it, with its match data."""
+    m = store(tmp_path)
+    m.remember("convention", {"category": "ops", "rule": "never process secrets in plain text",
+                              "enforced_by": "manual", "exceptions": ""}, priority="must", scope=["*"])
+    result = m.recall(task="process image uploads", files=[], kinds=["convention"])
+    hits = [i for i in result.items if "never process secrets" in i.text]
+    assert len(hits) == 1 and "matched:" in hits[0].why
+    assert "widget" not in texts(result)                    # the other common-word records are dropped
+
+
+def github_store(tmp_path):
+    Path(tmp_path).mkdir(parents=True, exist_ok=True)
+    m = AgentMemory("t", repo_root=str(tmp_path))
+    for n in range(12):
+        conv(m, f"camel{n}", f"GitHub workflow{n} runs on runner{n}")
+    for n in range(12):
+        conv(m, f"plain{n}", f"plain github hook{n} calls endpoint{n}")
+    for n in range(16):
+        conv(m, f"fill{n}", f"zebra{n} policy gadget{n}")
+    return m
+
+
+def test_a_lower_case_task_word_is_not_lifted_by_how_a_record_spells_it(tmp_path):
+    """github is in 60% of the store: a plain task word is weak whether a record writes it
+    GitHub or github."""
+    m = github_store(tmp_path)
+    assert m.recall(task="push to github", files=[]).items == []
+
+
+def test_an_identifier_given_as_a_symbol_or_context_term_lifts_the_records_that_spell_it_whole(tmp_path):
+    """The service folds context identifiers to lower case and passes them as a symbol."""
+    m = github_store(tmp_path)
+    got = texts(m.recall(task="push the change", files=[], symbols=["github"]))
+    assert "GitHub workflow" in got and "plain github" not in got
+
+
+def test_an_identifier_the_task_writes_in_camel_case_lifts_every_record_with_that_word(tmp_path):
+    m = github_store(tmp_path)
+    got = texts(m.recall(task="push to GitHub", files=[]))
+    assert "GitHub workflow" in got and "plain github" in got
+

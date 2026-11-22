@@ -360,7 +360,7 @@ class Retriever:
     def _rank(self, query: str, files: List[str], kinds: Optional[Iterable[str]] = None,
               strict: bool = False, extra_refs: Iterable[NodeRef] = (),
               cands: Optional[Dict[NodeRef, MemoryRecord]] = None,
-              role: Any = None) -> "_Ranking":
+              role: Any = None, symbol_text: str = "") -> "_Ranking":
         if kinds is not None:
             kinds = list(kinds)         # a generator would be spent by the role below
         if role is None:
@@ -379,6 +379,7 @@ class Retriever:
         query_tokens = tokenize(query_text) + list(compound_tokens(query_text))
         words = _camel_groups(query_text)
         identifiers = frozenset(compound_tokens(query_text))   # joined form of each camelCase word
+        symbol_terms = frozenset(tokenize(symbol_text))        # terms the caller gave as symbols
         index = self._index(cands, role)
         bm25 = index.bm25
         lexical, hits = bm25.match(query_tokens)     # scores; matched terms
@@ -422,9 +423,12 @@ class Retriever:
             tier = classify(**args)
             if tier == WEAK and matched and (
                     not identifiers.isdisjoint(matched)
-                    or (rec is not None and not matched.isdisjoint(compound_tokens(rec.text)))):
-                # a whole identifier (task writes it camelCase, or the record's own compound
-                # token was matched) is evidence however common it is in the store
+                    or (rec is not None and symbol_terms
+                        and not (matched & symbol_terms).isdisjoint(compound_tokens(rec.text)))):
+                # a whole identifier is evidence however common it is in the store: a camelCase
+                # word the task writes, or a symbol / context identifier (the service lower-cases
+                # those) that the record spells as one compound token. A plain task word never
+                # qualifies by how a record happens to spell it.
                 tier = classify(identifier=True, **args)
             tiers[ref] = tier
             pinned = (rec is not None and rec.priority == "must"
@@ -637,7 +641,8 @@ class Retriever:
         files = [norm_path(f, self.repo_root) for f in (files or [])]
         query = " ".join([task or ""] + list(symbols or []))
         cands = self._candidates(kinds)     # read once per recall
-        ranking = self._rank(query, files, kinds, cands=cands)
+        ranking = self._rank(query, files, kinds, cands=cands,
+                             symbol_text=" ".join(symbols or []))
         ranked_refs = set(ranking.refs)
         if always_on is None:
             always_on = kinds is None

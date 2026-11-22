@@ -117,8 +117,14 @@ Chosen: 0.15, by ruling R2. Shares 0.02 to 0.10 each lose the in-sample task_onl
 "write a database migration for the orders table" (29/30), so they are not eligible. Of the
 eligible shares (only 0.15), dev recall equals the baseline's (158/160). Lever 1 alone cuts dev noise
 by only 5% (1139.4 to 1078.6 tokens per task) and does not abstain on empty tasks; the later levers carry
-the reduction. The identifier rule (a weak match is lifted to medium when the task writes a camelCase identifier that
-the record matched, or when a matched term is the record's own compound token, e.g. the lower-cased
-context term "stripesignatureerror") changed the 0.02 to 0.06 noise figures by under 2 tokens per task and did not
-change eligibility or the chosen share. Pinned (must, scope "*") records bypass the weak floor.
+the reduction. The identifier rule lifts a weak match to medium in two cases only: (1) the task writes a camelCase
+identifier (for example "GitHub", "StripeSignatureError") and the record matched its joined form;
+(2) a term given as a symbol (the service passes the identifiers of a context trace as one lower-cased
+symbol) matches the record's own compound token, so "github" given as a symbol lifts a record that
+writes "GitHub" but not one that writes "github". A plain lower-case task word never qualifies by how a
+record spells it. Dev at RARE_SHARE=0.15 with and without the rule: both recall 0.9875 (158/160), noise
+1078.6 tokens per task, clean-abstain 0/37, leaks 0, so the dev split does not exercise the rule (it
+exists for the in-sample `test_context_keeps_the_token_budget` case). The 0.02 to 0.06 noise figures above
+were measured with the rule on, as were the in-sample columns. Pinned (must, scope "*") records bypass the
+weak floor.
 Saved run: `tests/eval/bench/runs/dev-lever1.json`.
