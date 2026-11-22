@@ -23,17 +23,20 @@ def stems(words: Iterable[str]) -> FrozenSet[str]:
 GENERIC_WORDS: FrozenSet[str] = frozenset()
 GENERIC_STEMS: FrozenSet[str] = stems(GENERIC_WORDS)
 
-RARE_SHARE = 0.05   # a single matched concept is rare if it is in at most this share of records
-SMALL_STORE = 0     # below this many records the weak tier is not dropped
+RARE_SHARE = 0.15   # a single matched concept is rare if it is in at most this share of records
+SMALL_STORE = 25    # below this many records the weak tier is not dropped
 
 
 def classify(*, in_scope: bool, semantic: bool, concepts: int, rarest_df: Optional[int], n: int,
-             distinctive_df: int, rare_share: Optional[float] = None) -> str:
+             distinctive_df: int, rare_share: Optional[float] = None,
+             identifier: bool = False) -> str:
     """Tier of a record that has some match.
 
     `concepts` counts the informative matched concepts (generic words excluded);
     `rarest_df` is the document frequency of the rarest informative matched term, or None;
-    `n` is the number of candidate records.
+    `n` is the number of candidate records. `identifier` is True when the record matched a
+    precise identifier (a camelCase word) written in the task: that is evidence however common
+    the identifier is in the store, so it lifts a weak match to medium and never lowers a tier.
     """
     if in_scope or semantic:
         return STRONG
@@ -41,5 +44,6 @@ def classify(*, in_scope: bool, semantic: bool, concepts: int, rarest_df: Option
         return STRONG
     if concepts == 1 and rarest_df is not None:
         share = RARE_SHARE if rare_share is None else rare_share
-        return MEDIUM if rarest_df <= max(distinctive_df, share * n) else WEAK
-    return WEAK
+        if rarest_df <= max(distinctive_df, share * n):
+            return MEDIUM
+    return MEDIUM if identifier else WEAK

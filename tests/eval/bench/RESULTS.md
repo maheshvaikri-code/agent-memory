@@ -98,3 +98,27 @@ Found in review of the locked test split. Not corrected in place; the locked lab
 | Trial | Recall | Noise tokens per task | Clean-abstain | Leaks |
 |---|---|---|---|---|
 | baseline | 0.9875 (158/160) | 1139.4 | 0.0000 (0/37) | 0 |
+| lever 1: drop weak-only, RARE_SHARE=0.15 (SMALL_STORE=25, whole-identifier rule, pinned exempt) | 0.9875 (158/160) | 1078.6 | 0.0000 (0/37) | 0 |
+
+### Lever 1: RARE_SHARE grid (dev split, SMALL_STORE=25, with the identifier rule)
+
+Each share was set for the run only (not saved). "In-sample" is `python -m tests.eval.run --service`
+with the same share; acceptance rule 6 needs recall 30/30, leaks 0, abstention 12/12.
+
+| RARE_SHARE | Dev recall | Noise tokens per task | Clean-abstain | Leaks | In-sample recall / leaks / abstention |
+|---|---|---|---|---|---|
+| 0.02 | 0.9688 (155/160) | 565.3 | 0.0270 (1/37) | 0 | 29/30, 0, 12/12 (not eligible) |
+| 0.04 | 0.9750 (156/160) | 630.8 | 0.0270 (1/37) | 0 | 29/30, 0, 12/12 (not eligible) |
+| 0.06 | 0.9812 (157/160) | 763.7 | 0.0000 (0/37) | 0 | 29/30, 0, 12/12 (not eligible) |
+| 0.10 | 0.9812 (157/160) | 894.0 | 0.0000 (0/37) | 0 | 29/30, 0, 12/12 (not eligible) |
+| **0.15** | **0.9875 (158/160)** | **1078.6** | **0.0000 (0/37)** | **0** | **30/30, 0, 12/12 (eligible)** |
+
+Chosen: 0.15, by ruling R2. Shares 0.02 to 0.10 each lose the in-sample task_only scenario
+"write a database migration for the orders table" (29/30), so they are not eligible. Of the
+eligible shares (only 0.15), dev recall equals the baseline's (158/160). Lever 1 alone cuts dev noise
+by only 5% (1139.4 to 1078.6 tokens per task) and does not abstain on empty tasks; the later levers carry
+the reduction. The identifier rule (a weak match is lifted to medium when the task writes a camelCase identifier that
+the record matched, or when a matched term is the record's own compound token, e.g. the lower-cased
+context term "stripesignatureerror") changed the 0.02 to 0.06 noise figures by under 2 tokens per task and did not
+change eligibility or the chosen share. Pinned (must, scope "*") records bypass the weak floor.
+Saved run: `tests/eval/bench/runs/dev-lever1.json`.

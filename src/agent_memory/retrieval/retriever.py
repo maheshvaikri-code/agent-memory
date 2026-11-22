@@ -16,6 +16,7 @@ from ..record import (BACKGROUND, GUARDRAIL, GUIDANCE, KINDS, RESOLVED_FIELD, SE
                       MemoryRecord, NodeRef)
 from .budget import TokenCounter
 from .channels import graph_neighbours, scope_scores
+from .evidence import GENERIC_STEMS, SMALL_STORE, WEAK, classify
 from .lexical import BM25
 from .render import HEADERS, render, render_item
 from .tokenize import _WORD, compound_tokens, token_set, tokenize, tokens_for
@@ -377,6 +378,7 @@ class Retriever:
         query_text = f"{query} {stems}"
         query_tokens = tokenize(query_text) + list(compound_tokens(query_text))
         words = _camel_groups(query_text)
+        identifiers = frozenset(compound_tokens(query_text))   # joined form of each camelCase word
         index = self._index(cands, role)
         bm25 = index.bm25
         lexical, hits = bm25.match(query_tokens)     # scores; matched terms
@@ -399,6 +401,8 @@ class Retriever:
                 q = quality[ref] if quality is not None else 1.0
                 fused[ref] = fused.get(ref, 0.0) + WEIGHTS[name] * q / (RRF_K + rank)
 
+        tiers: Dict[NodeRef, str] = {}
+
         def passes(ref: NodeRef) -> bool:
             matched = hits.get(ref, _NONE)
             in_scope = scope.get(ref, 0.0) >= SCOPE_FLOOR
@@ -406,7 +410,26 @@ class Retriever:
                 distinctive = any(bm25.df[t] <= DISTINCTIVE_DF for t in matched)
                 count = _concepts(matched, words)
                 return count >= 2 or (count == 1 and (in_scope or distinctive))
-            return bool(matched) or in_scope or ref in semantic
+            if not (matched or in_scope or ref in semantic):
+                return False
+            informative = matched - GENERIC_STEMS
+            rec = cands.get(ref)
+            args: Dict[str, Any] = dict(
+                in_scope=in_scope, semantic=ref in semantic,
+                concepts=_concepts(informative, words),
+                rarest_df=min((bm25.df[t] for t in informative), default=None),
+                n=bm25.n, distinctive_df=DISTINCTIVE_DF)
+            tier = classify(**args)
+            if tier == WEAK and matched and (
+                    not identifiers.isdisjoint(matched)
+                    or (rec is not None and not matched.isdisjoint(compound_tokens(rec.text)))):
+                # a whole identifier (task writes it camelCase, or the record's own compound
+                # token was matched) is evidence however common it is in the store
+                tier = classify(identifier=True, **args)
+            tiers[ref] = tier
+            pinned = (rec is not None and rec.priority == "must"
+                      and rec.scope == ["*"])     # always shown: keep its ranking data
+            return tiers[ref] != WEAK or bm25.n < SMALL_STORE or pinned
 
         survivors = {ref: score for ref, score in fused.items() if passes(ref)}
 
