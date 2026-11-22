@@ -3,7 +3,8 @@
 Baseline: the unchanged retriever (branch feature/recall-quality, no retrieval code changed), run with
 `PYTHONPATH=src python -m tests.eval.bench.run --split dev|test --label baseline --save`.
 Saved runs: `tests/eval/bench/runs/dev-baseline.json`, `tests/eval/bench/runs/test-baseline.json`.
-The test split was run once, as this baseline; it is not rerun until the final result.
+The test split was run twice in total: once as this baseline, and once on the final retriever (see "Final
+result: test split" below, `tests/eval/bench/runs/test-after.json`). It is not run again.
 
 ## Baseline, dev split
 
@@ -211,6 +212,30 @@ were measured with the rule on, as were the in-sample columns. Pinned (must, sco
 weak floor.
 Saved run: `tests/eval/bench/runs/dev-lever1.json`.
 
+## Decision: drop vs tail
+
+Written before the single test-split run of the final retriever.
+
+The rule, fixed in advance: adopt the tail (lever 4: weak matches go to a capped "possibly related" section
+instead of being dropped) if and only if dev drop-recall is below the baseline's AND the tail brings it within
+0.5 point of the baseline while keeping the noise-token cut at 50% or more.
+
+The dev figures of the final configuration (`runs/dev-lever7.json`): drop-recall 0.9875 (158/160), equal to the
+baseline's 0.9875 (158/160); noise 947.8 tokens per task (15.21 records per task) against the baseline's
+1139.4 tokens (18.441 records); clean-abstain 0/37; leaks 0. In-sample scorecard 30/30 recall, 0 leaks, 12/12
+abstention. Held-out abstention 12/16 (the baseline is 6/16 on the original labels, 8/16 relabelled).
+
+Outcome: the first condition (drop-recall below the baseline's) is not met, so the rule is decided by it:
+keep `drop`. The tail arm was not built, so its own cost in noise tokens (tail items count as shown) was
+not measured; there is nothing to remove from `src/`.
+
+Levers that shipped: lever 1 (drop weak-only matches; RARE_SHARE 0.15, pinned records exempt, identifier
+lift), lever 5 (small-store rule, SMALL_STORE 25), lever 2 (graph seeds from non-weak survivors), lever 3 (the
+generic task-word list, the pre-registered list minus `rename`) and lever 7 (RARE_CAP 10). Levers that did
+not: lever 6 (rank-relative score cut) was ruled out in advance and measured, not shipped; lever 4 (the tail)
+was not built. Lever 7 was added after the dev results of levers 1-3 were seen; it is not a pre-registered
+lever.
+
 ## Not measured by the benchmark
 
 - Small-store rule (lever 5). Every benchmark world holds at least 75 records, so `SMALL_STORE` (25)
@@ -224,6 +249,12 @@ Saved run: `tests/eval/bench/runs/dev-lever1.json`.
   fewer than 25 records of the requested kinds therefore keeps weak matches. This is the present
   behaviour, pinned by `test_small_store_is_counted_per_role_not_over_the_whole_store`, so a change to it
   is deliberate.
+- The tail's own cost (lever 4). The tail was not built, so what it would have shown as noise, and whether it
+  would have recovered the three relevant records lost on the test split, is not measured.
+- Store sizes above about 100 records for `RARE_CAP` (10). Every benchmark world holds 75 to 100 records;
+  the cap's effect on a store of several hundred or thousands of records is not measured (the 5,000-record
+  latency probe holds synthetic quirks, not labelled tasks).
+- Real user stores. The worlds are written, not collected.
 
 ## Lever 6: rank-relative score cut (dev split, trial only, not shipped)
 
@@ -411,3 +442,172 @@ lists, index and query timings).
   small sample, 16 scenarios). The locked test split is the real check and was not run.
 - Whether the semantic path is worth its dependency and latency cost is the user's decision; this section only
   states what was measured.
+
+## Final result: test split (locked, run once)
+
+Command, run once after the decision above was written and the configuration frozen (HEAD 56a0b30, no change
+to `src/` since):
+
+```
+PYTHONPATH=src python -m tests.eval.bench.run --split test --label after --save --against baseline
+```
+
+Its output, verbatim:
+
+```
+split test, label after
+tasks 215 (empty 70)
+must-include recall   0.9644  (244/253)  95% CI 0.934-0.981
+clean-abstain rate    0.0143  (1/70)  95% CI 0.003-0.077
+noise per task        15.009 records, 934.3 tokens
+superseded/retracted leaks  0
+saved tests/eval/bench/runs/test-after.json
+rules against baseline:
+  FAIL  recall: 0.9723 -> 0.9644 (noise cut 20%)
+  PASS  leaks: 0 leaks
+  FAIL  noise: noise tokens 250702 -> 200870 (20% cut)
+  FAIL  clean: clean-abstain 0.01
+```
+
+(The saved path printed as an absolute path; shortened here.) Saved run: `tests/eval/bench/runs/test-after.json`.
+
+### Test split, baseline against after
+
+| Figure | Baseline | After |
+|---|---|---|
+| must-include recall | 0.9723 (246/253), 95% CI 0.944-0.987 | 0.9644 (244/253), 95% CI 0.934-0.981 |
+| clean-abstain (empty tasks) | 0.0000 (0/70), 95% CI 0.000-0.052 | 0.0143 (1/70), 95% CI 0.003-0.077 |
+| noise records per task | 18.865 (4056 in all) | 15.009 (3227 in all), 20.4% fewer |
+| noise tokens per task | 1166.1 (250,702 in all) | 934.3 (200,870 in all), 19.9% fewer |
+| superseded/retracted leaks | 0 | 0 |
+
+Split by task kind (noise per task, from the saved runs):
+
+| Tasks | Baseline records / tokens | After records / tokens | Token cut |
+|---|---|---|---|
+| empty (70) | 16.37 / 1014.0 | 12.43 / 770.4 | 24.0% |
+| non-empty (145) | 20.07 / 1239.4 | 16.26 / 1013.4 | 18.2% |
+
+Per world:
+
+| World | Tasks (empty) | Recall baseline | Recall after | Clean-abstain baseline / after | Noise tokens per task baseline / after (cut) |
+|---|---|---|---|---|---|
+| saas | 72 (22) | 84/87 = 0.9655 (CI 0.903-0.988) | 84/87 = 0.9655 (CI 0.903-0.988) | 0/22 / 0/22 | 1172.0 / 951.2 (18.8%) |
+| pipeline | 71 (24) | 77/78 = 0.9872 (CI 0.931-0.998) | 75/78 = 0.9615 (CI 0.893-0.987) | 0/24 / 1/24 | 1093.0 / 940.1 (14.0%) |
+| mobile | 72 (24) | 85/88 = 0.9659 (CI 0.905-0.988) | 85/88 = 0.9659 (CI 0.905-0.988) | 0/24 / 0/24 | 1232.1 / 911.7 (26.0%) |
+
+The one clean-abstain after is a pipeline task, "export the Jira backlog to a spreadsheet for sprint planning".
+
+### Relevant records missed on the test split
+
+| | Missed (task) |
+|---|---|
+| Baseline, 7 | `money-in-cents` (what to charge when a customer adds seats halfway through an annual contract); `csv-escape-fix` (importer that reads back a Taskboard CSV export); `search-latency-budget` (quick-find box queries the server on every keystroke); `env-yaml-overlays` (save the Bravo API token in the Airflow connection UI); `bug-blocked-loop` (refused location, take them to the system settings page); `conv-permission-copy` (import the phone's contacts for a group hike); `fix-migrate-crash` (store each track point's speed next to its latitude, longitude, altitude) |
+| After, 9 | the same six except `csv-escape-fix` (recovered), plus three new: `english-stemming-quirk` (searching for jane.doe@acme.com returns tasks that only contain 'jane'; saas), `dagbag-test` (CI job that copies dags/ to the scheduler bucket on every merge to main; pipeline), `small-file-explosion` (move the compact task after the quality gate in nightly_ingest; pipeline) |
+
+Net: 6 misses are shared, 1 baseline miss is recovered and 3 new misses appear (7 - 1 + 3 = 9). The 2-record
+fall is 0.79 point (0.9723 to 0.9644). The cause of the three new misses was not investigated (whether the
+weak-match floor dropped them or the token budget crowded them out); a further run on the test split to find
+out would be a second look at the locked set and was not made.
+
+### Acceptance rules (spec section 6), measured once on the test split
+
+| # | Rule | Result | Figures |
+|---|---|---|---|
+| 1 | Must-include recall does not fall (a fall of up to 1 pt only with a noise cut of 70% or more) | FAIL | 0.9723 to 0.9644 (-0.79 pt, 2 records); noise cut 20%, below the 70% that a fall requires |
+| 2 | Superseded and retracted leaks stay 0 | PASS | 0 leaks |
+| 3 | Mean noise tokens per task fall by at least 50% against the baseline | FAIL | 1166.1 to 934.3 (250,702 to 200,870 tokens in all), a 19.9% cut |
+| 4 | Clean-abstain on empty tasks reaches 0.80 | FAIL | 1/70 = 0.0143, Wilson 95% CI 0.003-0.077 (baseline 0/70) |
+| 5 | `test_recall_latency_guard` passes and the 5,000-record median is reported beside the baseline | PASS | the guard test passes (best of three p95 under 250 ms); median recall 43.9 and 43.6 ms against the recorded baseline 36.3 and 35.5 ms, see below |
+| 6 | No existing scenario, expectation or held-out label changes | PASS | `git diff 933068e..HEAD --stat -- tests/eval/scenarios.py tests/eval/world.py tests/eval/heldout.py tests/eval/harness.py tests/eval/run.py` is empty (933068e is `git merge-base main HEAD`, the last commit before the first `src/` change) |
+| 7 | The full default suite passes | PASS | see the full-suite line below |
+
+Rules 1, 3 and 4 failed. The rules were not moved. Rule 5 passes as written (the guard and the reporting); the
+latency figure is a cost, read below.
+
+### Latency, 5,000 records (median recall, final retriever)
+
+The same script as the baseline measurement (`_five_thousand`, 40 recalls, median), each run after a rest of
+about 55 seconds:
+
+| Run | Median |
+|---|---|
+| final retriever, first | 43.9 ms |
+| final retriever, second | 43.6 ms |
+| recorded baseline (Task 12) | 36.3 ms, 35.5 ms |
+
+To rule out a slower machine state, the unchanged retriever (`git archive 933068e src`, extracted to a scratch
+directory) was timed in the same session, alternating with the final one, each after a rest of about 50 seconds:
+
+| Pair | Baseline code | Final code |
+|---|---|---|
+| 1 | 34.9 ms | 46.6 ms |
+| 2 | 35.3 ms | 44.3 ms |
+
+The final retriever's median is about 9 to 12 ms higher at 5,000 records, 25 to 34% above the baseline code
+measured the same way. The figures are consistent between runs and no throttling was visible (the minimum was
+within 3 ms of the median in each run). The guard test passes with a wide margin (its bound is 250 ms).
+
+### In-sample, held-out (the guards the levers were tuned against)
+
+| Figure | Baseline | After |
+|---|---|---|
+| In-sample scorecard (`python -m tests.eval.run --service`) | 48 scenarios, all conditions pass; recall 30/30; leaks 0; abstention 12/12 | same: all conditions pass; recall 30/30; leaks 0; abstention 12/12 |
+| Held-out abstention, original labels (headline) | 0.38 (6/16) | 0.75 (12/16) |
+| Held-out abstention, relabelled after review (not substituted) | 0.50 (8/16) | 0.9375 (15/16) |
+
+Held-out failures after: "refactor the logging setup for the CLI", "improve error messages in the onboarding
+wizard", "migrate the test runner to pytest-xdist", "configure the sentry error reporting DSN" (three of them
+are the relabelled tasks). The in-sample and held-out sets were used while tuning the levers, so these are not
+independent of the final configuration.
+
+### Dev against test
+
+| | Dev (tuned on) | Test (locked) |
+|---|---|---|
+| Baseline recall | 0.9875 (158/160) | 0.9723 (246/253) |
+| After recall | 0.9875 (158/160) | 0.9644 (244/253) |
+| Baseline noise tokens per task | 1139.4 | 1166.1 |
+| After noise tokens per task | 947.8 | 934.3 |
+| Noise-token cut | 16.8% | 19.9% |
+| Clean-abstain after | 0/37 | 1/70 |
+
+### Reading
+
+The retriever as built removes about a fifth of the noise tokens on the locked test split (19.9%, against 16.8%
+on dev), where the rule asks for half, and it abstains on 1 of 70 empty tasks, where the rule asks for four in
+five. Dev showed the same shape before the test run, so the miss is not a test-split surprise: the levers
+were never close to those two rules on dev. The cut was spread evenly rather than concentrated (empty tasks
+24%, non-empty 18%; 14% to 26% across the three worlds). Recall fell by two records (0.79 point), within the
+1-point allowance only for a noise cut of 70% or more, which was not reached, so rule 1 fails on its own terms.
+The change cost 3 relevant records and recovered 1. Leaks stayed at 0, the guard and the full suite pass, and no
+existing scenario or label changed. The latency at 5,000 records is higher than the baseline's by about a
+quarter to a third. Held-out abstention rose from 0.38 to 0.75 (original labels) and 0.50 to 0.9375
+(relabelled), and the in-sample scorecard is unchanged, but those sets guided the tuning.
+
+The remaining noise is ordinary topic words and scope matches that, to a lexical retriever, look like real
+matches; the semantic arm on dev (above) removes more noise only at a recall cost, and was measured on dev
+only. The decision about embeddings as a default is the user's; this document states what was measured.
+
+Full default suite (`python -m pytest tests -q -p no:cacheprovider`): 1231 passed, 7 skipped, 8 deselected (86.8 s). The first full run (140.7 s, 1230 passed) failed one test, `test_recall_latency_guard`; that run took 54 s longer than the second, which fits the CPU throttling described in `tests/eval/RESULTS.md` (its assertion message was not captured). The guard passed when run alone twice (6.4 s and 6.2 s) and the full suite passed on the second run, so rule 7 is recorded as PASS, with the one flake disclosed. The suite includes the new `tests/eval/test_bench_dev.py` (3 passed).
+
+## Known limits
+
+- The worlds were written by us, in a style we know. The benchmark is a better estimator than 16 tasks, not a
+  measurement of real use.
+- Locking the test split is a discipline made visible by a checksum, not a technical barrier.
+- The thresholds (RARE_SHARE, SMALL_STORE, RARE_CAP, the generic-word list) were set on the dev split, which
+  is also what the in-sample and held-out figures were tuned against; dev recall of 0.9875 against 0.9644 on
+  test shows that dev is the optimistic side.
+- Lever 7 (RARE_CAP) was added after the dev results of levers 1-3 were seen. It is not pre-registered. It
+  was judged on the test split with everything else.
+- The cap does not scale with the store: RARE_CAP is an absolute 10 records however many records there are,
+  and the benchmark holds 75 to 100 records per world, so its effect on very large stores is untested.
+- Several labels are borderline (listed under "Known borderline labels"). They were not corrected, so some of
+  the "noise" counted may be acceptable, and some "relevant" records may be arguable.
+- Lexical ceiling: the remaining noise is ordinary topic words (`call`, `file`, `screen`, `customer`, `test`) and
+  scope matches. A lexical retriever cannot tell them from real matches without a semantic signal. The semantic
+  arm numbers are in the "Semantic arm" section (dev only: arm A adds noise or nothing, arm B cuts noise
+  only at a recall cost and reaches clean-abstain 0.135 at best); they were not measured on the test split.
+  Whether to make embeddings a default is the user's decision.
+- The three new test-split misses were not diagnosed (see above).

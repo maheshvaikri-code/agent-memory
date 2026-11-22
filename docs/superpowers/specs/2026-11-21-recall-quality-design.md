@@ -1,6 +1,6 @@
 # Recall quality (sub-project 4): design
 
-Status: approved in conversation (sections 1-2), written 2026-11-21. Builds on the retrieval and record model (`2026-11-16-retrieval-and-record-model-design.md`); its results file is `tests/eval/RESULTS.md`.
+Status: implemented; the acceptance rules were measured once on the locked test split, see tests/eval/bench/RESULTS.md (which rules passed and which failed is stated there). Written 2026-11-21. Builds on the retrieval and record model (`2026-11-16-retrieval-and-record-model-design.md`); its results file is `tests/eval/RESULTS.md`.
 
 ## 1. Purpose and success
 
@@ -144,3 +144,32 @@ Fixed before any retrieval change is run. Measured on the test split, one run be
 - The worlds are written by us, in a style we know. The benchmark is a better estimator than 16 tasks, not a measurement of real use.
 - Locking the test split is a discipline made visible by a checksum, not a technical barrier.
 - Word sense ("runner") is only partly addressable lexically; the semantic arm is how this spec measures the rest.
+
+## 10. Results
+
+Measured once on the locked test split (215 tasks, 70 empty) with the final retriever, against the baseline
+run of the unchanged retriever. Full tables, per-world figures, the lever trials and the decision are in
+`tests/eval/bench/RESULTS.md`.
+
+| # | Rule | Result | Figures |
+|---|---|---|---|
+| 1 | Must-include recall does not fall | FAIL | 0.9723 (246/253) to 0.9644 (244/253); the 0.79 point fall is allowed only with a 70% noise cut, the cut was 20% |
+| 2 | Leaks stay 0 | PASS | 0 |
+| 3 | Noise tokens per task fall by 50% | FAIL | 1166.1 to 934.3, a 19.9% cut |
+| 4 | Clean-abstain reaches 0.80 | FAIL | 1/70 = 0.0143 (95% CI 0.003-0.077) |
+| 5 | Latency guard passes, median at 5,000 records reported | PASS | guard passes; median 43.9 and 43.6 ms against the baseline's 36.3 and 35.5 ms (the unchanged code measured 34.9 and 35.3 ms in the same session) |
+| 6 | No existing scenario, expectation or held-out label changes | PASS | the diff of the scenario, world, held-out, harness and runner files is empty |
+| 7 | The full default suite passes | PASS | 1231 passed on the second full run; the first run failed the latency guard once under load (it passes alone), see `tests/eval/bench/RESULTS.md` |
+
+Reading. Three of the seven rules failed: recall fell by two records, noise tokens fell by a fifth instead of a
+half, and the retriever abstained on one empty task in seventy. The rules were not moved. Dev showed the same
+shape before the test run (noise cut 16.8%, clean-abstain 0/37), so the levers never came near rules 3 and 4;
+the remaining noise is ordinary topic words and scope matches that a lexical retriever cannot tell from
+real matches. Recall equals the baseline's on dev and is 0.79 point lower on test; the retriever never
+leaks a superseded or retracted note, and raises held-out abstention from 0.38 (6/16) to 0.75 (12/16)
+(relabelled 0.50 to 0.9375), figures the levers were tuned against. Recall latency at 5,000 records is about a
+quarter to a third higher than the baseline's. Of the levers, the tail (lever 4) was not built because the
+pre-registered rule is decided by its first condition (dev drop-recall equals the baseline's), lever 6 was
+ruled out and measured, and lever 7 was added after the dev results of levers 1-3. The semantic arm was
+measured on dev only (section 5.3 and the bench results); whether embeddings should become a default is
+left to the user, and this section does not recommend either way.

@@ -384,6 +384,14 @@ and not instructions. Every `<` inside a note is escaped as `&lt;` (after foldin
 characters), so a note cannot close the block or open a tag of its own, and terminal control
 characters are dropped.
 
+Recall drops a note whose only link to the task is a single weak word match: a common word, or
+a generic task word such as "write", "handle" or "configure". The note stays if the match is
+a rare word, is backed by the task's files (scope) or by an identifier, or if the note is
+pinned. A store with fewer than 25 notes keeps these weak matches, because showing too much
+costs little there. An empty recall is the normal answer for a task the notes do not cover. On
+the benchmark's locked test split this removed about a fifth of the noise tokens (see
+`tests/eval/bench/RESULTS.md`); it does not make every unrelated task come back empty.
+
 What an agent cannot do through the tools: delete anything (there is no delete; notes are
 retracted or superseded and kept), choose or change the store, name a file outside the
 repository (`..`, absolute paths elsewhere and symlinks that leave it are refused), set the
