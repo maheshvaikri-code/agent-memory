@@ -1,0 +1,1458 @@
+{
+ "files": {
+  "app/settings/base.py": "import os\n\nDEBUG = False\nDATABASE_URL = os.environ[\"DATABASE_URL\"]\nREDIS_URL = os.environ.get(\"REDIS_URL\", \"redis://localhost:6379/0\")\nQUEUE_REDIS_URL = os.environ.get(\"QUEUE_REDIS_URL\", \"redis://localhost:6380/0\")\nSESSION_COOKIE_AGE = 60 * 60 * 12\nRATE_LIMIT_PER_MINUTE = 120\nWEBHOOK_MAX_ATTEMPTS = 6\nATTACHMENT_MAX_BYTES = 25 * 1024 * 1024\nEXPORT_ROW_LIMIT = 200_000\n",
+  "app/models/task.py": "from django.db import models\n\n\nclass Task(models.Model):\n    title = models.CharField(max_length=300)\n    project = models.ForeignKey(\"Project\", on_delete=models.CASCADE)\n    position = models.DecimalField(max_digits=24, decimal_places=12)\n    status = models.CharField(max_length=20, default=\"todo\")\n    deleted_at = models.DateTimeField(null=True, blank=True)\n\n    objects = TenantManager()\n    all_objects = models.Manager()\n\n\ndef reorder(task, before_id=None):\n    \"\"\"Place task between its new neighbours using a midpoint position.\"\"\"\n    prev, nxt = neighbours(task.project_id, before_id)\n    task.position = (prev + nxt) / 2\n    task.save(update_fields=[\"position\"])\n\n\ndef rebalance_column(project_id, status):\n    rows = Task.objects.filter(project_id=project_id, status=status).order_by(\"position\")\n    for i, row in enumerate(rows.select_for_update(), start=1):\n        row.position = i * 1024\n        row.save(update_fields=[\"position\"])\n\n\ndef soft_delete(task):\n    task.deleted_at = now()\n    task.save(update_fields=[\"deleted_at\"])\n",
+  "app/models/project.py": "from django.db import models\n\n\nclass Project(models.Model):\n    workspace = models.ForeignKey(\"Workspace\", on_delete=models.CASCADE)\n    name = models.CharField(max_length=120)\n    archived = models.BooleanField(default=False)\n\n\nclass TenantManager(models.Manager):\n    def for_tenant(self, workspace):\n        return self.get_queryset().filter(workspace=workspace, deleted_at__isnull=True)\n",
+  "app/api/v1/tasks.py": "from rest_framework.response import Response\n\n\ndef error_response(code, message, status, request):\n    body = {\"error\": {\"code\": code, \"message\": message, \"request_id\": request.id}}\n    return Response(body, status=status)\n\n\ndef list_tasks(request, project_id):\n    qs = Task.objects.for_tenant(request.workspace).filter(project_id=project_id)\n    page = paginate_cursor(qs, request.GET.get(\"cursor\"), order=(\"-updated_at\", \"id\"))\n    return Response(TaskListSerializer(page, many=True).data)\n\n\ndef create_task(request, project_id):\n    key = request.headers.get(\"Idempotency-Key\")\n    if key and (cached := replay(key)):\n        return cached\n    return Response(save_task(request, project_id), status=201)\n",
+  "app/api/webhooks.py": "import hashlib\nimport hmac\nimport random\n\nfrom app.settings import base as settings\n\n\ndef sign_payload(secret, timestamp, body):\n    msg = f\"{timestamp}.\".encode() + body\n    return hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()\n\n\ndef next_delay(attempt):\n    cap = min(60 * 60 * 6, 30 * 2 ** attempt)\n    return random.uniform(0, cap)\n\n\ndef deliver(endpoint, event, attempt=1):\n    resp = post(endpoint.url, event.body, timeout=5)\n    if resp.ok:\n        return\n    if attempt >= settings.WEBHOOK_MAX_ATTEMPTS or resp.status == 410:\n        endpoint.disable(\"too many failures\")\n        return\n    enqueue(\"webhooks\", deliver, endpoint.id, event.id, attempt + 1, delay=next_delay(attempt))\n",
+  "app/billing/stripe_sync.py": "def handle_event(event):\n    if already_processed(event.id):\n        return\n    if event.type == \"customer.subscription.updated\":\n        apply_subscription(event.data)\n    elif event.type == \"invoice.payment_failed\":\n        start_dunning(event.data)\n    mark_processed(event.id)\n\n\ndef apply_subscription(data):\n    sub = SubscriptionState.objects.get(provider_id=data[\"id\"])\n    sub.seats = data[\"quantity\"]\n    sub.plan = data[\"plan\"]\n    sub.save()\n\n\ndef start_dunning(data):\n    schedule_retries(data[\"customer\"], attempts=3, every_days=3)\n",
+  "app/billing/plans.py": "PLANS = {\n    \"free\": {\"seats\": 5, \"storage_mb\": 500},\n    \"team\": {\"seats\": 50, \"storage_mb\": 20_000},\n    \"enterprise\": {\"seats\": 1000, \"storage_mb\": 500_000, \"sso\": True},\n}\n\n\ndef seat_limit(plan):\n    return PLANS[plan][\"seats\"]\n",
+  "app/storage/attachments.py": "import uuid\n\nfrom app.settings import base as settings\n\n\ndef presign_upload(workspace, filename, size):\n    key = f\"{workspace.id}/{today():%Y/%m}/{uuid.uuid4()}\"\n    policy = {\"content-length-range\": [1, settings.ATTACHMENT_MAX_BYTES], \"expires\": 600}\n    Attachment.objects.create(workspace=workspace, key=key, status=\"pending\")\n    return signer.presign_post(key, policy)\n\n\ndef confirm_upload(attachment_id):\n    Attachment.objects.filter(id=attachment_id).update(status=\"ready\")\n\n\ndef sweep_pending(older_than_hours=24):\n    stale = Attachment.objects.filter(status=\"pending\", created__lt=hours_ago(older_than_hours))\n    for att in stale:\n        bucket.delete(att.key)\n        att.delete()\n",
+  "app/notify/email.py": "def render_mail(user, events):\n    text = render_template(\"mail/digest.txt\", user=user, events=events)\n    html = render_template(\"mail/digest.html\", user=user, events=events)\n    return Mail(to=user.email, text=text, html=html, headers=unsubscribe_headers(user))\n\n\ndef send_digest(user):\n    if user.email_status == \"bounced\":\n        return\n    events = pending_events(user, window_minutes=15)\n    if events:\n        send(render_mail(user, events))\n",
+  "app/notify/slack.py": "def post_message(channel, text):\n    resp = client.chat_postMessage(channel=channel, text=text)\n    if resp.status == 429:\n        raise Retry(delay=int(resp.headers[\"Retry-After\"]))\n    if not resp.ok:\n        raise PermanentFailure(resp.error)\n",
+  "app/reports/export.py": "import csv\n\nfrom app.settings import base as settings\n\n\ndef escape_cell(value):\n    text = str(value)\n    if text[:1] in (\"=\", \"+\", \"-\", \"@\"):\n        return \"'\" + text\n    return text\n\n\ndef export_tasks_csv(workspace, out):\n    writer = csv.writer(out)\n    out.write(\"\\ufeff\")\n    qs = Task.all_objects.filter(project__workspace=workspace)[: settings.EXPORT_ROW_LIMIT]\n    for chunk in chunked(qs.iterator(chunk_size=2000), 2000):\n        writer.writerows([[escape_cell(c) for c in row_values(t)] for t in chunk])\n",
+  "app/search/indexer.py": "def index_task(task_id):\n    task = Task.all_objects.get(id=task_id)\n    if task.deleted_at:\n        return remove_task(task_id)\n    SearchDoc.objects.update_or_create(\n        task_id=task_id, defaults={\"tsv\": to_tsvector(\"english\", task.title + \" \" + task.description)})\n\n\ndef remove_task(task_id):\n    SearchDoc.objects.filter(task_id=task_id).delete()\n\n\ndef search_tasks(workspace, query, limit=50):\n    q = SearchQuery(query, config=\"english\")\n    return SearchDoc.objects.filter(workspace=workspace, tsv=q).order_by(\"-rank\")[:limit]\n",
+  "app/auth/sso.py": "CLOCK_SKEW_SECONDS = 120\n\n\ndef fetch_metadata(connection):\n    return http_get(connection.metadata_url).text\n\n\ndef validate_assertion(connection, assertion, now):\n    if assertion.not_before - CLOCK_SKEW_SECONDS > now:\n        raise SamlError(\"assertion not yet valid\")\n    attrs = connection.attribute_map\n    return find_or_create_user(assertion.attributes[attrs[\"email\"]], connection.workspace)\n",
+  "app/onboarding/wizard.py": "def finish_step(workspace, step, answers):\n    progress, _ = OnboardingProgress.objects.get_or_create(workspace=workspace)\n    progress.completed.append(step)\n    progress.answers.update(answers)\n    progress.save()\n\n\ndef create_sample_project(workspace):\n    project = Project.objects.create(workspace=workspace, name=\"Launch plan (sample)\")\n    for title in (\"Invite your team\", \"Drag me to Done\", \"Attach a file\"):\n        Task.objects.create(project=project, title=title, position=next_position(project))\n    return project\n",
+  "app/jobs/queue.py": "import redis\n\nfrom app.settings import base as settings\n\nQUEUES = (\"default\", \"webhooks\", \"exports\", \"search\")\nconn = redis.Redis.from_url(settings.QUEUE_REDIS_URL)\n\n\ndef enqueue(queue, func, *args, delay=0, max_retries=3):\n    assert queue in QUEUES\n    job = {\"func\": func.__name__, \"args\": args, \"retries_left\": max_retries}\n    conn.zadd(f\"q:{queue}\", {dump(job): now() + delay})\n",
+  "app/cache/keys.py": "CACHE_SCHEMA_VERSION = 7\n\n\ndef workspace_key(workspace_id, name):\n    return f\"v{CACHE_SCHEMA_VERSION}:ws{workspace_id}:{name}\"\n",
+  "app/importers/trello.py": "def parse_due(raw):\n    if raw is None:\n        return None\n    return datetime.fromisoformat(raw.replace(\"Z\", \"+00:00\"))\n\n\ndef import_board(run, board_json):\n    project = Project.objects.create(workspace=run.workspace, name=board_json[\"name\"])\n    for card in board_json[\"cards\"]:\n        try:\n            Task.objects.create(project=project, title=card[\"name\"], due=parse_due(card[\"due\"]),\n                                external_id=card[\"id\"], source=\"trello\")\n        except ValueError as exc:\n            run.errors.append(f\"card {card['id']}: {exc}\")\n    run.cursor = board_json[\"id\"]\n    run.save()\n",
+  "app/admin/impersonate.py": "def start_impersonation(agent, target_user, ticket_id, write_mode=False):\n    if write_mode and not ticket_id:\n        raise PermissionDenied(\"write mode needs a ticket id\")\n    expires = now() + timedelta(minutes=30 if write_mode else 240)\n    AuditEvent.objects.create(actor=agent, action=\"impersonate\", target=target_user, ticket=ticket_id)\n    return Session.objects.create(user=target_user, read_only=not write_mode, expires=expires)\n",
+  "frontend/src/components/Board.tsx": "import { useMutation, useQueryClient } from \"@tanstack/react-query\";\nimport { apiFetch } from \"../api/client\";\n\nexport function Board({ projectId, columns }) {\n  const qc = useQueryClient();\n  const move = useMutation({\n    mutationFn: (m) => apiFetch(`/tasks/${m.id}/move`, { method: \"POST\", body: m }),\n    onError: () => qc.invalidateQueries([\"board\", projectId]),\n  });\n  const onDragEnd = (result) => move.mutate({ id: result.draggableId, before: result.beforeId });\n  return <DragLayer columns={columns} onDragEnd={onDragEnd} />;\n}\n",
+  "frontend/src/api/client.ts": "export async function apiFetch(path: string, init: RequestInit = {}) {\n  const csrf = document.cookie.match(/csrftoken=([^;]+)/)?.[1] ?? \"\";\n  const res = await fetch(`/api/v1${path}`, { ...init, headers: { \"X-CSRFToken\": csrf } });\n  if (!res.ok) throw new ApiError((await res.json()).error);\n  return res.json();\n}\n\nexport const searchTasks = debounce((q: string) => apiFetch(`/search?q=${encodeURIComponent(q)}`), 250);\n",
+  "migrations/0042_task_position.py": "from django.db import migrations, models\n\n\nclass Migration(migrations.Migration):\n    atomic = False\n    dependencies = [(\"tasks\", \"0041_task_deleted_at\")]\n    operations = [\n        migrations.AddField(\"task\", \"position\", models.DecimalField(max_digits=24, decimal_places=12, default=0)),\n        migrations.RunSQL(\"CREATE INDEX CONCURRENTLY task_position_idx ON tasks_task (project_id, position)\"),\n    ]\n",
+  "tests/conftest.py": "import pytest\n\n\n@pytest.fixture\ndef db_workspace(db):\n    ws = WorkspaceFactory(plan=\"team\")\n    ProjectFactory(workspace=ws)\n    return ws\n"
+ },
+ "records": [
+  {
+   "key": "pin-no-secrets-in-logs",
+   "kind": "convention",
+   "pinned": true,
+   "fields": {
+    "category": "security",
+    "rule": "never write tokens, API keys, SSO assertions or customer email bodies to the log; pass the value through redact() first",
+    "enforced_by": "ruff plugin and review",
+    "exceptions": "",
+    "applies_to": [
+     "app/**"
+    ]
+   }
+  },
+  {
+   "key": "pin-tenant-scope",
+   "kind": "convention",
+   "pinned": true,
+   "fields": {
+    "category": "security",
+    "rule": "every queryset on a customer-owned model starts from for_tenant(workspace); a bare .filter() leaked another workspace's cards in INC-187",
+    "enforced_by": "review",
+    "exceptions": "admin tooling under app/admin that records an AuditEvent",
+    "applies_to": [
+     "app/**"
+    ]
+   }
+  },
+  {
+   "key": "task-position-fraction",
+   "kind": "decision",
+   "fields": {
+    "title": "Store card order as a fractional position, not an integer index",
+    "context": "INC-231: dragging one card in a 2,000-card column rewrote every row and held the table lock for 9 seconds; a decimal midpoint between the two neighbours touches exactly one row"
+   },
+   "scope": [
+    "app/models/**",
+    "frontend/src/components/Board.tsx"
+   ],
+   "anchors": [
+    [
+     "app/models/task.py",
+     "reorder"
+    ]
+   ]
+  },
+  {
+   "key": "position-collision",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "position_precision_exhaustion",
+    "signature": "after about 50 midpoint inserts into the same gap the decimal positions collapse to equal values and cards flip order on reload",
+    "modules_affected": [
+     "app/models/task.py"
+    ]
+   },
+   "anchors": [
+    [
+     "app/models/task.py",
+     "rebalance_column"
+    ]
+   ]
+  },
+  {
+   "key": "position-rebalance-fix",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "when the gap between neighbours drops under 1e-6 call rebalance_column() inside the same transaction to respace the column at steps of 1024",
+    "caveats": "take select_for_update on the column rows and do it inline; queuing the rebalance lets readers see the old order"
+   },
+   "scope": [
+    "app/models/**"
+   ],
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "position-collision"
+    }
+   ]
+  },
+  {
+   "key": "board-hard-delete-alt",
+   "kind": "alternative",
+   "fields": {
+    "option": "Hard delete tasks when a user removes a card",
+    "rejected_because": "customers asked to undo within 30 days and comments plus attachments hang off the row, so we keep deleted_at and filter it in the manager"
+   },
+   "scope": [
+    "app/models/**"
+   ]
+  },
+  {
+   "key": "softdelete-manager-quirk",
+   "kind": "quirk",
+   "fields": {
+    "description": "Task.objects hides soft-deleted rows and Task.all_objects does not, so any job that must see trashed cards (export, search indexer, purge) has to say all_objects explicitly or it silently skips them"
+   },
+   "scope": [
+    "app/models/**",
+    "app/search/**",
+    "app/reports/**"
+   ],
+   "anchors": [
+    [
+     "app/models/task.py",
+     "soft_delete"
+    ]
+   ]
+  },
+  {
+   "key": "task-model-module",
+   "kind": "module",
+   "fields": {
+    "path": "app/models/task.py",
+    "purpose": "Task model with fractional ordering, soft delete and the status columns of a board"
+   }
+  },
+  {
+   "key": "board-load-hot-path",
+   "kind": "hot_path",
+   "fields": {
+    "name": "board_load",
+    "frequency": "every board open, about 40 requests a second at the Monday peak"
+   },
+   "scope": [
+    "app/api/v1/tasks.py"
+   ],
+   "anchors": [
+    [
+     "app/api/v1/tasks.py",
+     "list_tasks"
+    ]
+   ]
+  },
+  {
+   "key": "board-load-budget",
+   "kind": "performance_constraint",
+   "fields": {
+    "operation": "GET /api/v1/projects/{id}/tasks",
+    "constraint": "p95 under 300 ms for up to 2,000 cards, comments never serialized in the list",
+    "reason": "enterprise customers keep their archive column open, so the list view paginates by cursor per column"
+   },
+   "scope": [
+    "app/api/v1/**"
+   ]
+  },
+  {
+   "key": "position-lock-wrong",
+   "kind": "bug_pattern",
+   "retracted": "it was the integer rewrite holding a lock (INC-231), not a Postgres deadlock",
+   "fields": {
+    "name": "reorder_deadlock",
+    "signature": "two users dragging cards in the same column deadlock each other on row locks",
+    "modules_affected": [
+     "app/models/task.py"
+    ]
+   }
+  },
+  {
+   "key": "rate-limit-per-ip",
+   "kind": "decision",
+   "fields": {
+    "title": "Rate limit the public API per client IP at 60 requests a minute",
+    "context": "first guess at abuse protection; customers behind one office NAT shared a single bucket"
+   },
+   "scope": [
+    "app/api/**"
+   ]
+  },
+  {
+   "key": "rate-limit-per-token",
+   "kind": "decision",
+   "supersedes": "rate-limit-per-ip",
+   "fields": {
+    "title": "Rate limit the public API per token at 120 requests a minute",
+    "context": "a customer's sync script hit 4,000 requests a minute and starved the default queue; the limit lives in settings and is echoed in X-RateLimit headers"
+   },
+   "scope": [
+    "app/api/**"
+   ],
+   "anchors": [
+    [
+     "app/settings/base.py",
+     "RATE_LIMIT_PER_MINUTE"
+    ]
+   ]
+  },
+  {
+   "key": "api-error-shape",
+   "kind": "convention",
+   "fields": {
+    "category": "api",
+    "rule": "error responses are {error: {code, message, request_id}} with the HTTP status carrying the class; never return 200 with an error body",
+    "enforced_by": "contract test",
+    "exceptions": "legacy /api/v0 export endpoints",
+    "applies_to": [
+     "app/api/**"
+    ]
+   },
+   "anchors": [
+    [
+     "app/api/v1/tasks.py",
+     "error_response"
+    ]
+   ]
+  },
+  {
+   "key": "cursor-pagination",
+   "kind": "decision",
+   "fields": {
+    "title": "Cursor pagination on every list endpoint",
+    "context": "offset paging made page 400 of the task list scan 40,000 rows and results shifted while cards moved; cursors on (updated_at, id) stay stable"
+   },
+   "scope": [
+    "app/api/**"
+   ]
+  },
+  {
+   "key": "idempotency-key",
+   "kind": "project_pattern",
+   "fields": {
+    "name": "idempotency_key",
+    "template": "POST create endpoints accept an Idempotency-Key header and replay the stored response for 24 hours from Redis",
+    "usage_context": "any create endpoint an integration might retry after a timeout"
+   },
+   "scope": [
+    "app/api/**"
+   ],
+   "anchors": [
+    [
+     "app/api/v1/tasks.py",
+     "create_task"
+    ]
+   ]
+  },
+  {
+   "key": "openapi-drift",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "openapi_schema_drift",
+    "signature": "serializer changed but docs/openapi.yaml was not regenerated, so the published API reference lies about field names",
+    "modules_affected": [
+     "app/api/v1/**"
+    ]
+   }
+  },
+  {
+   "key": "openapi-regenerate",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "run make openapi and commit docs/openapi.yaml; CI diffs the generated schema against the committed one",
+    "caveats": "the generator needs DJANGO_SETTINGS_MODULE=app.settings.test or it tries to reach the real database"
+   },
+   "scope": [
+    "app/api/v1/**"
+   ],
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "openapi-drift"
+    }
+   ]
+  },
+  {
+   "key": "webhook-retry-forever",
+   "kind": "decision",
+   "fields": {
+    "title": "Retry failed webhook deliveries until the receiver accepts",
+    "context": "simplest thing that guarantees delivery; no cap and a fixed 30 second delay"
+   },
+   "scope": [
+    "app/api/webhooks.py"
+   ]
+  },
+  {
+   "key": "webhook-retry-cap",
+   "kind": "decision",
+   "supersedes": "webhook-retry-forever",
+   "fields": {
+    "title": "Webhook delivery retries at most 6 times over 24 hours, then the endpoint is disabled",
+    "context": "INC-212: one customer's endpoint returned 500 for a weekend and got 40,000 retries that backed up the shared queue; backoff is exponential with full jitter and the admins get an email when we disable it"
+   },
+   "scope": [
+    "app/api/webhooks.py",
+    "app/jobs/**"
+   ],
+   "anchors": [
+    [
+     "app/api/webhooks.py",
+     "deliver"
+    ],
+    [
+     "app/settings/base.py",
+     "WEBHOOK_MAX_ATTEMPTS"
+    ]
+   ]
+  },
+  {
+   "key": "retry-storm",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "webhook_retry_storm",
+    "signature": "a failing receiver retried without a cap floods the queue and delays unrelated notifications",
+    "modules_affected": [
+     "app/api/webhooks.py",
+     "app/jobs/queue.py"
+    ]
+   },
+   "anchors": [
+    [
+     "app/api/webhooks.py",
+     "next_delay"
+    ]
+   ]
+  },
+  {
+   "key": "retry-storm-fix",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "stop at WEBHOOK_MAX_ATTEMPTS and call endpoint.disable() on the last failure; treat 410 Gone as an immediate disable",
+    "caveats": "send the disabled notice by email, never as another webhook to the same dead endpoint"
+   },
+   "scope": [
+    "app/api/webhooks.py"
+   ],
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "retry-storm"
+    }
+   ]
+  },
+  {
+   "key": "webhook-signing",
+   "kind": "convention",
+   "fields": {
+    "category": "security",
+    "rule": "sign every outgoing webhook with HMAC-SHA256 over timestamp.body in X-Taskboard-Signature; receivers must reject timestamps older than 5 minutes",
+    "enforced_by": "unit test",
+    "exceptions": "",
+    "applies_to": [
+     "app/api/webhooks.py"
+    ]
+   },
+   "anchors": [
+    [
+     "app/api/webhooks.py",
+     "sign_payload"
+    ]
+   ]
+  },
+  {
+   "key": "webhook-timeout-budget",
+   "kind": "performance_constraint",
+   "fields": {
+    "operation": "webhook delivery",
+    "constraint": "5 second connect plus read timeout; a timeout counts as a failed attempt",
+    "reason": "INC-244: slow receivers pinned all 8 workers of the webhooks queue for an hour"
+   },
+   "scope": [
+    "app/api/webhooks.py"
+   ],
+   "anchors": [
+    [
+     "app/api/webhooks.py",
+     "deliver"
+    ]
+   ]
+  },
+  {
+   "key": "webhook-order-quirk",
+   "kind": "quirk",
+   "fields": {
+    "description": "webhook events are not delivered in order across retries, so a task.updated can arrive before the task.created it follows; consumers must order by the sequence number in the payload"
+   },
+   "scope": [
+    "app/api/webhooks.py"
+   ]
+  },
+  {
+   "key": "webhook-fake-receiver",
+   "kind": "test_convention",
+   "fields": {
+    "category": "webhooks",
+    "pattern": "use the fake_receiver fixture and assert on the signature header and attempt count; tests must never post to a real URL"
+   },
+   "scope": [
+    "tests/**"
+   ]
+  },
+  {
+   "key": "webhook-retry-cases",
+   "kind": "required_test_case",
+   "fields": {
+    "for_pattern": "webhook retry",
+    "cases_required": "attempt cap disables the endpoint, jitter stays inside the bounds, 410 disables immediately, a timeout counts as a failure"
+   },
+   "scope": [
+    "tests/**",
+    "app/api/webhooks.py"
+   ]
+  },
+  {
+   "key": "billing-mirror-state",
+   "kind": "decision",
+   "fields": {
+    "title": "Mirror the billing provider's subscription state in our own table, driven by webhooks",
+    "context": "asking the provider for plan limits on every request added 120 ms and tripped their rate limit; SubscriptionState is the source for entitlements and a nightly job reconciles it"
+   },
+   "scope": [
+    "app/billing/**"
+   ]
+  },
+  {
+   "key": "provider-event-order",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "out_of_order_provider_events",
+    "signature": "billing events arrive out of order so a stale event overwrites newer subscription state",
+    "modules_affected": [
+     "app/billing/**"
+    ]
+   },
+   "anchors": [
+    [
+     "app/billing/stripe_sync.py",
+     "handle_event"
+    ]
+   ]
+  },
+  {
+   "key": "provider-event-fix",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "keep last_event_ts on SubscriptionState and drop any event created before it",
+    "caveats": "provider timestamps are whole seconds, so compare with <= and use the event id as a tiebreak"
+   },
+   "scope": [
+    "app/billing/**"
+   ],
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "provider-event-order"
+    }
+   ]
+  },
+  {
+   "key": "seat-count-bug",
+   "kind": "bug",
+   "fields": {
+    "title": "Seat count briefly wrong after a plan change",
+    "root_cause": "an invoice event landed before customer.subscription.updated and wrote the old quantity over the new one (INC-203)",
+    "module": "app/billing/stripe_sync.py"
+   },
+   "anchors": [
+    [
+     "app/billing/stripe_sync.py",
+     "apply_subscription"
+    ]
+   ],
+   "links": [
+    {
+     "rel": "INSTANCE_OF",
+     "to": "provider-event-order"
+    }
+   ]
+  },
+  {
+   "key": "money-in-cents",
+   "kind": "convention",
+   "fields": {
+    "category": "billing",
+    "rule": "money is an integer count of cents plus an ISO currency code; never a float and never a formatted string",
+    "enforced_by": "mypy and review",
+    "exceptions": "display formatting in frontend/src/api/client.ts",
+    "applies_to": [
+     "app/billing/**"
+    ]
+   }
+  },
+  {
+   "key": "plans-module",
+   "kind": "module",
+   "fields": {
+    "path": "app/billing/plans.py",
+    "purpose": "plan catalogue: seat limits, storage quota in MB and per-plan feature flags such as sso"
+   }
+  },
+  {
+   "key": "dunning-hardcoded",
+   "kind": "tech_debt",
+   "fields": {
+    "location": "app/billing/stripe_sync.py",
+    "description": "dunning retries are hard coded to 3 attempts, 3 days apart; they should come from the plan catalogue and differ for enterprise"
+   },
+   "anchors": [
+    [
+     "app/billing/stripe_sync.py",
+     "start_dunning"
+    ]
+   ]
+  },
+  {
+   "key": "annual-seat-question",
+   "kind": "open_question",
+   "fields": {
+    "question": "Are mid-term seat additions on annual plans prorated immediately or billed at renewal?"
+   },
+   "scope": [
+    "app/billing/**"
+   ]
+  },
+  {
+   "key": "billing-split-handlers",
+   "kind": "refactoring_attempt",
+   "fields": {
+    "outcome": "abandoned",
+    "approach": "one handler module per provider event type",
+    "reason_failed": "the handlers share the idempotency check and the ordering guard, and the two copies drifted within a week"
+   },
+   "scope": [
+    "app/billing/**"
+   ]
+  },
+  {
+   "key": "attachments-presigned",
+   "kind": "decision",
+   "fields": {
+    "title": "Attachments go straight from the browser to object storage with presigned uploads",
+    "context": "app servers never proxy 25 MB files; the key is workspace_id/yyyy/mm/uuid so a bucket listing can be scoped per customer"
+   },
+   "scope": [
+    "app/storage/**"
+   ],
+   "anchors": [
+    [
+     "app/storage/attachments.py",
+     "presign_upload"
+    ]
+   ]
+  },
+  {
+   "key": "attachment-size-cap",
+   "kind": "performance_constraint",
+   "fields": {
+    "operation": "attachment upload",
+    "constraint": "25 MB hard cap and a 10 minute presign expiry",
+    "reason": "the cap is a content-length-range in the signed policy, so the bucket rejects oversize files before our app sees them"
+   },
+   "scope": [
+    "app/storage/**"
+   ],
+   "anchors": [
+    [
+     "app/settings/base.py",
+     "ATTACHMENT_MAX_BYTES"
+    ]
+   ]
+  },
+  {
+   "key": "orphan-uploads",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "orphaned_uploads",
+    "signature": "row created before the browser finished the upload leaves attachments with no object, and abandoned objects with no row",
+    "modules_affected": [
+     "app/storage/attachments.py"
+    ]
+   },
+   "anchors": [
+    [
+     "app/storage/attachments.py",
+     "sweep_pending"
+    ]
+   ]
+  },
+  {
+   "key": "orphan-sweep",
+   "kind": "workaround",
+   "fields": {
+    "solution": "nightly sweep deletes pending attachments older than 24 hours and lists bucket objects with no row.",
+    "description": "temporary until uploads confirm through a bucket event notification (TB-612)"
+   },
+   "scope": [
+    "app/storage/**"
+   ],
+   "links": [
+    {
+     "rel": "WORKAROUND_FOR",
+     "to": "orphan-uploads"
+    }
+   ]
+  },
+  {
+   "key": "markdown-documents",
+   "kind": "decision",
+   "fields": {
+    "title": "Task descriptions and wiki documents are stored as Markdown, never rich-text HTML",
+    "context": "editor HTML broke the CSV export and the email digest and carried stored XSS; importers convert Trello HTML on the way in"
+   },
+   "scope": [
+    "app/models/**",
+    "app/importers/**",
+    "app/notify/**"
+   ]
+  },
+  {
+   "key": "email-per-event",
+   "kind": "decision",
+   "fields": {
+    "title": "Send one email per notification as soon as it happens",
+    "context": "first version of notifications, no batching and no per-user quiet hours"
+   },
+   "scope": [
+    "app/notify/**"
+   ]
+  },
+  {
+   "key": "email-digest-15min",
+   "kind": "decision",
+   "supersedes": "email-per-event",
+   "fields": {
+    "title": "Batch email notifications into a digest every 15 minutes per user; Slack stays real time",
+    "context": "a busy board sent 60 mails an hour per user and the spam complaint rate reached 0.4%; the digest runner skips bounced addresses"
+   },
+   "scope": [
+    "app/notify/**"
+   ],
+   "anchors": [
+    [
+     "app/notify/email.py",
+     "send_digest"
+    ]
+   ]
+  },
+  {
+   "key": "email-text-and-html",
+   "kind": "convention",
+   "fields": {
+    "category": "email",
+    "rule": "every outbound mail renders a text part and an html part from the same template and carries a one-click unsubscribe header",
+    "enforced_by": "test_email_templates",
+    "exceptions": "password reset mail has no unsubscribe link",
+    "applies_to": [
+     "app/notify/**"
+    ]
+   },
+   "anchors": [
+    [
+     "app/notify/email.py",
+     "render_mail"
+    ]
+   ]
+  },
+  {
+   "key": "slack-429-dropped",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "slack_rate_limit_dropped",
+    "signature": "a 429 from the chat API handled as a permanent failure, so the message vanishes with no log line",
+    "modules_affected": [
+     "app/notify/slack.py"
+    ]
+   },
+   "anchors": [
+    [
+     "app/notify/slack.py",
+     "post_message"
+    ]
+   ]
+  },
+  {
+   "key": "slack-429-requeue",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "raise Retry with the Retry-After seconds so the job goes back on the default queue after that delay",
+    "caveats": "cap the retries at 5; a revoked token also returns errors and would loop"
+   },
+   "scope": [
+    "app/notify/**"
+   ],
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "slack-429-dropped"
+    }
+   ]
+  },
+  {
+   "key": "slack-bulk-update-bug",
+   "kind": "bug",
+   "fields": {
+    "title": "Slack notifications dropped during bulk updates",
+    "root_cause": "moving 300 cards at once posted 300 messages in a few seconds, the API answered 429 and the sender gave up (INC-226)",
+    "module": "app/notify/slack.py"
+   },
+   "anchors": [
+    [
+     "app/notify/slack.py",
+     "post_message"
+    ]
+   ],
+   "links": [
+    {
+     "rel": "INSTANCE_OF",
+     "to": "slack-429-dropped"
+    }
+   ]
+  },
+  {
+   "key": "slack-free-only",
+   "kind": "quirk",
+   "retracted": "reproduced on a paid Slack workspace as well, so the plan tier is not the cause",
+   "fields": {
+    "description": "Slack rate limit errors only happen on free Slack workspaces, so we can ignore them for paying customers"
+   },
+   "scope": [
+    "app/notify/**"
+   ]
+  },
+  {
+   "key": "bounce-handling",
+   "kind": "idiom",
+   "fields": {
+    "pattern": "handling a bounced address",
+    "preferred_form": "set email_status='bounced' on the contact and skip it in the digest runner",
+    "avoid": "deleting the address or retrying the send, which hurts our sender reputation"
+   },
+   "scope": [
+    "app/notify/**"
+   ]
+  },
+  {
+   "key": "notifier-abstraction",
+   "kind": "refactoring_attempt",
+   "fields": {
+    "outcome": "reverted",
+    "approach": "one generic Notifier class with a plugin per channel",
+    "reason_failed": "email needs batching and Slack needs real time, so the base class grew a flag per method and nobody could follow it"
+   },
+   "scope": [
+    "app/notify/**"
+   ]
+  },
+  {
+   "key": "csv-export-inline",
+   "kind": "decision",
+   "fields": {
+    "title": "CSV export is generated inside the web request",
+    "context": "simple first cut, fine for the first customers with a few thousand cards"
+   },
+   "scope": [
+    "app/reports/**"
+   ]
+  },
+  {
+   "key": "csv-export-background",
+   "kind": "decision",
+   "supersedes": "csv-export-inline",
+   "fields": {
+    "title": "CSV export runs as a background job on the exports queue and emails a link",
+    "context": "INC-198: a 150,000 row export hit the 30 second timeout of the web process; the file streams to object storage and the link expires after 7 days"
+   },
+   "scope": [
+    "app/reports/**",
+    "app/jobs/**"
+   ],
+   "anchors": [
+    [
+     "app/reports/export.py",
+     "export_tasks_csv"
+    ]
+   ]
+  },
+  {
+   "key": "csv-formula-injection",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "csv_formula_injection",
+    "signature": "task titles beginning with = + - or @ run as formulas when the export is opened in Excel",
+    "modules_affected": [
+     "app/reports/export.py"
+    ]
+   },
+   "anchors": [
+    [
+     "app/reports/export.py",
+     "escape_cell"
+    ]
+   ]
+  },
+  {
+   "key": "csv-escape-fix",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "prefix risky cells with a single quote in escape_cell() before the writer sees them",
+    "caveats": "apply it to header cells built from custom field names too, but never to numeric columns"
+   },
+   "scope": [
+    "app/reports/**"
+   ],
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "csv-formula-injection"
+    }
+   ]
+  },
+  {
+   "key": "csv-memory-budget",
+   "kind": "performance_constraint",
+   "fields": {
+    "operation": "csv export",
+    "constraint": "stream rows in chunks of 2,000 through iterator(); never list() the queryset",
+    "reason": "the 200,000 row export used 1.8 GB and the exports pod was OOM killed twice in March"
+   },
+   "scope": [
+    "app/reports/**"
+   ],
+   "anchors": [
+    [
+     "app/reports/export.py",
+     "export_tasks_csv"
+    ]
+   ]
+  },
+  {
+   "key": "csv-bom-quirk",
+   "kind": "quirk",
+   "fields": {
+    "description": "Excel opens a UTF-8 CSV as latin-1 unless it starts with a byte order mark, so exports write the BOM and anything that reads our CSV back must strip it"
+   },
+   "scope": [
+    "app/reports/**",
+    "app/importers/**"
+   ]
+  },
+  {
+   "key": "chunked-iter-snippet",
+   "kind": "snippet",
+   "fields": {
+    "name": "chunked_iter",
+    "code": "for chunk in chunked(qs.iterator(chunk_size=2000), 2000): writer.writerows(chunk)",
+    "usage_context": "any report or export that touches more than 10,000 rows"
+   },
+   "scope": [
+    "app/reports/**"
+   ]
+  },
+  {
+   "key": "export-row-cap",
+   "kind": "session_decision",
+   "fields": {
+    "decision": "cap exports at EXPORT_ROW_LIMIT (200,000 rows) and ask the user for a date filter above it",
+    "rationale": "mail providers reject links to files over about 40 MB and support kept asking what happens at a million rows"
+   },
+   "scope": [
+    "app/reports/**"
+   ],
+   "anchors": [
+    [
+     "app/settings/base.py",
+     "EXPORT_ROW_LIMIT"
+    ]
+   ]
+  },
+  {
+   "key": "reporting-expertise",
+   "kind": "expertise_area",
+   "fields": {
+    "domain": "reporting and CSV export",
+    "depth": "deep: wrote the rollup tables and the CSV writer",
+    "modules": [
+     "app/reports/**"
+    ]
+   }
+  },
+  {
+   "key": "search-postgres-fts",
+   "kind": "decision",
+   "fields": {
+    "title": "Task search uses Postgres full text with a GIN index, not a separate search cluster",
+    "context": "the largest workspace has under 3 million tasks plus wiki document bodies and search appears in 6% of sessions; a second store would add a sync pipeline and one more on-call surface"
+   },
+   "scope": [
+    "app/search/**"
+   ],
+   "anchors": [
+    [
+     "app/search/indexer.py",
+     "search_tasks"
+    ]
+   ]
+  },
+  {
+   "key": "search-elastic-alt",
+   "kind": "alternative",
+   "fields": {
+    "option": "Dedicated Elasticsearch cluster for task search",
+    "rejected_because": "two-store consistency and the operating cost for a feature this small; revisit past 20 million documents"
+   },
+   "scope": [
+    "app/search/**"
+   ]
+  },
+  {
+   "key": "nightly-reindex",
+   "kind": "project_pattern",
+   "fields": {
+    "name": "nightly_reindex",
+    "template": "a cron job at 03:00 rebuilds the whole tsvector column for every workspace",
+    "usage_context": "keeping search results roughly fresh"
+   },
+   "scope": [
+    "app/search/**"
+   ]
+  },
+  {
+   "key": "reindex-on-save",
+   "kind": "project_pattern",
+   "supersedes": "nightly-reindex",
+   "fields": {
+    "name": "reindex_on_save",
+    "template": "post_save enqueues index_task(task_id) on the search queue and soft deletes enqueue remove_task",
+    "usage_context": "keeps the tsvector fresh within seconds without slowing the request that saved the card"
+   },
+   "scope": [
+    "app/search/**"
+   ],
+   "anchors": [
+    [
+     "app/search/indexer.py",
+     "index_task"
+    ]
+   ]
+  },
+  {
+   "key": "trashed-still-searchable",
+   "kind": "bug",
+   "fields": {
+    "title": "Trashed tasks still showed up in search",
+    "root_cause": "the signal handler loaded the card through Task.objects, got DoesNotExist for deleted rows and the handler swallowed the error, so the index row stayed",
+    "module": "app/search/indexer.py"
+   },
+   "anchors": [
+    [
+     "app/search/indexer.py",
+     "index_task"
+    ]
+   ]
+  },
+  {
+   "key": "english-stemming-quirk",
+   "kind": "quirk",
+   "fields": {
+    "description": "the 'simple' text search config does not stem, so 'running' never matches 'run'; titles use 'english' and ids or emails use 'simple'"
+   },
+   "scope": [
+    "app/search/**"
+   ]
+  },
+  {
+   "key": "search-latency-budget",
+   "kind": "performance_constraint",
+   "fields": {
+    "operation": "task search",
+    "constraint": "p95 under 150 ms; ts_rank is computed only for the top 200 matches",
+    "reason": "ranking the whole result set took 2 seconds in the biggest workspace"
+   },
+   "scope": [
+    "app/search/**"
+   ]
+  },
+  {
+   "key": "comment-index-question",
+   "kind": "open_question",
+   "fields": {
+    "question": "Should comment text be indexed for search, or only titles and descriptions?"
+   },
+   "scope": [
+    "app/search/**"
+   ]
+  },
+  {
+   "key": "reindex-backfill",
+   "kind": "partial_work",
+   "fields": {
+    "work_type": "reindex backfill",
+    "location": "app/search/indexer.py",
+    "state": "management command written and tried on staging; the production run is not scheduled yet, resume with --since 2026-09-01"
+   }
+  },
+  {
+   "key": "search-index-cases",
+   "kind": "required_test_case",
+   "fields": {
+    "for_pattern": "search indexing",
+    "cases_required": "trashed tasks leave the index, a moved task keeps its id, non-ASCII titles match, one workspace never sees another workspace's hits"
+   },
+   "scope": [
+    "tests/**",
+    "app/search/**"
+   ]
+  },
+  {
+   "key": "search-as-you-type",
+   "kind": "hot_path",
+   "fields": {
+    "name": "search_as_you_type",
+    "frequency": "3 to 6 calls per query, debounced to 250 ms in the client"
+   },
+   "scope": [
+    "frontend/src/**"
+   ],
+   "anchors": [
+    [
+     "frontend/src/api/client.ts",
+     "searchTasks"
+    ]
+   ]
+  },
+  {
+   "key": "saml-enterprise-only",
+   "kind": "decision",
+   "fields": {
+    "title": "SSO is SAML for Enterprise plans with just-in-time user provisioning",
+    "context": "two customers asked for OIDC but SAML covers Okta and Azure AD, and provisioning on first login removes the invite step"
+   },
+   "scope": [
+    "app/auth/**"
+   ]
+  },
+  {
+   "key": "saml-clock-skew",
+   "kind": "bug",
+   "fields": {
+    "title": "SAML logins rejected as assertion not yet valid",
+    "root_cause": "app servers drifted 40 seconds from the identity provider; validate_assertion now allows 120 seconds of skew (INC-251)",
+    "module": "app/auth/sso.py"
+   },
+   "anchors": [
+    [
+     "app/auth/sso.py",
+     "validate_assertion"
+    ]
+   ]
+  },
+  {
+   "key": "session-cookie-rule",
+   "kind": "convention",
+   "fields": {
+    "category": "auth",
+    "rule": "session cookies are HttpOnly and SameSite=Lax and live 12 hours; an SSO workspace may shorten that but never extend it",
+    "enforced_by": "settings test",
+    "exceptions": "",
+    "applies_to": [
+     "app/auth/**",
+     "app/settings/**"
+    ]
+   },
+   "anchors": [
+    [
+     "app/settings/base.py",
+     "SESSION_COOKIE_AGE"
+    ]
+   ]
+  },
+  {
+   "key": "azure-attribute-quirk",
+   "kind": "quirk",
+   "fields": {
+    "description": "Azure AD sends the email claim under a different attribute name than Okta, so the mapping lives in SsoConnection.attribute_map and must not be hard coded"
+   },
+   "scope": [
+    "app/auth/**"
+   ]
+  },
+  {
+   "key": "sso-metadata-refetch",
+   "kind": "tech_debt",
+   "fields": {
+    "location": "app/auth/sso.py",
+    "description": "identity provider metadata is downloaded on every login instead of cached until its validUntil"
+   },
+   "anchors": [
+    [
+     "app/auth/sso.py",
+     "fetch_metadata"
+    ]
+   ]
+  },
+  {
+   "key": "sample-project",
+   "kind": "decision",
+   "fields": {
+    "title": "The onboarding wizard creates a sample project in the same transaction as the workspace",
+    "context": "empty boards had 31% day-1 churn; the sample project is removed with one click and its cards are tagged so they never reach reports"
+   },
+   "scope": [
+    "app/onboarding/**"
+   ],
+   "anchors": [
+    [
+     "app/onboarding/wizard.py",
+     "create_sample_project"
+    ]
+   ]
+  },
+  {
+   "key": "wizard-refresh-bug",
+   "kind": "bug",
+   "fields": {
+    "title": "Wizard started over after a browser refresh",
+    "root_cause": "step state lived only in React state; finish_step now persists OnboardingProgress after every step",
+    "module": "app/onboarding/wizard.py"
+   },
+   "anchors": [
+    [
+     "app/onboarding/wizard.py",
+     "finish_step"
+    ]
+   ]
+  },
+  {
+   "key": "named-queues",
+   "kind": "decision",
+   "fields": {
+    "title": "Separate Redis queues named default, webhooks, exports and search, each with its own worker pool",
+    "context": "INC-205: one shared queue let a slow export delay password reset mail by 40 minutes"
+   },
+   "scope": [
+    "app/jobs/**"
+   ],
+   "anchors": [
+    [
+     "app/jobs/queue.py",
+     "QUEUES"
+    ]
+   ]
+  },
+  {
+   "key": "job-idempotent",
+   "kind": "convention",
+   "fields": {
+    "category": "jobs",
+    "rule": "every job is idempotent, declares max_retries and writes its job id into each log line so a retry can be traced",
+    "enforced_by": "review",
+    "exceptions": "",
+    "applies_to": [
+     "app/jobs/**"
+    ]
+   }
+  },
+  {
+   "key": "cache-key-builder",
+   "kind": "convention",
+   "fields": {
+    "category": "cache",
+    "rule": "cache keys come from cache/keys.py and include the workspace id and the schema version prefix",
+    "enforced_by": "review",
+    "exceptions": "",
+    "applies_to": [
+     "app/cache/**",
+     "app/billing/**"
+    ]
+   },
+   "anchors": [
+    [
+     "app/cache/keys.py",
+     "workspace_key"
+    ]
+   ]
+  },
+  {
+   "key": "cache-shared-plan",
+   "kind": "bug",
+   "fields": {
+    "title": "Plan limits cached across workspaces",
+    "root_cause": "the cache key was built from the plan name only, so two workspaces on Team shared an entry and the first upgrade changed both (INC-219)",
+    "module": "app/cache/keys.py"
+   },
+   "anchors": [
+    [
+     "app/cache/keys.py",
+     "workspace_key"
+    ]
+   ]
+  },
+  {
+   "key": "stale-cache-shape",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "stale_cache_after_deploy",
+    "signature": "a deploy changes the shape of a cached object and old entries raise on read until they expire",
+    "modules_affected": [
+     "app/cache/**"
+    ]
+   }
+  },
+  {
+   "key": "cache-version-bump",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "bump CACHE_SCHEMA_VERSION in cache/keys.py whenever a cached serializer changes",
+    "caveats": "old keys age out by TTL; never flush the whole Redis database in production"
+   },
+   "scope": [
+    "app/cache/**"
+   ],
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "stale-cache-shape"
+    }
+   ]
+  },
+  {
+   "key": "redis-eviction-quirk",
+   "kind": "quirk",
+   "fields": {
+    "description": "the shared cache config sets allkeys-lru, which would evict queue lists under memory pressure, so queues live on a second noeviction instance behind QUEUE_REDIS_URL"
+   },
+   "scope": [
+    "app/jobs/**",
+    "app/cache/**"
+   ]
+  },
+  {
+   "key": "autoscaler-month-end",
+   "kind": "blocker",
+   "fields": {
+    "description": "the exports worker autoscaler stops at 8 pods and month-end exports waited 40 minutes",
+    "resolved_in": "TB-640 raised the ceiling to 20"
+   },
+   "scope": [
+    "app/jobs/**"
+   ]
+  },
+  {
+   "key": "import-checkpoint",
+   "kind": "decision",
+   "fields": {
+    "title": "Trello and Asana imports are resumable jobs that checkpoint after every board",
+    "context": "a 900 board import failed at board 640 and started over from zero; the cursor is stored on ImportRun"
+   },
+   "scope": [
+    "app/importers/**"
+   ],
+   "anchors": [
+    [
+     "app/importers/trello.py",
+     "import_board"
+    ]
+   ]
+  },
+  {
+   "key": "import-null-due",
+   "kind": "bug",
+   "fields": {
+    "title": "Import crashed on cards with no due date",
+    "root_cause": "parse_due assumed an ISO string while Trello exports null; the exception was swallowed and the whole board was skipped without a trace",
+    "module": "app/importers/trello.py"
+   },
+   "anchors": [
+    [
+     "app/importers/trello.py",
+     "parse_due"
+    ]
+   ]
+  },
+  {
+   "key": "import-row-errors",
+   "kind": "idiom",
+   "fields": {
+    "pattern": "handling a bad row during import",
+    "preferred_form": "append the problem to ImportRun.errors, continue with the next row and show a summary at the end",
+    "avoid": "raising on the first bad row or swallowing it"
+   },
+   "scope": [
+    "app/importers/**"
+   ]
+  },
+  {
+   "key": "impersonation-read-only",
+   "kind": "decision",
+   "fields": {
+    "title": "Support impersonation is read-only by default and writes an audit row",
+    "context": "INC-171: a support agent edited a customer's board by accident; write mode needs a ticket id and expires after 30 minutes"
+   },
+   "scope": [
+    "app/admin/**"
+   ],
+   "anchors": [
+    [
+     "app/admin/impersonate.py",
+     "start_impersonation"
+    ]
+   ]
+  },
+  {
+   "key": "axios-everywhere",
+   "kind": "convention",
+   "fields": {
+    "category": "frontend",
+    "rule": "call the API with axios directly from components and set headers where they are needed",
+    "enforced_by": "none",
+    "exceptions": "",
+    "applies_to": [
+     "frontend/**"
+    ]
+   },
+   "scope": [
+    "frontend/**"
+   ]
+  },
+  {
+   "key": "api-client-only",
+   "kind": "convention",
+   "supersedes": "axios-everywhere",
+   "fields": {
+    "category": "frontend",
+    "rule": "all API calls go through apiFetch in frontend/src/api/client.ts, which attaches the CSRF token and maps error codes to messages; no raw fetch in components",
+    "enforced_by": "eslint no-restricted-globals",
+    "exceptions": "",
+    "applies_to": [
+     "frontend/**"
+    ]
+   },
+   "anchors": [
+    [
+     "frontend/src/api/client.ts",
+     "apiFetch"
+    ]
+   ]
+  },
+  {
+   "key": "react-query-board",
+   "kind": "decision",
+   "fields": {
+    "title": "Board state lives in React Query with optimistic updates for drag and drop",
+    "context": "Redux copies drifted from the server after failed reorders; on error we invalidate the board query and show a toast"
+   },
+   "scope": [
+    "frontend/**"
+   ],
+   "anchors": [
+    [
+     "frontend/src/components/Board.tsx",
+     "Board"
+    ]
+   ]
+  },
+  {
+   "key": "drag-snaps-back",
+   "kind": "bug",
+   "fields": {
+    "title": "Card snapped back after a drop",
+    "root_cause": "the optimistic position was a JS number while the server returns decimal strings, so the list re-sorted wrongly; compare positions as strings",
+    "module": "frontend/src/components/Board.tsx"
+   },
+   "anchors": [
+    [
+     "frontend/src/components/Board.tsx",
+     "onDragEnd"
+    ]
+   ]
+  },
+  {
+   "key": "expand-then-contract",
+   "kind": "decision",
+   "fields": {
+    "title": "Schema changes follow expand then contract across two releases",
+    "context": "INC-160: renaming a column in one deploy took the API down for 6 minutes; never drop or rename a column in the release that stops writing it, and run migrate against a prod-sized copy on staging first"
+   },
+   "scope": [
+    "migrations/**"
+   ],
+   "anchors": [
+    [
+     "migrations/0042_task_position.py",
+     "Migration"
+    ]
+   ]
+  },
+  {
+   "key": "concurrent-index-quirk",
+   "kind": "quirk",
+   "fields": {
+    "description": "CREATE INDEX on the tasks table blocks writes, so migrations use CONCURRENTLY, which cannot run inside a transaction and needs atomic = False on the migration"
+   },
+   "scope": [
+    "migrations/**"
+   ],
+   "anchors": [
+    [
+     "migrations/0042_task_position.py",
+     "Migration"
+    ]
+   ]
+  },
+  {
+   "key": "migration-test-cases",
+   "kind": "required_test_case",
+   "fields": {
+    "for_pattern": "schema migration",
+    "cases_required": "forward and backward on a copy with 100,000 rows, no lock held longer than 1 second, a data migration that is safe to run twice"
+   },
+   "scope": [
+    "migrations/**",
+    "tests/**"
+   ]
+  },
+  {
+   "key": "db-fixture-convention",
+   "kind": "test_convention",
+   "fields": {
+    "category": "database",
+    "pattern": "use the db_workspace fixture and the factories under tests/factories; roll back per test and do not load JSON fixtures"
+   },
+   "scope": [
+    "tests/**"
+   ],
+   "anchors": [
+    [
+     "tests/conftest.py",
+     "db_workspace"
+    ]
+   ]
+  }
+ ]
+}
