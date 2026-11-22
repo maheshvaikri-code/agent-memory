@@ -102,6 +102,42 @@ Found in review of the locked test split. Not corrected in place; the locked lab
 | lever 5: small-store rule, SMALL_STORE=25 (set in the lever 1 commit; pinned by boundary tests here) | 0.9875 (158/160) | 1078.6 | 0.0000 (0/37) | 0 |
 | lever 2: graph seeds from strong and medium survivors only (no effect on the benchmark; kept because weak survivors exist in small stores and for weakly matched pinned records) | 0.9875 (158/160) | 1078.6 | 0.0000 (0/37) | 0 |
 | lever 3: generic task-word list (pre-registered list minus `rename`; a generic word counts toward a record with a second concept, spec reading) | 0.9875 (158/160) | 1013.6 | 0.0000 (0/37) | 0 |
+| lever 7: absolute cap on the rare tier, RARE_CAP=10 (added after seeing the dev results of levers 1-3; not a pre-registered lever) | 0.9875 (158/160) | 947.8 | 0.0000 (0/37) | 0 |
+
+### Lever 7: absolute cap on the rare tier (dev split)
+
+Lever 7 was added by the controller (ruling R14) after seeing the dev results of levers 1-3. It is not one
+of the spec's pre-registered levers, and it is judged on the locked test split like the rest. A word is
+"rare" if it is in at most max(DISTINCTIVE_DF, RARE_SHARE of the records) records, and never in more than
+`RARE_CAP` records however large the store (`RARE_CAP = None` means no cap; when the cap is below
+DISTINCTIVE_DF the cap wins). Each cap was set for the run only (not saved); "In-sample" is
+`python -m tests.eval.run --service` with the same cap, "Held-out" its held-out abstention figure.
+
+| RARE_CAP | Dev recall | Noise records per task | Noise tokens per task | Clean-abstain | Leaks | In-sample recall / leaks / abstention | Held-out | Eligible |
+|---|---|---|---|---|---|---|---|---|
+| None | 0.9875 (158/160) | 16.27 | 1013.6 | 0/37 | 0 | 30/30, 0, 12/12 | 12/16 | yes |
+| **10** | **0.9875 (158/160)** | **15.21** | **947.8** | **0/37** | **0** | **30/30, 0, 12/12** | **12/16** | **yes (chosen)** |
+| 8 | 0.9812 (157/160) | 13.29 | 832.0 | 0/37 | 0 | 30/30, 0, 12/12 | 12/16 | no (dev recall) |
+| 6 | 0.9812 (157/160) | 12.56 | 790.5 | 0/37 | 0 | 30/30, 0, 12/12 | 12/16 | no (dev recall) |
+| 5 | 0.9812 (157/160) | 11.49 | 727.8 | 0/37 | 0 | 30/30, 0, 12/12 | 12/16 | no (dev recall) |
+| 4 | 0.9812 (157/160) | 10.62 | 674.5 | 1/37 | 0 | 30/30, 0, 12/12 | 12/16 | no (dev recall) |
+| 3 | 0.9750 (156/160) | 9.64 | 612.4 | 1/37 | 0 | 29/30, 0, 12/12 | 12/16 | no (dev recall, in-sample) |
+| 2 | 0.9688 (155/160) | 8.73 | 556.5 | 1/37 | 0 | 29/30, 0, 12/12 | 12/16 | no (dev recall, in-sample) |
+
+Eligibility (same spirit as R2): in-sample recall 30/30, leaks 0, abstention 12/12, and dev recall at least the
+baseline's 158/160. Eligible: None and 10. Chosen: 10, the smaller noise (947.8 against 1013.6 tokens per
+task; 17% below the baseline's 1139.4; 6.5% below lever 3). The clean-abstain rate stays 0/37.
+
+Dev relevant records lost (the baseline and lever 3 already miss `backfill-billing-night` and `sunday-drop-late`):
+
+| RARE_CAP | Additional dev relevant records lost |
+|---|---|
+| 10 | none |
+| 8, 6, 5, 4 | `fx-weekend-gap` ("resume the fact_orders backfill that stopped in March") |
+| 3 | the above and `declare-grain` ("write a new incremental transform that rolls orders up into a weekly customer summary", also the in-sample loss) |
+| 2 | the above and `hmac-tokens` ("a customer emailed asking us to erase everything we hold about them, handle the ticket") |
+
+The held-out figure does not move for any cap (12/16). Saved run: `tests/eval/bench/runs/dev-lever7.json`.
 
 ### Lever 3: the generic task-word list (dev split)
 

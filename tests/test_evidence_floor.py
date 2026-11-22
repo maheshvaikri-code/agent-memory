@@ -251,3 +251,26 @@ def test_a_generic_word_plus_one_common_informative_word_is_strong(tmp_path):
     conv(m, "target", "write policy changes through the review queue")
     assert "review queue" in texts(m.recall(task="write the policy", files=[]))
     assert m.recall(task="update the policy", files=[]).items == []      # the common word alone
+
+
+def _capped_store(tmp_path):
+    """Sixty records: "ledger" is in 8 (under 15% of the store), "quartz" in 3, the rest are fillers."""
+    Path(tmp_path).mkdir(parents=True, exist_ok=True)
+    m = AgentMemory("t", repo_root=str(tmp_path))
+    for n in range(8):
+        conv(m, f"led{n}", f"ledger entry{n} is reconciled nightly")
+    for n in range(3):
+        conv(m, f"qz{n}", f"quartz fixture{n} is vendored")
+    for n in range(49):
+        conv(m, f"fill{n}", f"zebra{n} policy gadget{n}")
+    return m
+
+
+def test_the_rare_cap_drops_a_word_above_it_and_keeps_one_below_it(tmp_path, monkeypatch):
+    from agent_memory.retrieval import evidence
+    m = _capped_store(tmp_path)
+    monkeypatch.setattr(evidence, "RARE_CAP", None)
+    assert "ledger" in texts(m.recall(task="ledger", files=[]))            # no cap: in 8 of 60, rare
+    monkeypatch.setattr(evidence, "RARE_CAP", 5)
+    assert "ledger" not in texts(m.recall(task="ledger", files=[]))        # 8 > 5
+    assert "quartz" in texts(m.recall(task="quartz", files=[]))            # 3 <= 5

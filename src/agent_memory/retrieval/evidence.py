@@ -31,11 +31,15 @@ GENERIC_STEMS: FrozenSet[str] = stems(GENERIC_WORDS)
 
 RARE_SHARE = 0.15   # a single matched concept is rare if it is in at most this share of records
 SMALL_STORE = 25    # below this many records the weak tier is not dropped
+# "Rare" means at most max(distinctive_df, RARE_SHARE of the records) records, and never more than
+# RARE_CAP records however large the store. None means no cap. Read at call time. When RARE_CAP is
+# below distinctive_df the cap wins: a word in more than RARE_CAP records is not rare.
+RARE_CAP: Optional[int] = 10
 
 
 def classify(*, in_scope: bool, semantic: bool, concepts: int, rarest_df: Optional[int], n: int,
              distinctive_df: int, rare_share: Optional[float] = None,
-             identifier: bool = False) -> str:
+             identifier: bool = False, rare_cap: Optional[int] = None) -> str:
     """Tier of a record that has some match.
 
     `concepts` counts the distinct matched concepts, generic task words included, provided at
@@ -54,6 +58,10 @@ def classify(*, in_scope: bool, semantic: bool, concepts: int, rarest_df: Option
         return STRONG
     if concepts == 1 and rarest_df is not None:
         share = RARE_SHARE if rare_share is None else rare_share
-        if rarest_df <= max(distinctive_df, share * n):
+        limit = max(distinctive_df, share * n)
+        cap = RARE_CAP if rare_cap is None else rare_cap
+        if cap is not None:
+            limit = min(limit, cap)
+        if rarest_df <= limit:
             return MEDIUM
     return MEDIUM if identifier else WEAK
