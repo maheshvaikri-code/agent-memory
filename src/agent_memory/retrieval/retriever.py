@@ -431,6 +431,8 @@ class Retriever:
                 # word the task writes, or a symbol / context identifier (the service lower-cases
                 # those) that the record spells as one compound token. A plain task word never
                 # qualifies by how a record happens to spell it.
+                # A camelCase identifier whose joined stem is itself generic (setUp -> "setup") does
+                # not lift a record on its own: intended.
                 tier = classify(identifier=True, **args)
             tiers[ref] = tier
             pinned = (rec is not None and rec.priority == "must"

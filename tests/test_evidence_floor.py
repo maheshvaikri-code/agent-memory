@@ -237,3 +237,17 @@ def test_a_generic_word_that_is_a_records_own_compound_token_does_not_lift_it(tm
     for n in range(35):
         conv(m, f"t{n}", f"call setUp before test {n} runs")
     assert m.recall(task="push the change", files=[], symbols=["setup"]).items == []
+
+
+def test_a_generic_word_plus_one_common_informative_word_is_strong(tmp_path):
+    """R9's distinguishing case. "policy" is in more than 15% of a 25+ record store, so on its own
+    it is weak; "write" is a generic task word. Together they are two matched concepts, and the
+    spec says a generic word still counts toward a record that has an informative concept.
+    Counting informative concepts only would leave this record weak and drop it."""
+    Path(tmp_path).mkdir(parents=True, exist_ok=True)
+    m = AgentMemory("t", repo_root=str(tmp_path))
+    for n in range(30):
+        conv(m, f"fill{n}", f"zebra{n} policy gadget{n}")
+    conv(m, "target", "write policy changes through the review queue")
+    assert "review queue" in texts(m.recall(task="write the policy", files=[]))
+    assert m.recall(task="update the policy", files=[]).items == []      # the common word alone
