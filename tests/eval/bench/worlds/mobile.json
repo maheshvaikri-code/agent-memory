@@ -65,7 +65,7 @@
    "kind": "decision",
    "fields": {
     "title": "Store tracks and waypoints in SQLite, not AsyncStorage",
-    "context": "AsyncStorage stalled at about 4 MB of serialized tracks on Android (TM-118); SQLite holds 100k points and lets sync query by updated_at"
+    "context": "AsyncStorage stalled at about 4 MB of serialized tracks on Android (TM-118); SQLite holds 100k points and lets sync query by updated_at; tracks saved by older builds are imported from AsyncStorage on first launch"
    },
    "anchors": [
     [
@@ -145,7 +145,7 @@
    "kind": "tech_debt",
    "fields": {
     "location": "src/storage/db.ts",
-    "description": "track points are stored as one JSON blob per segment, which blocks SQL elevation queries and makes the CLI export decode every blob; a points table would need a migrate of about 30 percent of user data"
+    "description": "the elevation profile is recomputed from track_points on every track open instead of being stored, about 400 ms for a 20000 point track; caching it in a column would need a migrate in db.ts"
    },
    "anchors": [
     [
@@ -159,7 +159,7 @@
    "kind": "decision",
    "fields": {
     "title": "Keep user preferences as one document per user on the backend",
-    "context": "units, map style and the set of alert regions sync as a single JSON document so a new phone restores them in one request (TM-094)"
+    "context": "units, map style and the set of alert regions sync as a single JSON document so a new phone restores them in one request, and the settings export for support tickets reuses the same document (TM-094)"
    },
    "scope": [
     "src/sync/**",
@@ -911,7 +911,7 @@
    "kind": "module",
    "fields": {
     "path": "src/crash/reporter.ts",
-    "purpose": "initialises Sentry, names releases trailmate@version+build and keeps the last 50 breadcrumbs"
+    "purpose": "initialises Sentry, names releases trailmate@version+build and keeps the last 50 breadcrumbs; the settings screen offers a log export for support tickets"
    },
    "anchors": [
     [
@@ -962,7 +962,7 @@
    "kind": "fix_pattern",
    "fields": {
     "fix_template": "derive the release string in one function used by both the upload step and init",
-    "caveats": "the CI step must read the build number from the same env var Fastlane uses"
+    "caveats": "the upload script must import releaseName from reporter.ts instead of copying the format, and the CI step must read the build number from the same env var Fastlane uses"
    },
    "links": [
     {
