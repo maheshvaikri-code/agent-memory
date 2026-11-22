@@ -142,3 +142,38 @@ def test_an_identifier_the_task_writes_in_camel_case_lifts_every_record_with_tha
     got = texts(m.recall(task="push to GitHub", files=[]))
     assert "GitHub workflow" in got and "plain github" in got
 
+
+
+def test_a_store_below_the_small_store_size_keeps_weak_matches(tmp_path):
+    """Review focus 4: a new user's first notes are not dropped for being 'weak'."""
+    small = AgentMemory("s", repo_root=str(tmp_path / "small"))
+    for n in range(8):
+        conv(small, f"a{n}", f"process step{n} runs through widget{n}")
+    assert "widget" in texts(small.recall(task="process image uploads", files=[]))
+
+
+def test_the_boundary_is_exact(tmp_path):
+    from agent_memory.retrieval import evidence
+    n = evidence.SMALL_STORE
+    at = AgentMemory("at", repo_root=str(tmp_path / "at"))
+    for k in range(n):                      # exactly SMALL_STORE records: not small any more
+        conv(at, f"a{k}", f"process step{k} runs through widget{k}")
+    below = AgentMemory("below", repo_root=str(tmp_path / "below"))
+    for k in range(n - 1):
+        conv(below, f"a{k}", f"process step{k} runs through widget{k}")
+    assert "widget" not in texts(at.recall(task="process image uploads", files=[]))
+    assert "widget" in texts(below.recall(task="process image uploads", files=[]))
+
+
+def test_small_store_is_counted_per_role_not_over_the_whole_store(tmp_path):
+    """Documents the PRESENT behaviour of `bm25.n`: it is the candidate count of the role being
+    ranked, not the number of active records in the store. The store is not small, so
+    the weak "process" matches are dropped when recalling everything (with the decisions added it holds 45); but `kinds=["decision"]`
+    ranks only the five decisions (5 < SMALL_STORE), so the same weak matches are kept. If a
+    later change counts the whole store instead, this test fails and the change is deliberate."""
+    m = store(tmp_path)                       # 40 records, 8 conventions share "process"
+    for n in range(5):
+        m.remember("decision", {"title": f"process choice{n} uses gizmo{n}",
+                                "context": f"chosen for reason{n}"})
+    assert "gizmo" not in texts(m.recall(task="process image uploads", files=[]))
+    assert "gizmo" in texts(m.recall(task="process image uploads", files=[], kinds=["decision"]))

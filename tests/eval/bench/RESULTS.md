@@ -99,6 +99,7 @@ Found in review of the locked test split. Not corrected in place; the locked lab
 |---|---|---|---|---|
 | baseline | 0.9875 (158/160) | 1139.4 | 0.0000 (0/37) | 0 |
 | lever 1: drop weak-only, RARE_SHARE=0.15 (SMALL_STORE=25, whole-identifier rule, pinned exempt) | 0.9875 (158/160) | 1078.6 | 0.0000 (0/37) | 0 |
+| lever 5: small-store rule, SMALL_STORE=25 (set in the lever 1 commit; pinned by boundary tests here) | 0.9875 (158/160) | 1078.6 | 0.0000 (0/37) | 0 |
 
 ### Lever 1: RARE_SHARE grid (dev split, SMALL_STORE=25, with the identifier rule)
 
@@ -128,3 +129,17 @@ exists for the in-sample `test_context_keeps_the_token_budget` case). The 0.02 t
 were measured with the rule on, as were the in-sample columns. Pinned (must, scope "*") records bypass the
 weak floor.
 Saved run: `tests/eval/bench/runs/dev-lever1.json`.
+
+## Not measured by the benchmark
+
+- Small-store rule (lever 5). Every benchmark world holds at least 75 records, so `SMALL_STORE` (25)
+  cannot be tuned on it: the dev split is identical to lever 1 (recall 0.9875 (158/160), 1078.6 noise
+  tokens per task, clean-abstain 0/37, leaks 0) and the in-sample scorecard is unchanged (30/30, 0 leaks,
+  12/12 abstention). The value is set by reasoning (a store of fewer than 25 notes costs little to
+  over-show, and a real match is worth more) and pinned by the boundary tests in
+  `tests/test_evidence_floor.py`: 24 records keep weak matches, 25 do not.
+- `bm25.n`, the count the rule compares with `SMALL_STORE`, is the candidate count of the role being
+  ranked, not the number of active records in the store. `recall(kinds=[...])` on a large store that holds
+  fewer than 25 records of the requested kinds therefore keeps weak matches. This is the present
+  behaviour, pinned by `test_small_store_is_counted_per_role_not_over_the_whole_store`, so a change to it
+  is deliberate.
