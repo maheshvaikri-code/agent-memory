@@ -64,3 +64,35 @@ def test_generic_words_recur_across_worlds(worlds):
             in_worlds += hits >= 2
         reused += in_worlds >= 2
     assert reused >= 10, f"only {reused} of {len(stems)} generic words recur in two worlds"
+
+
+SPLIT_FILES = sorted(p.name[:-5] for p in model.TASK_DIR.glob("*-*.json")) if model.TASK_DIR.exists() else []
+TASK_SETS = [(n.split("-")[0], n.split("-")[1]) for n in SPLIT_FILES]       # (split, world)
+SIZE = {"dev": (32, 38), "test": (62, 72)}
+
+
+@pytest.fixture(scope="module")
+def tasks():
+    return {split: model.load_tasks(split) for split in model.SPLITS}
+
+
+@pytest.mark.parametrize("split,name", TASK_SETS)
+def test_task_set_shape(tasks, split, name):
+    mine = [t for t in tasks[split] if t.world == name]
+    low, high = SIZE[split]
+    assert low <= len(mine) <= high, len(mine)
+    empty = sum(1 for t in mine if t.empty)
+    assert 0.28 <= empty / len(mine) <= 0.40, f"{empty}/{len(mine)} empty"
+    for t in mine:
+        if not t.empty:
+            assert 1 <= len(t.relevant) <= 4, t
+        assert len(t.acceptable) <= 6, t
+    assert sum(1 for t in mine if t.files) >= 0.5 * len(mine)
+    assert len({t.task.strip().lower() for t in mine if t.task.strip()}) == sum(
+        1 for t in mine if t.task.strip()), "duplicate task text"
+
+
+def test_no_task_text_is_shared_between_splits(tasks):
+    dev = {t.task.strip().lower() for t in tasks["dev"] if t.task.strip()}
+    test = {t.task.strip().lower() for t in tasks["test"] if t.task.strip()}
+    assert not dev & test

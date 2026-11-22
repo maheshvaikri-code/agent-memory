@@ -1,0 +1,456 @@
+{
+ "tasks": [
+  {
+   "world": "saas",
+   "task": "add jitter to the webhook retry delay and let each endpoint override the max attempts",
+   "files": [
+    "app/api/webhooks.py",
+    "app/settings/base.py"
+   ],
+   "relevant": [
+    "webhook-retry-cap",
+    "retry-storm"
+   ],
+   "acceptable": [
+    "retry-storm-fix",
+    "webhook-timeout-budget",
+    "webhook-retry-cases"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "batch the Slack messages when a user moves a lot of cards at once",
+   "files": [
+    "app/notify/slack.py"
+   ],
+   "relevant": [
+    "slack-429-dropped",
+    "slack-bulk-update-bug",
+    "slack-429-requeue"
+   ],
+   "acceptable": [
+    "email-digest-15min",
+    "notifier-abstraction"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "include the custom field columns in the CSV export",
+   "files": [
+    "app/reports/export.py"
+   ],
+   "relevant": [
+    "csv-formula-injection",
+    "csv-escape-fix",
+    "csv-memory-budget"
+   ],
+   "acceptable": [
+    "csv-bom-quirk",
+    "chunked-iter-snippet",
+    "export-row-cap",
+    "softdelete-manager-quirk"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "raise the export row limit to a million rows for enterprise workspaces",
+   "files": [
+    "app/settings/base.py",
+    "app/reports/export.py"
+   ],
+   "relevant": [
+    "export-row-cap",
+    "csv-memory-budget"
+   ],
+   "acceptable": [
+    "csv-export-background",
+    "chunked-iter-snippet"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "rename tasks.status to tasks.state",
+   "files": [],
+   "relevant": [
+    "expand-then-contract"
+   ],
+   "acceptable": [
+    "concurrent-index-quirk",
+    "migration-test-cases"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "after dragging cards around a lot in one column the order is wrong on reload, find out why",
+   "files": [
+    "app/models/task.py",
+    "frontend/src/components/Board.tsx"
+   ],
+   "relevant": [
+    "task-position-fraction",
+    "position-collision",
+    "position-rebalance-fix"
+   ],
+   "acceptable": [
+    "drag-snaps-back",
+    "task-model-module"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "run the column rebalance as a background job so the drag request returns sooner",
+   "files": [
+    "app/models/task.py"
+   ],
+   "relevant": [
+    "position-rebalance-fix",
+    "task-position-fraction"
+   ],
+   "acceptable": [
+    "position-collision",
+    "named-queues"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "raise the public API rate limit to 300 a minute for enterprise tokens",
+   "files": [
+    "app/settings/base.py"
+   ],
+   "relevant": [
+    "rate-limit-per-token"
+   ],
+   "acceptable": [
+    "plans-module"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "seat counts sometimes show the old number right after a plan upgrade",
+   "files": [
+    "app/billing/stripe_sync.py"
+   ],
+   "relevant": [
+    "seat-count-bug",
+    "provider-event-order",
+    "provider-event-fix"
+   ],
+   "acceptable": [
+    "billing-mirror-state"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "let enterprise workspaces upload attachments up to 100 MB",
+   "files": [
+    "app/storage/attachments.py",
+    "app/billing/plans.py"
+   ],
+   "relevant": [
+    "attachment-size-cap",
+    "attachments-presigned"
+   ],
+   "acceptable": [
+    "plans-module",
+    "orphan-uploads"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "some attachments stay pending forever and the file is not in the bucket",
+   "files": [],
+   "relevant": [
+    "orphan-uploads",
+    "orphan-sweep"
+   ],
+   "acceptable": [
+    "attachments-presigned"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "build the Asana importer",
+   "files": [
+    "app/importers/trello.py"
+   ],
+   "relevant": [
+    "import-checkpoint",
+    "import-row-errors"
+   ],
+   "acceptable": [
+    "import-null-due",
+    "markdown-documents"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "make search include comment text",
+   "files": [
+    "app/search/indexer.py"
+   ],
+   "relevant": [
+    "comment-index-question",
+    "search-latency-budget",
+    "search-postgres-fts"
+   ],
+   "acceptable": [
+    "reindex-backfill",
+    "search-index-cases",
+    "reindex-on-save"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "searching for running does not find tasks titled run the tests",
+   "files": [],
+   "relevant": [
+    "english-stemming-quirk"
+   ],
+   "acceptable": [
+    "search-postgres-fts"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "customers want OIDC login for their workspaces",
+   "files": [],
+   "relevant": [
+    "saml-enterprise-only"
+   ],
+   "acceptable": [
+    "azure-attribute-quirk",
+    "session-cookie-rule"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "cache each workspace's plan limits in Redis",
+   "files": [
+    "app/cache/keys.py",
+    "app/billing/plans.py"
+   ],
+   "relevant": [
+    "cache-key-builder",
+    "cache-shared-plan"
+   ],
+   "acceptable": [
+    "stale-cache-shape",
+    "cache-version-bump",
+    "billing-mirror-state",
+    "redis-eviction-quirk"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "we changed the task list serializer and now some users get errors loading the board after the deploy",
+   "files": [],
+   "relevant": [
+    "stale-cache-shape",
+    "cache-version-bump"
+   ],
+   "acceptable": [
+    "cache-key-builder"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "let support agents make small edits on a customer's board without filing a ticket",
+   "files": [
+    "app/admin/impersonate.py"
+   ],
+   "relevant": [
+    "impersonation-read-only"
+   ],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "load the attachment list in the Board component with a plain fetch call",
+   "files": [
+    "frontend/src/components/Board.tsx"
+   ],
+   "relevant": [
+    "api-client-only"
+   ],
+   "acceptable": [
+    "react-query-board"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "write tests for the webhook retry logic",
+   "files": [
+    "tests/conftest.py",
+    "app/api/webhooks.py"
+   ],
+   "relevant": [
+    "webhook-fake-receiver",
+    "webhook-retry-cases"
+   ],
+   "acceptable": [
+    "db-fixture-convention",
+    "webhook-retry-cap"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "",
+   "files": [
+    "migrations/0042_task_position.py"
+   ],
+   "relevant": [
+    "expand-then-contract",
+    "concurrent-index-quirk"
+   ],
+   "acceptable": [
+    "migration-test-cases",
+    "task-position-fraction"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "",
+   "files": [
+    "app/importers/trello.py"
+   ],
+   "relevant": [
+    "import-null-due",
+    "import-row-errors"
+   ],
+   "acceptable": [
+    "import-checkpoint"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "",
+   "files": [
+    "app/notify/slack.py"
+   ],
+   "relevant": [
+    "slack-429-dropped",
+    "slack-429-requeue"
+   ],
+   "acceptable": [
+    "slack-bulk-update-bug"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "add a queue for generating thumbnails of image attachments",
+   "files": [
+    "app/jobs/queue.py"
+   ],
+   "relevant": [
+    "named-queues",
+    "job-idempotent"
+   ],
+   "acceptable": [
+    "redis-eviction-quirk"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "document the release process in the wiki",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "export the on-call schedule to an ICS file for the team calendar",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "read DEBUG from an environment variable instead of hard coding it",
+   "files": [
+    "app/settings/base.py"
+   ],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "fix the spelling of Workspace in the invite email subject",
+   "files": [
+    "app/notify/email.py"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "email-text-and-html"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "update the README with local setup steps, including how to start the test database",
+   "files": [],
+   "relevant": [],
+   "acceptable": [
+    "db-fixture-convention"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "write a script that parses the error rates out of the load balancer logs",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "add a unit test for seat_limit on the enterprise plan",
+   "files": [
+    "app/billing/plans.py"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "plans-module",
+    "db-fixture-convention"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "set up Dependabot for the frontend dependencies",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "add a Docker healthcheck that calls /healthz",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "show the worker pool name in the process title of each queue worker",
+   "files": [],
+   "relevant": [],
+   "acceptable": [
+    "named-queues"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "write a guide for customers migrating from Jira",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "rename the local variable qc to queryClient in the Board component",
+   "files": [
+    "frontend/src/components/Board.tsx"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "react-query-board"
+   ]
+  }
+ ]
+}
