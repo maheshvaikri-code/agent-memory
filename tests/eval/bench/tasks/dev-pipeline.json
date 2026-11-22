@@ -1,0 +1,537 @@
+{
+ "tasks": [
+  {
+   "world": "pipeline",
+   "task": "add a DAG for the new Charlie partner's daily SFTP drop; they say the file lands around 04:00 Berlin time",
+   "files": [
+    "dags/nightly_ingest.py",
+    "ingest/sftp_pull.py"
+   ],
+   "relevant": [
+    "dags-in-utc",
+    "dag-retry-backoff",
+    "catchup-flood",
+    "sftp-manifest-check"
+   ],
+   "acceptable": [
+    "dagbag-test",
+    "dag-parse-cost",
+    "secrets-at-task-start",
+    "sunday-drop-late",
+    "structured-log-line",
+    "with-retry-snippet"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "",
+   "files": [
+    "ingest/sftp_pull.py"
+   ],
+   "relevant": [
+    "sftp-manifest-check"
+   ],
+   "acceptable": [
+    "sftp-module",
+    "secrets-at-task-start",
+    "sunday-drop-late",
+    "acme-new-columns",
+    "with-retry-snippet",
+    "retention-policy"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "Acme's Sunday file keeps arriving after our sensor has given up, fix the timing in the nightly DAG",
+   "files": [
+    "dags/nightly_ingest.py",
+    "ingest/sftp_pull.py"
+   ],
+   "relevant": [
+    "sunday-drop-late",
+    "sftp-manifest-check"
+   ],
+   "acceptable": [
+    "dag-retry-backoff",
+    "monday-freshness",
+    "per-partner-dag-question",
+    "sftp-module"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "speed up the Bravo orders pull by fetching several pages in parallel",
+   "files": [
+    "ingest/rest_client.py"
+   ],
+   "relevant": [
+    "bravo-rate-limit",
+    "offset-paging-skip",
+    "cursor-paging-fix"
+   ],
+   "acceptable": [
+    "http-wait-pattern",
+    "stalled-page-hang"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "partner API calls sometimes hang for hours, add sensible timeouts and retries to the REST client",
+   "files": [
+    "ingest/rest_client.py",
+    "ops/retry.py"
+   ],
+   "relevant": [
+    "http-wait-pattern",
+    "stalled-page-hang",
+    "with-retry-snippet"
+   ],
+   "acceptable": [
+    "bravo-rate-limit",
+    "dag-retry-backoff"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "log the response body when a partner API call fails so we can debug it",
+   "files": [
+    "ingest/rest_client.py"
+   ],
+   "relevant": [
+    "email-in-task-logs",
+    "structured-log-line"
+   ],
+   "acceptable": [
+    "logs-to-remote-store"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "wire a quality gate and a publish step into the nightly_ingest DAG for the orders table",
+   "files": [
+    "dags/nightly_ingest.py"
+   ],
+   "relevant": [
+    "quarantine-partition",
+    "severity-levels",
+    "compact-after-load"
+   ],
+   "acceptable": [
+    "row-count-floor",
+    "load-pool-size",
+    "dagbag-test",
+    "check-fixtures",
+    "dag-retry-backoff",
+    "small-file-explosion"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "add a task to the nightly DAG that runs the sessionize Spark job",
+   "files": [
+    "dags/nightly_ingest.py",
+    "transforms/sessionize.py"
+   ],
+   "relevant": [
+    "spark-queue-split",
+    "shuffle-partitions-400"
+   ],
+   "acceptable": [
+    "executor-cap",
+    "hot-key-skew",
+    "salt-the-key",
+    "worker-memory-growth",
+    "sessionize-expertise",
+    "dag-retry-backoff"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "the sessionize stage sometimes runs for three hours, make it faster",
+   "files": [
+    "transforms/sessionize.py"
+   ],
+   "relevant": [
+    "hot-key-skew",
+    "salt-the-key",
+    "shuffle-partitions-400"
+   ],
+   "acceptable": [
+    "sessionize-in-sql",
+    "sessionize-expertise",
+    "executor-cap",
+    "spark-35-blocker"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "port the daily orders transform to dbt",
+   "files": [
+    "transforms/orders_daily.sql"
+   ],
+   "relevant": [
+    "no-dbt-rewrite"
+   ],
+   "acceptable": [
+    "declare-grain",
+    "fx-weekend-gap",
+    "dedupe-idiom"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "add Canadian dollars to the currency conversion in the orders transform",
+   "files": [
+    "transforms/orders_daily.sql"
+   ],
+   "relevant": [
+    "fx-weekend-gap",
+    "float-money-pattern"
+   ],
+   "acceptable": [
+    "declare-grain",
+    "revenue-drift",
+    "incremental-cases"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "write a new incremental transform that rolls orders up into a weekly customer summary",
+   "files": [],
+   "relevant": [
+    "declare-grain",
+    "incremental-cases"
+   ],
+   "acceptable": [
+    "dedupe-idiom",
+    "float-money-pattern",
+    "spark-queue-split"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "turn customer_region into a proper enum backed by a lookup table",
+   "files": [
+    "warehouse/ddl/fact_orders.sql"
+   ],
+   "relevant": [
+    "shadow-table-migration",
+    "region-free-text"
+   ],
+   "acceptable": [
+    "fact-scan-rule",
+    "orders-merge-hot",
+    "replace-partition-load",
+    "backfill-in-weeks"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "add a loader function that COPYs the Charlie partner's returns file into the warehouse",
+   "files": [
+    "warehouse/loader.py"
+   ],
+   "relevant": [
+    "copy-truncates-silently",
+    "replace-partition-load"
+   ],
+   "acceptable": [
+    "loader-module",
+    "small-file-explosion",
+    "compact-after-load",
+    "load-pool-size",
+    "orders-merge-hot"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "backfill fact_orders for the last 90 days after the fx fix",
+   "files": [
+    "dags/backfill.py"
+   ],
+   "relevant": [
+    "backfill-in-weeks",
+    "announce-backfills",
+    "backfill-billing-night"
+   ],
+   "acceptable": [
+    "orders-backfill-progress",
+    "small-file-explosion",
+    "compact-after-load",
+    "load-pool-size",
+    "catchup-flood",
+    "dry-run-cost-guard"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "resume the fact_orders backfill that stopped in March",
+   "files": [
+    "dags/backfill.py"
+   ],
+   "relevant": [
+    "orders-backfill-progress",
+    "backfill-in-weeks",
+    "announce-backfills",
+    "fx-weekend-gap"
+   ],
+   "acceptable": [
+    "backfill-billing-night",
+    "load-pool-size"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "add a /v2/metrics/compare endpoint that returns two ds ranges side by side",
+   "files": [
+    "api/metrics.py"
+   ],
+   "relevant": [
+    "metrics-latency",
+    "fact-scan-rule",
+    "problem-json-errors",
+    "gold-read-model"
+   ],
+   "acceptable": [
+    "metrics-cache-60s"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "build a customer export of the orders data as Parquet",
+   "files": [
+    "exports/parquet_export.py"
+   ],
+   "relevant": [
+    "export-allowlist",
+    "export-driver-memory",
+    "int96-timestamps",
+    "micros-timestamp-fix"
+   ],
+   "acceptable": [
+    "parquet-first-exports",
+    "hmac-tokens"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "enterprise customers want CSV exports of up to 5 million rows",
+   "files": [
+    "exports/csv_export.py"
+   ],
+   "relevant": [
+    "parquet-first-exports",
+    "export-driver-memory",
+    "export-allowlist"
+   ],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "add a notebook that computes weekly cohort retention and schedule it",
+   "files": [
+    "notebooks/runner.py"
+   ],
+   "relevant": [
+    "sandboxed-notebook-runner",
+    "notebook-hygiene",
+    "notebook-smoke"
+   ],
+   "acceptable": [
+    "fact-scan-rule"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "a customer emailed asking us to erase everything we hold about them, handle the ticket",
+   "files": [],
+   "relevant": [
+    "erasure-request",
+    "hmac-tokens"
+   ],
+   "acceptable": [
+    "single-hmac-key",
+    "retention-policy",
+    "email-in-task-logs"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "Acme sent us a new optional column, update the contract and make sure ingest does not break",
+   "files": [
+    "contracts/partner_acme.yaml",
+    "contracts/registry.py"
+   ],
+   "relevant": [
+    "acme-new-columns",
+    "backward-compat-only",
+    "registry-source-of-truth"
+   ],
+   "acceptable": [
+    "silent-null-cast",
+    "failfast-reads"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "the orders freshness check keeps alerting on Mondays, tune it",
+   "files": [
+    "quality/checks.py",
+    "quality/expectations.yaml"
+   ],
+   "relevant": [
+    "monday-freshness",
+    "sunday-drop-late",
+    "thresholds-in-yaml"
+   ],
+   "acceptable": [
+    "severity-levels",
+    "check-fixtures",
+    "row-count-floor"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "generate one ingest task per partner from the partner config service when the DAG file loads",
+   "files": [
+    "dags/nightly_ingest.py"
+   ],
+   "relevant": [
+    "dag-parse-cost",
+    "lazy-dag-config",
+    "dagbag-test"
+   ],
+   "acceptable": [
+    "per-partner-dag-question",
+    "secrets-at-task-start",
+    "sftp-manifest-check",
+    "dag-retry-backoff"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "the Celery workers running the nightly DAG get OOM killed after a few hours, find a mitigation",
+   "files": [],
+   "relevant": [
+    "worker-memory-growth"
+   ],
+   "acceptable": [
+    "spark-queue-split",
+    "dag-retry-backoff"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "write up the release process for the data platform in the team wiki",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "import the new analyst team members into the BI tool and set their permissions",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "add a Slack alert when the support ticket queue grows beyond 50 open items",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "write a schema for the new customer feedback survey form",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "migrate the team wiki from Confluence to Notion",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "export the on-call schedule to a calendar file",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "set up a test environment config for the sales team's Tableau dashboards",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "add type hints and a docstring to metric_query",
+   "files": [
+    "api/metrics.py"
+   ],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "update the owner contact in the Acme contract to the new partnerships mailbox",
+   "files": [
+    "contracts/partner_acme.yaml"
+   ],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "add unit tests for the with_retry decorator",
+   "files": [
+    "ops/retry.py"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "with-retry-snippet",
+    "http-wait-pattern"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "add a unit test for mask_email with a very short local part",
+   "files": [
+    "pii/masking.py"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "hmac-tokens"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "rename the gap_minutes argument to session_gap_minutes",
+   "files": [
+    "transforms/sessionize.py"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "shuffle-partitions-400",
+    "hot-key-skew"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "fix the typo in the backfill_range docstring",
+   "files": [
+    "dags/backfill.py"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "backfill-in-weeks"
+   ]
+  }
+ ]
+}
