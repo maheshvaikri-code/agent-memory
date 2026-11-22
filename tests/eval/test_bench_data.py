@@ -96,3 +96,19 @@ def test_no_task_text_is_shared_between_splits(tasks):
     dev = {t.task.strip().lower() for t in tasks["dev"] if t.task.strip()}
     test = {t.task.strip().lower() for t in tasks["test"] if t.task.strip()}
     assert not dev & test
+
+
+def _digest(path):
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
+def test_locked_test_split_is_unchanged():
+    """The test split is locked. An edit shows up here and must be argued for in review;
+    a wrong label is recorded in bench/RESULTS.md, not fixed in place."""
+    lock = model.TASK_DIR / "test.sha256"
+    assert lock.exists(), "tasks/test.sha256 is missing"
+    expected = dict(line.split()[::-1] for line in lock.read_text().splitlines() if line.strip())
+    files = sorted(model.TASK_DIR.glob("test-*.json"))
+    assert sorted(expected) == [p.name for p in files]
+    for path in files:
+        assert _digest(path) == expected[path.name], f"{path.name} changed after it was locked"

@@ -1,0 +1,913 @@
+{
+ "tasks": [
+  {
+   "world": "mobile",
+   "task": "clear pushed rows from the outbox before waiting for the server's reply, so a slow response can't make us send them twice",
+   "files": [
+    "src/sync/outbox.ts",
+    "src/sync/syncEngine.ts"
+   ],
+   "relevant": [
+    "bug-outbox-dup",
+    "fix-idempotency",
+    "rtc-outbox"
+   ],
+   "acceptable": [
+    "module-sync-engine",
+    "tc-sync-fake-timers"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "legal needs a GDPR data export: let users download the reviews and photos they posted",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "mobile",
+   "task": "rename MAX_BACKOFF_MS to SYNC_RETRY_CEILING_MS across the sync code and its tests",
+   "files": [
+    "src/sync/syncEngine.ts",
+    "tests/sync/syncEngine.test.ts"
+   ],
+   "relevant": [
+    "fix-backoff"
+   ],
+   "acceptable": [
+    "bp-sync-loop",
+    "tc-sync-fake-timers",
+    "rtc-outbox"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "pull server changes every minute instead of every 15 so shared waypoints show up on a friend's phone sooner",
+   "files": [
+    "src/sync/syncEngine.ts"
+   ],
+   "relevant": [
+    "hot-sync-pull"
+   ],
+   "acceptable": [
+    "module-sync-engine"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "show the elapsed hike time in the ongoing recording notification on Android",
+   "files": [],
+   "relevant": [],
+   "acceptable": [
+    "module-bg-location"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "merge concurrent waypoint edits field by field so neither phone's change gets thrown away",
+   "files": [
+    "src/sync/conflicts.ts"
+   ],
+   "relevant": [
+    "dec-lww"
+   ],
+   "acceptable": [
+    "module-sync-engine"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "support wants the app preferences attached to the diagnostics people send from the help screen",
+   "files": [],
+   "relevant": [
+    "dec-settings-doc"
+   ],
+   "acceptable": [
+    "module-crash-reporter"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "raise targetSdkVersion to 35 ahead of the Play Store deadline",
+   "files": [
+    "android/app/build.gradle"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "conv-build-number",
+    "bug-android-fgs",
+    "fix-fgs"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "add an error code for an expired login session and show a translated message when the server returns it",
+   "files": [
+    "src/api/client.ts"
+   ],
+   "relevant": [
+    "dec-api-errors"
+   ],
+   "acceptable": []
+  },
+  {
+   "world": "mobile",
+   "task": "add a mandatory difficulty field to every waypoint, existing waypoints included",
+   "files": [
+    "src/storage/db.ts"
+   ],
+   "relevant": [
+    "bug-migrate-crash",
+    "fix-migrate-crash",
+    "conv-migrations",
+    "rtc-migrate"
+   ],
+   "acceptable": [
+    "dec-schema-version",
+    "module-db",
+    "dec-lww"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "the trail list screen test times out on the CI runner about one run in five",
+   "files": [],
+   "relevant": [],
+   "acceptable": [
+    "tc-sync-fake-timers"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "",
+   "files": [
+    "src/storage/db.ts"
+   ],
+   "relevant": [
+    "conv-migrations",
+    "bug-migrate-crash",
+    "fix-migrate-crash",
+    "rtc-migrate"
+   ],
+   "acceptable": [
+    "module-db",
+    "dec-schema-version",
+    "dec-sqlite-local",
+    "td-json-columns"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "a tester's phone crashed halfway through upgrading, so the local database may be stuck between versions; make startup detect that and recover",
+   "files": [],
+   "relevant": [
+    "dec-schema-version",
+    "fix-migrate-crash",
+    "rtc-migrate",
+    "bug-migrate-crash"
+   ],
+   "acceptable": [
+    "module-db",
+    "conv-migrations"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "add a progress bar with a cancel button to the offline area download screen",
+   "files": [],
+   "relevant": [],
+   "acceptable": [
+    "module-offline-regions",
+    "dp-download-queue"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "track applied migrations in their own table instead of relying on the SQLite pragma",
+   "files": [
+    "src/storage/db.ts"
+   ],
+   "relevant": [
+    "dec-schema-version",
+    "conv-migrations",
+    "rtc-migrate"
+   ],
+   "acceptable": [
+    "module-db",
+    "fix-migrate-crash",
+    "bug-migrate-crash"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "remove the first-launch code that copies old tracks over from AsyncStorage, nobody runs those builds any more",
+   "files": [],
+   "relevant": [
+    "dec-sqlite-local"
+   ],
+   "acceptable": [
+    "bug-migrate-crash",
+    "module-db"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "keep the last 200 breadcrumbs on crash reports instead of 50",
+   "files": [
+    "src/crash/reporter.ts"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "module-crash-reporter",
+    "conv-log"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "set pausesLocationUpdatesAutomatically to true on iOS to save battery while the hiker rests",
+   "files": [
+    "src/location/backgroundLocation.ts"
+   ],
+   "relevant": [
+    "quirk-ios-pause"
+   ],
+   "acceptable": [
+    "module-bg-location",
+    "dec-distance-filter"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "keep GPS fixes up to 60 m accuracy so tracks under heavy tree cover don't end up with gaps",
+   "files": [
+    "src/location/trackRecorder.ts"
+   ],
+   "relevant": [
+    "conv-accuracy"
+   ],
+   "acceptable": [
+    "bp-gps-spike",
+    "fix-gps-spike"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "add KML as a third format for the export command",
+   "files": [
+    "cli/trailmate_cli/export.py"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "module-cli-export"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "on bike rides the recorded distance comes out far too short, as if real points are being thrown away",
+   "files": [],
+   "relevant": [
+    "fix-gps-spike",
+    "bp-gps-spike"
+   ],
+   "acceptable": [
+    "conv-accuracy",
+    "dec-distance-filter"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "write every GPS fix to the database the moment it arrives so a killed app loses nothing",
+   "files": [
+    "src/location/trackRecorder.ts"
+   ],
+   "relevant": [
+    "perf-track-write"
+   ],
+   "acceptable": [
+    "td-location-singleton"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "document how to set up an Android emulator for new contributors",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "mobile",
+   "task": "move the recording service declaration into a separate Android library module",
+   "files": [
+    "android/app/src/main/AndroidManifest.xml"
+   ],
+   "relevant": [
+    "bug-android-fgs",
+    "fix-fgs"
+   ],
+   "acceptable": [
+    "module-bg-location"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "ask for the notification permission on Android 13 through the permission gate",
+   "files": [
+    "src/permissions/permissionGate.ts"
+   ],
+   "relevant": [
+    "conv-permission-copy",
+    "bug-blocked-loop",
+    "fix-blocked-loop"
+   ],
+   "acceptable": [
+    "module-permission-gate",
+    "dec-perm-sequence"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "add a lane that pushes Android builds to the closed testing track for the hiking club beta",
+   "files": [
+    "release/fastlane/Fastfile"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "module-fastfile",
+    "conv-build-number",
+    "quirk-play-version"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "make the background location explanation in Info.plist shorter and friendlier",
+   "files": [
+    "ios/Trailmate/Info.plist"
+   ],
+   "relevant": [
+    "alt-always-first"
+   ],
+   "acceptable": [
+    "dec-perm-sequence",
+    "conv-permission-copy"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "when someone who refused location taps Record, take them straight to the system settings page",
+   "files": [],
+   "relevant": [
+    "bug-blocked-loop",
+    "fix-blocked-loop"
+   ],
+   "acceptable": [
+    "conv-permission-copy",
+    "module-permission-gate",
+    "dec-perm-sequence"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "if the trail details endpoint returns 404, the app should handle it with a 'this trail was removed' screen instead of the generic error",
+   "files": [],
+   "relevant": [],
+   "acceptable": [
+    "dec-api-errors"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "add a trail closure alert that opens the closure details when it is tapped",
+   "files": [
+    "src/push/notifications.ts"
+   ],
+   "relevant": [
+    "conv-push-payload"
+   ],
+   "acceptable": [
+    "module-notifications",
+    "quirk-android-channel"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "Android users say the weather alert is too quiet, make it play a louder sound",
+   "files": [],
+   "relevant": [
+    "quirk-android-channel"
+   ],
+   "acceptable": [
+    "module-notifications"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "add a pull request workflow that runs eslint and the type checker",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "mobile",
+   "task": "refresh the user's alert regions in the background on iPhone even after they swipe the app away",
+   "files": [],
+   "relevant": [
+    "oq-silent-push"
+   ],
+   "acceptable": [
+    "module-notifications"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "move iOS push from Firebase to sending through APNs directly",
+   "files": [],
+   "relevant": [
+    "dec-fcm-both"
+   ],
+   "acceptable": [
+    "module-notifications",
+    "bug-push-token-stale"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "the reviews endpoint has no response schema; add one and validate responses against it in the API client",
+   "files": [],
+   "relevant": [],
+   "acceptable": [
+    "dec-api-errors"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "add debug output to registerToken so we can trace why some devices stop getting alerts",
+   "files": [
+    "src/push/notifications.ts"
+   ],
+   "relevant": [
+    "conv-log",
+    "bug-push-token-stale"
+   ],
+   "acceptable": [
+    "module-notifications",
+    "dec-fcm-both"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "grant Pro on the device as soon as the store says the purchase went through, without the server round trip",
+   "files": [
+    "src/iap/purchases.ts"
+   ],
+   "relevant": [
+    "dec-server-receipt",
+    "bug-pending-purchase",
+    "fix-pending-purchase",
+    "rtc-iap"
+   ],
+   "acceptable": [
+    "module-purchases"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "our navigation stack is two majors behind; migrate it to react-navigation 6 and fix the route param types",
+   "files": [],
+   "relevant": [],
+   "acceptable": [
+    "module-notifications"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "some Android customers who pay in cash at a shop never get Pro even though Google took the money",
+   "files": [],
+   "relevant": [
+    "bug-pending-purchase",
+    "fix-pending-purchase"
+   ],
+   "acceptable": [
+    "rtc-iap",
+    "module-purchases",
+    "dec-server-receipt"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "add a Restore purchases button for people who reinstalled the app",
+   "files": [
+    "src/iap/purchases.ts"
+   ],
+   "relevant": [
+    "dec-server-receipt"
+   ],
+   "acceptable": [
+    "rtc-iap",
+    "module-purchases"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "update the waypoint notes screen so the keyboard no longer covers the field on small phones",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "mobile",
+   "task": "skip the temporary file when saving downloaded map tiles, it doubles the disk writes",
+   "files": [
+    "src/maps/tileCache.ts"
+   ],
+   "relevant": [
+    "bug-tile-corrupt",
+    "fix-tile-corrupt"
+   ],
+   "acceptable": [
+    "module-tile-cache"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "let Android users keep the map tile cache on the SD card",
+   "files": [],
+   "relevant": [
+    "fix-tile-corrupt",
+    "bug-tile-corrupt"
+   ],
+   "acceptable": [
+    "dec-tile-cache-500",
+    "module-tile-cache"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "translate the 'region too large' error message into German and Spanish",
+   "files": [
+    "src/maps/offlineRegions.ts"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "dec-region-limit",
+    "module-offline-regions"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "fetch 16 tiles in parallel when downloading an offline area so it finishes faster",
+   "files": [
+    "src/maps/offlineRegions.ts"
+   ],
+   "relevant": [
+    "dp-download-queue"
+   ],
+   "acceptable": [
+    "module-offline-regions",
+    "dec-region-limit"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "initialise Sentry before anything else in the app entry point so we see crashes that happen while booting",
+   "files": [
+    "src/crash/reporter.ts"
+   ],
+   "relevant": [
+    "perf-cold-start"
+   ],
+   "acceptable": [
+    "module-crash-reporter",
+    "dec-sentry"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "the log in button stays disabled after a wrong password is entered",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "mobile",
+   "task": "now that Firebase is in the app anyway, should crash reports go to Crashlytics",
+   "files": [],
+   "relevant": [
+    "dec-sentry"
+   ],
+   "acceptable": [
+    "module-crash-reporter",
+    "dec-fcm-both"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "",
+   "files": [
+    "src/crash/reporter.ts"
+   ],
+   "relevant": [
+    "conv-release-name",
+    "bug-sourcemaps",
+    "fix-sourcemaps",
+    "perf-cold-start"
+   ],
+   "acceptable": [
+    "module-crash-reporter",
+    "dec-sentry"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "process deep links in our marketing emails that should open a specific trail",
+   "files": [],
+   "relevant": [],
+   "acceptable": [
+    "module-notifications"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "put heart rate into the GPX we export so Garmin Connect picks it up",
+   "files": [],
+   "relevant": [
+    "dec-gpx-11"
+   ],
+   "acceptable": [
+    "module-cli-export"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "when the API is down, the CLI export dumps a long Python traceback at the user",
+   "files": [
+    "cli/trailmate_cli/export.py"
+   ],
+   "relevant": [
+    "idiom-cli-errors"
+   ],
+   "acceptable": [
+    "module-cli-export",
+    "dec-api-errors"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "add a 10 second timeout to every request in the API client",
+   "files": [
+    "src/api/client.ts"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "dec-api-errors",
+    "bug-outbox-dup",
+    "fix-idempotency"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "finish the GPX importer's dedupe so points a fraction of a second apart count as the same point",
+   "files": [
+    "cli/trailmate_cli/gpx_import.py"
+   ],
+   "relevant": [
+    "pw-gpx-dedupe"
+   ],
+   "acceptable": [
+    "module-cli-import",
+    "tc-gpx-fixtures",
+    "perf-gpx-stream"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "switch the GPX reader to lxml because it parses faster",
+   "files": [
+    "cli/trailmate_cli/gpx_import.py"
+   ],
+   "relevant": [
+    "bug-gpx-xxe",
+    "fix-gpx-xxe",
+    "perf-gpx-stream"
+   ],
+   "acceptable": [
+    "module-cli-import",
+    "tc-gpx-fixtures"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "add doc comments to resolve() describing its arguments",
+   "files": [
+    "src/sync/conflicts.ts"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "dec-lww"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "add a test case for a watch that writes its timestamps without a timezone",
+   "files": [
+    "tests/cli/test_gpx_import.py"
+   ],
+   "relevant": [
+    "tc-gpx-fixtures",
+    "bp-gpx-naive-time",
+    "fix-gpx-naive-time"
+   ],
+   "acceptable": [
+    "module-cli-import"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "rewrite the trailmate CLI in TypeScript so it can reuse the app's API client",
+   "files": [],
+   "relevant": [
+    "dec-cli-python"
+   ],
+   "acceptable": [
+    "module-cli-export",
+    "module-cli-import"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "the distance formatter has no tests; cover km and miles with a few unit tests",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "mobile",
+   "task": "ship tonight's hotfix to every user at once instead of the usual staged rollout",
+   "files": [
+    "release/fastlane/Fastfile"
+   ],
+   "relevant": [
+    "dec-phased"
+   ],
+   "acceptable": [
+    "module-fastfile"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "drop our GitHub macOS runners and build the store releases on a hosted React Native build service",
+   "files": [],
+   "relevant": [
+    "alt-eas-build"
+   ],
+   "acceptable": [
+    "bug-ci-runner",
+    "fix-ci-runner",
+    "module-fastfile"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "split the sync engine test file into one file for push and one for pull",
+   "files": [
+    "tests/sync/syncEngine.test.ts"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "tc-sync-fake-timers",
+    "rtc-outbox"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "import the phone's contacts so users can invite friends to a group hike",
+   "files": [],
+   "relevant": [
+    "conv-permission-copy"
+   ],
+   "acceptable": [
+    "module-permission-gate",
+    "bug-blocked-loop",
+    "fix-blocked-loop"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "queue analytics events while the phone is offline and send them when the connection comes back",
+   "files": [],
+   "relevant": [
+    "quirk-netinfo",
+    "wk-netinfo"
+   ],
+   "acceptable": [
+    "module-sync-engine",
+    "bp-sync-loop"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "set the API base URL from a config switch so debug builds can talk to staging",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "mobile",
+   "task": "Google Play is holding the Android release over the background location service; what do we still have to submit",
+   "files": [],
+   "relevant": [
+    "fix-fgs",
+    "bug-android-fgs"
+   ],
+   "acceptable": [
+    "module-bg-location"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "store each track point's speed next to its latitude, longitude and altitude",
+   "files": [
+    "src/location/trackRecorder.ts",
+    "src/storage/db.ts"
+   ],
+   "relevant": [
+    "conv-migrations",
+    "fix-migrate-crash",
+    "rtc-migrate"
+   ],
+   "acceptable": [
+    "bug-migrate-crash",
+    "perf-track-write",
+    "module-db",
+    "dec-schema-version"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "turn Hermes off in the Android build to check whether it is what breaks the sync cursor dates",
+   "files": [
+    "android/app/build.gradle"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "dec-sentry",
+    "perf-cold-start"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "",
+   "files": [
+    "src/permissions/permissionGate.ts"
+   ],
+   "relevant": [
+    "bug-blocked-loop",
+    "fix-blocked-loop",
+    "dec-perm-sequence",
+    "conv-permission-copy"
+   ],
+   "acceptable": [
+    "module-permission-gate",
+    "alt-always-first"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "show the Pro price in the user's local currency on the paywall",
+   "files": [],
+   "relevant": [],
+   "acceptable": [
+    "module-purchases"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "",
+   "files": [
+    "src/location/backgroundLocation.ts"
+   ],
+   "relevant": [
+    "dec-distance-filter",
+    "quirk-ios-pause"
+   ],
+   "acceptable": [
+    "module-bg-location",
+    "bug-android-fgs",
+    "fix-fgs"
+   ]
+  },
+  {
+   "world": "mobile",
+   "task": "read the Android versionCode from a version.properties file checked into the repo",
+   "files": [
+    "android/app/build.gradle"
+   ],
+   "relevant": [
+    "conv-build-number"
+   ],
+   "acceptable": [
+    "quirk-play-version",
+    "module-fastfile"
+   ]
+  }
+ ]
+}
