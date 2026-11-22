@@ -54,7 +54,7 @@ def test_world_texts_are_not_near_duplicates(worlds, name):
 def test_generic_words_recur_across_worlds(worlds):
     """The worlds must share ordinary vocabulary, or document frequency means nothing."""
     assert set(worlds) == set(model.WORLDS), "all three worlds must exist"
-    stems = {tokenize(word)[0] for word in GENERIC}
+    stems = {t[0] for t in (tokenize(word) for word in GENERIC) if t}
     reused = 0
     for stem in stems:
         in_worlds = 0
