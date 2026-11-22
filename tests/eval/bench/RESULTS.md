@@ -278,6 +278,11 @@ channel would do and cost. Dev only: the locked test split was not touched.
   identifier match (the identifier lift runs after the filter and is untouched) and pinned records are
   not filtered. Records that arrive only through graph links have no lexical match and are not filtered.
   It is implemented by wrapping `retriever.classify` for the run; the cosine is to the task text (plus symbols).
+  `classify` is not given the record, so the wrapper finds it by walking up the stack one frame
+  (`sys._getframe(1)`), checking that the caller is the closure named `passes` and reading its local `ref`;
+  that is a measurement hack that breaks if the closure or its parameter is renamed or the call is refactored
+  (the script then raises an error rather than silently leaving the tier unfiltered), and a product version
+  would pass the ref to `classify` (or move the check into `passes`) explicitly.
 
 Reference: the final retriever without a channel: 0.9875 (158/160), 15.21 noise records and 947.8 tokens per
 task, 0/37, 0 leaks. The saved comparison baseline is 1139.4 tokens per task.
@@ -317,6 +322,12 @@ two in-sample scenarios fail (28/30: the "write a database migration for the ord
 scenario and a superseded-condition scenario, "what is our logging convention"); held-out abstention rises to 15/16.
 Between 0.5 and 0.7 the recall and noise curves are steep, so a threshold inside that gap is sensitive to the
 exact value.
+
+Against the pre-registered acceptance rules, the tau 0.7 row breaks rule 1: recall may not fall, and a fall of
+up to 1 point is accepted only with a noise cut of 70% or more. Here recall falls 3.1 points (158/160 to
+153/160, above the 1-point allowance) and the noise cut is 57% against the baseline, below 70%. As measured, that
+row is therefore not a candidate that satisfies the rules; it also misses rule 4 (clean-abstain 0.135 against
+0.80). The tau 0.5 row keeps recall but its 21% cut against the baseline fails rules 3 and 4.
 
 Why it is capped: at 0.7 the filter removes single-concept noise almost completely (858 to 33 noise records
 over the 111 tasks, counted from `memory.recall` directly, which differs slightly from the service's

@@ -21,6 +21,13 @@ The adapter embeds each active record's text once per world with BAAI/bge-small-
 arms with the model's recommended retrieval instruction in front of the query.
 The patches are applied to the Retriever class for the run only. sentence-transformers is imported
 lazily, so importing this module without it works.
+
+Fragility of arm B: `classify` is called inside the closure `passes(ref)` of `Retriever._rank` and does
+not receive the record, so the wrapper reads `ref` from its caller's frame (`sys._getframe(1)`, the
+caller named `passes`, its local `ref`). Renaming that closure or its parameter, or calling `classify`
+from elsewhere, breaks this. It then raises RuntimeError instead of falling back to the unfiltered tier
+(which would read as "arm B does nothing"), and a tau run in which the filter was never consulted
+(`_State.consulted == 0`) raises too. A product version would pass the ref to `classify` explicitly.
 """
 import argparse
 import contextlib
@@ -132,6 +139,7 @@ class _State:
     tau: Optional[float] = None          # arm B
     adapter: Any = None
     query: str = ""
+    consulted: int = 0                   # arm B: times the filter looked up a record's cosine
 
 
 def _pinned(rec) -> bool:
@@ -162,10 +170,13 @@ def patched_retriever():
         tier = original_classify(**args)
         if _State.tau is None or _State.adapter is None or args.get("identifier") or tier == "strong":
             return tier
-        # here: a single concept, medium (rare word) or weak. The caller is `passes(ref)` of _rank.
+        # here: a single concept, medium (rare word) or weak. The caller must be `passes(ref)` of
+        # _rank: fragile by design of the measurement (see the module docstring); fail, do not fall back.
         caller = sys._getframe(1)
         if caller.f_code.co_name != "passes" or "ref" not in caller.f_locals:
-            return tier
+            raise RuntimeError("arm B cannot find the record: classify() is no longer called from "
+                               "Retriever._rank's passes(ref); update the frame lookup in arms.py")
+        _State.consulted += 1
         if _State.adapter.similarity(_State.query).get(caller.f_locals["ref"], 0.0) >= _State.tau:
             return tier
         return WEAK     # unconfirmed: dropped by the floor (a pinned record bypasses it)
@@ -210,6 +221,12 @@ def run(tasks, built) -> Dict[str, Any]:
         noise_tokens_empty=sum(r.noise_tokens for r in empty) / len(empty) if empty else 0.0,
         noise_tokens_nonempty=sum(r.noise_tokens for r in full) / len(full) if full else 0.0,
         missed=[[r.world, r.task, k] for r in results for k in r.missed])
+
+
+def require_consulted(what: str) -> None:
+    """Fail loudly if an arm B run never reached the filter (it would read as 'arm B does nothing')."""
+    if _State.consulted == 0:
+        raise RuntimeError(f"arm B ({what}): the confirmation filter was never consulted")
 
 
 def configure(built, adapters, mode: str) -> None:
@@ -257,10 +274,13 @@ def insample(encoder, floors: Sequence[float], taus: Sequence[float], query_pref
             retriever.semantic = adapter if mode == "channel" else None
             retriever._arm_adapter = adapter if mode == "filter" else None
             _State.tau = value if mode == "filter" else None
+            _State.consulted = 0
             if mode == "channel":
                 module.SEMANTIC_FLOOR = value
             card = evaluate(*fns)
             held = evaluate(*fns, scenarios=HELDOUT)
+            if mode == "filter":
+                require_consulted(f"in-sample tau {value}")
             out.append(dict(mode=mode, value=value, hits=card.include_hits, total=card.include_total,
                             leaks=card.leaks, abstain=f"{card.abstain_hits}/{card.abstain_total}",
                             held=f"{held.abstain_hits}/{held.abstain_total}",
@@ -339,8 +359,9 @@ def main(argv=None) -> int:
             out += ["", f"## Arm B, {tag}confirmation filter tau grid", HEADER]
             configure(built, adapters, "filter")
             for tau in ARM_B_TAUS:
-                _State.tau = tau
+                _State.tau, _State.consulted = tau, 0
                 r = run(tasks, built)
+                require_consulted(f"tau {tau}")
                 record(f"armB {tag}".strip(), str(tau), r)
                 out.append(row(f"tau {tau}", r))
                 out.append(f"|  (extra relevant lost: {', '.join(extra_missed(r)) or 'none'}) | | | | | | | |")
