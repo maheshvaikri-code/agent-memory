@@ -86,6 +86,11 @@ def parse_world(name: str, data: dict) -> World:
         for needed in _template_fields(kind):
             if not str(fields.get(needed, "")).strip():
                 raise BenchError(f"{where}: missing field {needed!r} of kind {kind!r}")
+        scope_field = KINDS[kind].scope_field
+        if scope_field and scope_field in fields and not isinstance(fields[scope_field], str):
+            raise BenchError(f"{where}: field {scope_field!r} of kind {kind!r} must be a string "
+                             "(one path or substring, or a comma-separated string), not a list; "
+                             "use the record's 'scope' for a list of globs")
         rec = WorldRecord(key=key, kind=kind, fields=fields, scope=raw.get("scope"),
                           pinned=bool(raw.get("pinned")),
                           anchors=[list(a) for a in raw.get("anchors") or []],

@@ -33,9 +33,7 @@
     "rule": "never write tokens, API keys, SSO assertions or customer email bodies to the log; pass the value through redact() first",
     "enforced_by": "ruff plugin and review",
     "exceptions": "",
-    "applies_to": [
-     "app/**"
-    ]
+    "applies_to": "app/"
    }
   },
   {
@@ -47,9 +45,7 @@
     "rule": "every queryset on a customer-owned model starts from for_tenant(workspace); a bare .filter() leaked another workspace's cards in INC-187",
     "enforced_by": "review",
     "exceptions": "admin tooling under app/admin that records an AuditEvent",
-    "applies_to": [
-     "app/**"
-    ]
+    "applies_to": "app/"
    }
   },
   {
@@ -76,9 +72,7 @@
    "fields": {
     "name": "position_precision_exhaustion",
     "signature": "after about 50 midpoint inserts into the same gap the decimal positions collapse to equal values and cards flip order on reload",
-    "modules_affected": [
-     "app/models/task.py"
-    ]
+    "modules_affected": "app/models/task.py"
    },
    "anchors": [
     [
@@ -177,9 +171,7 @@
    "fields": {
     "name": "reorder_deadlock",
     "signature": "two users dragging cards in the same column deadlock each other on row locks",
-    "modules_affected": [
-     "app/models/task.py"
-    ]
+    "modules_affected": "app/models/task.py"
    }
   },
   {
@@ -219,9 +211,7 @@
     "rule": "error responses are {error: {code, message, request_id}} with the HTTP status carrying the class; never return 200 with an error body",
     "enforced_by": "contract test",
     "exceptions": "legacy /api/v0 export endpoints",
-    "applies_to": [
-     "app/api/**"
-    ]
+    "applies_to": "app/api/"
    },
    "anchors": [
     [
@@ -265,9 +255,7 @@
    "fields": {
     "name": "openapi_schema_drift",
     "signature": "serializer changed but docs/openapi.yaml was not regenerated, so the published API reference lies about field names",
-    "modules_affected": [
-     "app/api/v1/**"
-    ]
+    "modules_affected": "app/api/v1/"
    }
   },
   {
@@ -327,10 +315,7 @@
    "fields": {
     "name": "webhook_retry_storm",
     "signature": "a failing receiver retried without a cap floods the queue and delays unrelated notifications",
-    "modules_affected": [
-     "app/api/webhooks.py",
-     "app/jobs/queue.py"
-    ]
+    "modules_affected": "app/api/webhooks.py,app/jobs/queue.py"
    },
    "anchors": [
     [
@@ -364,9 +349,7 @@
     "rule": "sign every outgoing webhook with HMAC-SHA256 over timestamp.body in X-Taskboard-Signature; receivers must reject timestamps older than 5 minutes",
     "enforced_by": "unit test",
     "exceptions": "",
-    "applies_to": [
-     "app/api/webhooks.py"
-    ]
+    "applies_to": "app/api/webhooks.py"
    },
    "anchors": [
     [
@@ -443,9 +426,7 @@
    "fields": {
     "name": "out_of_order_provider_events",
     "signature": "billing events arrive out of order so a stale event overwrites newer subscription state",
-    "modules_affected": [
-     "app/billing/**"
-    ]
+    "modules_affected": "app/billing/"
    },
    "anchors": [
     [
@@ -500,9 +481,7 @@
     "rule": "money is an integer count of cents plus an ISO currency code; never a float and never a formatted string",
     "enforced_by": "mypy and review",
     "exceptions": "display formatting in frontend/src/api/client.ts",
-    "applies_to": [
-     "app/billing/**"
-    ]
+    "applies_to": "app/billing/"
    }
   },
   {
@@ -590,9 +569,7 @@
    "fields": {
     "name": "orphaned_uploads",
     "signature": "row created before the browser finished the upload leaves attachments with no object, and abandoned objects with no row",
-    "modules_affected": [
-     "app/storage/attachments.py"
-    ]
+    "modules_affected": "app/storage/attachments.py"
    },
    "anchors": [
     [
@@ -668,9 +645,7 @@
     "rule": "every outbound mail renders a text part and an html part from the same template and carries a one-click unsubscribe header",
     "enforced_by": "test_email_templates",
     "exceptions": "password reset mail has no unsubscribe link",
-    "applies_to": [
-     "app/notify/**"
-    ]
+    "applies_to": "app/notify/"
    },
    "anchors": [
     [
@@ -685,9 +660,7 @@
    "fields": {
     "name": "slack_rate_limit_dropped",
     "signature": "a 429 from the chat API handled as a permanent failure, so the message vanishes with no log line",
-    "modules_affected": [
-     "app/notify/slack.py"
-    ]
+    "modules_affected": "app/notify/slack.py"
    },
    "anchors": [
     [
@@ -805,9 +778,7 @@
    "fields": {
     "name": "csv_formula_injection",
     "signature": "task titles beginning with = + - or @ run as formulas when the export is opened in Excel",
-    "modules_affected": [
-     "app/reports/export.py"
-    ]
+    "modules_affected": "app/reports/export.py"
    },
    "anchors": [
     [
@@ -897,9 +868,7 @@
    "fields": {
     "domain": "reporting and CSV export",
     "depth": "deep: wrote the rollup tables and the CSV writer",
-    "modules": [
-     "app/reports/**"
-    ]
+    "modules": "app/reports/"
    }
   },
   {
@@ -1080,10 +1049,7 @@
     "rule": "session cookies are HttpOnly and SameSite=Lax and live 12 hours; an SSO workspace may shorten that but never extend it",
     "enforced_by": "settings test",
     "exceptions": "",
-    "applies_to": [
-     "app/auth/**",
-     "app/settings/**"
-    ]
+    "applies_to": "app/auth/,app/settings/"
    },
    "anchors": [
     [
@@ -1173,9 +1139,7 @@
     "rule": "every job is idempotent, declares max_retries and writes its job id into each log line so a retry can be traced",
     "enforced_by": "review",
     "exceptions": "",
-    "applies_to": [
-     "app/jobs/**"
-    ]
+    "applies_to": "app/jobs/"
    }
   },
   {
@@ -1186,10 +1150,7 @@
     "rule": "cache keys come from cache/keys.py and include the workspace id and the schema version prefix",
     "enforced_by": "review",
     "exceptions": "",
-    "applies_to": [
-     "app/cache/**",
-     "app/billing/**"
-    ]
+    "applies_to": "app/cache/,app/billing/"
    },
    "anchors": [
     [
@@ -1219,9 +1180,7 @@
    "fields": {
     "name": "stale_cache_after_deploy",
     "signature": "a deploy changes the shape of a cached object and old entries raise on read until they expire",
-    "modules_affected": [
-     "app/cache/**"
-    ]
+    "modules_affected": "app/cache/"
    }
   },
   {
@@ -1332,9 +1291,7 @@
     "rule": "call the API with axios directly from components and set headers where they are needed",
     "enforced_by": "none",
     "exceptions": "",
-    "applies_to": [
-     "frontend/**"
-    ]
+    "applies_to": "frontend/"
    },
    "scope": [
     "frontend/**"
@@ -1349,9 +1306,7 @@
     "rule": "all API calls go through apiFetch in frontend/src/api/client.ts, which attaches the CSRF token and maps error codes to messages; no raw fetch in components",
     "enforced_by": "eslint no-restricted-globals",
     "exceptions": "",
-    "applies_to": [
-     "frontend/**"
-    ]
+    "applies_to": "frontend/"
    },
    "anchors": [
     [

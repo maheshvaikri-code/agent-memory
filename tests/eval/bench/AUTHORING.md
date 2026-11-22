@@ -44,7 +44,10 @@ Record fields:
   non-empty field. The template is how the record reads in a prompt, so write fields that read
   like a note a developer's agent would really have saved: a reason, an incident, a number.
 - `scope`: optional list of file globs (`["app/webhooks/**"]`). Some kinds derive scope from a
-  field (see `scope_field` in `KINDS`); you can also set it directly.
+  field (see `scope_field` in `KINDS`); you can also set it directly. Fields named in a kind's
+  `scope_field` (`applies_to`, `modules_affected`, `location`, ...) are strings, never lists: one
+  path or substring (`"app/billing/"`), or several comma-separated (`"a.py,b.py"`). Use `scope`
+  for a list of globs.
 - `anchors`: `[[path, symbol]]`, paths from `files`. Ties the note to a file.
 - `pinned`: true for the one or two always-on rules of the project (`priority: must`, scope `*`).
 - `supersedes`: this record replaces an earlier one; the earlier one stops being returned.

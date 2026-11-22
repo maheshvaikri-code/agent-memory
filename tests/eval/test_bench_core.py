@@ -45,6 +45,16 @@ def test_parse_world_rejects_broken_worlds(change, message):
         model.parse_world("saas", data)
 
 
+def test_parse_world_requires_string_scope_fields():
+    import copy
+    data = copy.deepcopy(WORLD)
+    data["records"][3]["fields"]["modules_affected"] = "svc/a.py,svc/b.py"   # a string is fine
+    model.parse_world("saas", data)
+    data["records"][3]["fields"]["modules_affected"] = ["svc/a.py"]          # a list is not
+    with pytest.raises(model.BenchError, match=r"'bad'.*'modules_affected'.*comma-separated"):
+        model.parse_world("saas", data)
+
+
 def test_parse_world_rejects_a_forward_reference():
     import copy
     data = copy.deepcopy(WORLD)
