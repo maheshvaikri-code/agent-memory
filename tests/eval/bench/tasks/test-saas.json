@@ -1,0 +1,866 @@
+{
+ "tasks": [
+  {
+   "world": "saas",
+   "task": "drop the old integer sort_order column from tasks now that the board reads position",
+   "files": [],
+   "relevant": [
+    "expand-then-contract"
+   ],
+   "acceptable": [
+    "migration-test-cases",
+    "task-position-fraction"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "add an index on tasks (project_id, deleted_at) so the trash view loads quickly",
+   "files": [
+    "migrations/0042_task_position.py"
+   ],
+   "relevant": [
+    "concurrent-index-quirk"
+   ],
+   "acceptable": [
+    "expand-then-contract",
+    "migration-test-cases",
+    "softdelete-manager-quirk"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "write tests for the data migration that copies due dates into the new deadlines table",
+   "files": [
+    "tests/conftest.py"
+   ],
+   "relevant": [
+    "migration-test-cases",
+    "db-fixture-convention"
+   ],
+   "acceptable": [
+    "expand-then-contract"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "let users insert a new card at the very top of a column without renumbering the others",
+   "files": [
+    "app/models/task.py"
+   ],
+   "relevant": [
+    "task-position-fraction",
+    "position-collision",
+    "position-rebalance-fix"
+   ],
+   "acceptable": [
+    "task-model-module"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "add a 'move to top' item to the card menu on the board",
+   "files": [
+    "frontend/src/components/Board.tsx"
+   ],
+   "relevant": [
+    "react-query-board",
+    "drag-snaps-back"
+   ],
+   "acceptable": [
+    "task-position-fraction",
+    "api-client-only"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "add a trash view per project that lists deleted cards and lets the user restore them",
+   "files": [
+    "app/models/task.py"
+   ],
+   "relevant": [
+    "softdelete-manager-quirk",
+    "board-hard-delete-alt"
+   ],
+   "acceptable": [
+    "task-model-module",
+    "reindex-on-save"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "write a nightly job that permanently purges cards trashed more than 30 days ago",
+   "files": [
+    "app/jobs/queue.py",
+    "app/models/task.py"
+   ],
+   "relevant": [
+    "softdelete-manager-quirk",
+    "board-hard-delete-alt",
+    "job-idempotent"
+   ],
+   "acceptable": [
+    "named-queues",
+    "trashed-still-searchable",
+    "orphan-uploads"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "make openapi fails locally with 'connection refused' to the database, so I can't update the API docs",
+   "files": [],
+   "relevant": [
+    "openapi-regenerate"
+   ],
+   "acceptable": [
+    "openapi-drift"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "a customer's Zapier zap created the same task twice after a gateway timeout",
+   "files": [],
+   "relevant": [
+    "idempotency-key"
+   ],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "switch the workspace members list endpoint to page numbers so the UI can show 'page 3 of 10'",
+   "files": [],
+   "relevant": [
+    "cursor-pagination"
+   ],
+   "acceptable": [
+    "openapi-drift"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "send a Retry-After header and the right error body when a token goes over its per-minute quota",
+   "files": [
+    "app/settings/base.py"
+   ],
+   "relevant": [
+    "rate-limit-per-token",
+    "api-error-shape"
+   ],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "include the comment count and the latest three comments on each card in the board list response",
+   "files": [
+    "app/api/v1/tasks.py"
+   ],
+   "relevant": [
+    "board-load-budget",
+    "board-load-hot-path"
+   ],
+   "acceptable": [
+    "cursor-pagination",
+    "openapi-drift",
+    "stale-cache-shape",
+    "cache-version-bump"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "a receiver says our task.updated webhook sometimes arrives before the task.created it belongs to",
+   "files": [],
+   "relevant": [
+    "webhook-order-quirk"
+   ],
+   "acceptable": [
+    "webhook-retry-cap"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "webhook deliveries to one slow customer endpoint are tying up every webhooks worker",
+   "files": [],
+   "relevant": [
+    "webhook-timeout-budget"
+   ],
+   "acceptable": [
+    "named-queues",
+    "retry-storm"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "let workspace admins turn a disabled webhook endpoint back on and replay the events it missed",
+   "files": [
+    "app/api/webhooks.py"
+   ],
+   "relevant": [
+    "webhook-retry-cap",
+    "webhook-signing",
+    "webhook-order-quirk"
+   ],
+   "acceptable": [
+    "retry-storm",
+    "retry-storm-fix"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "next_delay is hard to read, tidy it up without changing behaviour",
+   "files": [
+    "app/api/webhooks.py"
+   ],
+   "relevant": [
+    "webhook-retry-cap",
+    "retry-storm"
+   ],
+   "acceptable": [
+    "webhook-retry-cases",
+    "retry-storm-fix"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "handle customer.subscription.deleted from the billing provider and drop the workspace to the free plan",
+   "files": [
+    "app/billing/stripe_sync.py"
+   ],
+   "relevant": [
+    "provider-event-order",
+    "provider-event-fix",
+    "billing-mirror-state"
+   ],
+   "acceptable": [
+    "billing-split-handlers",
+    "seat-count-bug",
+    "plans-module"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "read the dunning retry count and spacing from the plan catalogue so enterprise gets a longer grace period",
+   "files": [
+    "app/billing/stripe_sync.py",
+    "app/billing/plans.py"
+   ],
+   "relevant": [
+    "dunning-hardcoded",
+    "plans-module"
+   ],
+   "acceptable": [
+    "billing-mirror-state"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "work out what to charge when a customer adds seats halfway through an annual contract",
+   "files": [],
+   "relevant": [
+    "annual-seat-question",
+    "money-in-cents"
+   ],
+   "acceptable": [
+    "billing-mirror-state",
+    "seat-count-bug"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "check the seat limit against the billing provider's API every time someone sends an invite",
+   "files": [
+    "app/billing/plans.py"
+   ],
+   "relevant": [
+    "billing-mirror-state"
+   ],
+   "acceptable": [
+    "plans-module"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "let users attach a file by pasting a URL and have the server download it",
+   "files": [],
+   "relevant": [
+    "attachments-presigned",
+    "attachment-size-cap"
+   ],
+   "acceptable": [
+    "orphan-uploads"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "confirm uploads from the bucket's object-created event instead of waiting for the browser to call back",
+   "files": [
+    "app/storage/attachments.py"
+   ],
+   "relevant": [
+    "orphan-uploads",
+    "orphan-sweep"
+   ],
+   "acceptable": [
+    "attachments-presigned",
+    "job-idempotent"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "add per-user quiet hours so nobody gets notification mail at night",
+   "files": [
+    "app/notify/email.py"
+   ],
+   "relevant": [
+    "email-digest-15min"
+   ],
+   "acceptable": [
+    "bounce-handling",
+    "notifier-abstraction"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "add a weekly summary email of the cards each user completed",
+   "files": [
+    "app/notify/email.py"
+   ],
+   "relevant": [
+    "email-text-and-html",
+    "bounce-handling"
+   ],
+   "acceptable": [
+    "email-digest-15min",
+    "markdown-documents"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "post notifications to Microsoft Teams channels as well as Slack",
+   "files": [
+    "app/notify/slack.py"
+   ],
+   "relevant": [
+    "notifier-abstraction"
+   ],
+   "acceptable": [
+    "slack-429-dropped",
+    "slack-429-requeue",
+    "email-digest-15min"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "a workspace that uninstalled our Slack app has a notification job that keeps retrying",
+   "files": [],
+   "relevant": [
+    "slack-429-requeue"
+   ],
+   "acceptable": [
+    "slack-429-dropped",
+    "job-idempotent"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "offer an XLSX download next to the CSV export",
+   "files": [
+    "app/reports/export.py"
+   ],
+   "relevant": [
+    "csv-formula-injection",
+    "csv-escape-fix",
+    "csv-memory-budget",
+    "csv-export-background"
+   ],
+   "acceptable": [
+    "export-row-cap",
+    "chunked-iter-snippet",
+    "reporting-expertise"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "accented task titles come out garbled when customers open the export in Excel",
+   "files": [],
+   "relevant": [
+    "csv-bom-quirk"
+   ],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "build an importer that reads back a Taskboard CSV export into another workspace",
+   "files": [
+    "app/importers/trello.py"
+   ],
+   "relevant": [
+    "csv-bom-quirk",
+    "import-row-errors",
+    "csv-escape-fix"
+   ],
+   "acceptable": [
+    "import-checkpoint",
+    "csv-formula-injection",
+    "markdown-documents"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "customers say the download link in the export email stops working after a week",
+   "files": [],
+   "relevant": [
+    "csv-export-background"
+   ],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "add a CSV download of the workspace member list to the admin settings page",
+   "files": [],
+   "relevant": [
+    "csv-formula-injection",
+    "csv-escape-fix"
+   ],
+   "acceptable": [
+    "csv-bom-quirk",
+    "csv-export-background"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "searching for jane.doe@acme.com returns tasks that only contain 'jane'",
+   "files": [],
+   "relevant": [
+    "english-stemming-quirk"
+   ],
+   "acceptable": [
+    "search-postgres-fts"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "a card I deleted this morning still shows up in search",
+   "files": [
+    "app/search/indexer.py"
+   ],
+   "relevant": [
+    "trashed-still-searchable",
+    "softdelete-manager-quirk"
+   ],
+   "acceptable": [
+    "reindex-on-save",
+    "search-index-cases"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "schedule the production run of the search reindex backfill for Saturday",
+   "files": [],
+   "relevant": [
+    "reindex-backfill"
+   ],
+   "acceptable": [
+    "reindex-on-save",
+    "search-postgres-fts"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "replace Postgres full text search with OpenSearch for task search",
+   "files": [],
+   "relevant": [
+    "search-postgres-fts",
+    "search-elastic-alt"
+   ],
+   "acceptable": [
+    "search-latency-budget",
+    "reindex-on-save"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "make the quick-find box query the server on every keystroke instead of waiting",
+   "files": [
+    "frontend/src/api/client.ts"
+   ],
+   "relevant": [
+    "search-as-you-type",
+    "search-latency-budget"
+   ],
+   "acceptable": [
+    "api-client-only"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "one customer's Okta users keep getting 'assertion not yet valid' when they log in",
+   "files": [],
+   "relevant": [
+    "saml-clock-skew"
+   ],
+   "acceptable": [
+    "saml-enterprise-only"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "cache the identity provider metadata instead of downloading it on each login",
+   "files": [
+    "app/auth/sso.py"
+   ],
+   "relevant": [
+    "sso-metadata-refetch"
+   ],
+   "acceptable": [
+    "cache-key-builder",
+    "saml-enterprise-only"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "let SSO workspaces keep people signed in for 30 days",
+   "files": [],
+   "relevant": [
+    "session-cookie-rule"
+   ],
+   "acceptable": [
+    "saml-enterprise-only"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "",
+   "files": [
+    "app/auth/sso.py"
+   ],
+   "relevant": [
+    "saml-clock-skew",
+    "azure-attribute-quirk",
+    "sso-metadata-refetch"
+   ],
+   "acceptable": [
+    "saml-enterprise-only",
+    "session-cookie-rule"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "add an onboarding step that asks how big the team is",
+   "files": [
+    "app/onboarding/wizard.py"
+   ],
+   "relevant": [
+    "wizard-refresh-bug"
+   ],
+   "acceptable": [
+    "sample-project"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "create the sample project from a background job after signup so the signup request returns faster",
+   "files": [
+    "app/onboarding/wizard.py"
+   ],
+   "relevant": [
+    "sample-project"
+   ],
+   "acceptable": [
+    "named-queues",
+    "job-idempotent"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "point the job queues at the cache Redis instance and retire the second one",
+   "files": [
+    "app/settings/base.py"
+   ],
+   "relevant": [
+    "redis-eviction-quirk"
+   ],
+   "acceptable": [
+    "named-queues"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "flush the production Redis after tomorrow's deploy to get rid of old cache entries",
+   "files": [],
+   "relevant": [
+    "cache-version-bump",
+    "stale-cache-shape"
+   ],
+   "acceptable": [
+    "redis-eviction-quirk"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "",
+   "files": [
+    "app/cache/keys.py"
+   ],
+   "relevant": [
+    "cache-key-builder",
+    "cache-shared-plan",
+    "cache-version-bump",
+    "stale-cache-shape"
+   ],
+   "acceptable": [
+    "redis-eviction-quirk"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "Trello cards with checklists vanish on import and the run reports no errors",
+   "files": [
+    "app/importers/trello.py"
+   ],
+   "relevant": [
+    "import-row-errors",
+    "import-null-due"
+   ],
+   "acceptable": [
+    "import-checkpoint",
+    "markdown-documents"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "Trello card descriptions show raw <p> and <br> tags after import",
+   "files": [],
+   "relevant": [
+    "markdown-documents"
+   ],
+   "acceptable": [
+    "import-row-errors"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "extend write-mode impersonation to two hours for long migration support sessions",
+   "files": [
+    "app/admin/impersonate.py"
+   ],
+   "relevant": [
+    "impersonation-read-only"
+   ],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "show the server's error message in a toast when saving a card fails",
+   "files": [
+    "frontend/src/api/client.ts"
+   ],
+   "relevant": [
+    "api-client-only",
+    "api-error-shape"
+   ],
+   "acceptable": [
+    "react-query-board"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "add tests that a receiver can verify the X-Taskboard-Signature header we send",
+   "files": [
+    "tests/conftest.py"
+   ],
+   "relevant": [
+    "webhook-fake-receiver",
+    "webhook-signing"
+   ],
+   "acceptable": [
+    "db-fixture-convention"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "document the on-call escalation process for the support team",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "export the Grafana dashboards as JSON and keep them in the repo",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "add an arm64 self-hosted runner for the frontend build in CI",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "handle SIGTERM in the web process so pods drain in-flight requests before shutting down",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "set TIME_ZONE to UTC and turn on USE_TZ in the base settings",
+   "files": [
+    "app/settings/base.py"
+   ],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "write the release notes for version 3.4",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "add a custom 500 error page template that shows the support email address",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "log the request duration and route name in the API access log middleware",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "migrate CI from CircleCI to GitHub Actions",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "import the colour tokens from the design system package into the frontend theme",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "split the test suite across four parallel CI jobs, it takes 14 minutes",
+   "files": [
+    "tests/conftest.py"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "db-fixture-convention"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "add a JSON schema for the feature flags config file and validate it at startup",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "update React Query to v5 in the frontend",
+   "files": [
+    "frontend/src/components/Board.tsx"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "react-query-board"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "add a resize handle between the board columns",
+   "files": [
+    "frontend/src/components/Board.tsx"
+   ],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "add type hints to the plan catalogue functions",
+   "files": [
+    "app/billing/plans.py"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "plans-module"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "document the functions in the attachments module",
+   "files": [
+    "app/storage/attachments.py"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "attachments-presigned",
+    "orphan-uploads",
+    "orphan-sweep"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "translate the onboarding wizard copy into German",
+   "files": [
+    "app/onboarding/wizard.py"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "sample-project"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "add a Grafana panel for the exports queue's worker pod count",
+   "files": [],
+   "relevant": [],
+   "acceptable": [
+    "autoscaler-month-end",
+    "named-queues"
+   ]
+  },
+  {
+   "world": "saas",
+   "task": "write a one-off script that processes the Zendesk ticket export into a summary of top complaint categories",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "format the Trello importer with black and fix its import order",
+   "files": [
+    "app/importers/trello.py"
+   ],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "add a __repr__ to the Project model for nicer shell output",
+   "files": [
+    "app/models/project.py"
+   ],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "saas",
+   "task": "replace the Slack app icon with the new logo in the app manifest",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  }
+ ]
+}
