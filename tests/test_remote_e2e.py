@@ -61,6 +61,30 @@ def live(repo, tmp_path):
     principals.close()
 
 
+@pytest.fixture
+def live_server(repo, tmp_path):
+    """Like `live`, but also hands the test the uvicorn server and its thread, so the test can
+    stop the server itself while a call is running."""
+    base = resolve_config(repo=str(repo), agent="remote", env={})
+    tokens = TokenFile(tmp_path / "tokens.json")
+    app, principals = build_app(base, tokens)
+    port = free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",
+                                           access_log=False))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.time() + 20
+    while not server.started and time.time() < deadline:
+        time.sleep(0.05)
+    assert server.started
+    try:
+        yield f"http://127.0.0.1:{port}/mcp", tokens, base, server, thread
+    finally:
+        server.should_exit = True
+        thread.join(30)
+        principals.close()
+
+
 def wait_listening(port, proc, seconds=30):
     """Block until the child accepts a connection; fail loudly if it never does or it died."""
     deadline = time.time() + seconds
@@ -316,3 +340,70 @@ def test_a_held_call_does_not_stop_other_callers_on_a_real_server(live, monkeypa
         release.set()
         holder.join(30)
     assert not result["alice"][0]
+
+
+def test_a_stop_with_a_call_in_flight_delivers_its_result_and_leaves_a_checkpoint(
+        live_server, repo, monkeypatch):
+    """A normal stop waits for the running call, hands its result to the client, and only then
+    closes the services (no lease is held by then), each leaving a checkpoint."""
+    url, tokens, _base, server, thread = live_server
+    token = tokens.create("alice", "read-write")
+
+    async def write_note():
+        async with streamablehttp_client(url, headers={"Authorization": f"Bearer {token}"}) as (r, w, _):
+            async with ClientSession(r, w) as client:
+                await client.initialize()
+                made = await call(client, "memory_remember", kind="quirk",
+                                  fields={"description": "the zorblax queue drops items over 64KB"})
+                status = await call(client, "memory_status")
+                return made, json.loads(status[1])["unfolded_transactions"]
+
+    made, unfolded = run(write_note())
+    assert not made[0] and unfolded > 0                      # in the journal, not yet folded
+
+    entered, release = threading.Event(), threading.Event()
+    original = MemoryService._context
+
+    def held(self, context):
+        entered.set()
+        release.wait(20)
+        return original(self, context)
+
+    monkeypatch.setattr(MemoryService, "_context", held)
+    result = {}
+
+    def hold_one():
+        async def go():
+            async with streamablehttp_client(url, headers={"Authorization": f"Bearer {token}"}) as (r, w, _):
+                async with ClientSession(r, w) as client:
+                    await client.initialize()
+                    await client.list_tools()                # cache the output schemas first: the client
+                    #                                          would otherwise send a follow-up request
+                    #                                          after the call, which a stopping server
+                    #                                          no longer answers
+                    return await call(client, "memory_recall", task="zorblax queue")
+        try:
+            result["call"] = run(go())
+        except BaseException as exc:                         # noqa: BLE001
+            result["error"] = repr(exc)
+
+    holder = threading.Thread(target=hold_one)
+    holder.start()
+    try:
+        assert entered.wait(20)
+        server.should_exit = True                            # stop while the call is inside the service
+        time.sleep(1.5)
+        assert thread.is_alive()                             # the stop is waiting for the call
+    finally:
+        release.set()
+    released = time.monotonic()
+    thread.join(15)
+    holder.join(30)
+    assert not thread.is_alive() and time.monotonic() - released < 15
+    assert "error" not in result, result.get("error")
+    assert not result["call"][0], result["call"][1]          # the call's result reached the client
+    service = MemoryService(resolve_config(repo=str(repo), agent="check", env={}))
+    try:
+        assert service.status()["unfolded_transactions"] == 0   # every service left a checkpoint
+    finally:
+        service.close()
