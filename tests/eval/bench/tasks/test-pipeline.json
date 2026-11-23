@@ -1,0 +1,894 @@
+{
+ "tasks": [
+  {
+   "world": "pipeline",
+   "task": "move the nightly_ingest run to 01:30 London time so it finishes before the UK finance team logs on",
+   "files": [
+    "dags/nightly_ingest.py"
+   ],
+   "relevant": [
+    "dags-in-utc"
+   ],
+   "acceptable": [
+    "sunday-drop-late",
+    "sftp-manifest-check",
+    "catchup-flood",
+    "dagbag-test"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "we lost three nights of nightly_ingest during the outage; set catchup=True so Airflow runs the missed dates",
+   "files": [
+    "dags/nightly_ingest.py"
+   ],
+   "relevant": [
+    "catchup-flood",
+    "announce-backfills"
+   ],
+   "acceptable": [
+    "backfill-in-weeks",
+    "load-pool-size",
+    "dag-retry-backoff",
+    "dagbag-test"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "use a flat one minute retry_delay and 10 retries in the nightly_ingest default_args",
+   "files": [
+    "dags/nightly_ingest.py"
+   ],
+   "relevant": [
+    "dag-retry-backoff"
+   ],
+   "acceptable": [
+    "dagbag-test",
+    "with-retry-snippet"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "raise the warehouse_load pool to 12 slots so the nightly loads finish sooner",
+   "files": [],
+   "relevant": [
+    "load-pool-size"
+   ],
+   "acceptable": [
+    "orders-merge-hot"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "the scheduler takes several minutes to notice edited DAG files; find out what is slowing it down",
+   "files": [],
+   "relevant": [
+    "dag-parse-cost",
+    "lazy-dag-config"
+   ],
+   "acceptable": [
+    "dagbag-test",
+    "dagbag-before-sync"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "query the warehouse for the latest loaded ds when nightly_ingest.py is imported and use it as the DAG start_date",
+   "files": [
+    "dags/nightly_ingest.py"
+   ],
+   "relevant": [
+    "dag-parse-cost",
+    "lazy-dag-config",
+    "dagbag-test"
+   ],
+   "acceptable": [
+    "catchup-flood"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "split nightly_ingest into one DAG per partner so a late partner stops holding up the others",
+   "files": [
+    "dags/nightly_ingest.py"
+   ],
+   "relevant": [
+    "per-partner-dag-question",
+    "dags-in-utc",
+    "catchup-flood",
+    "dag-retry-backoff"
+   ],
+   "acceptable": [
+    "dagbag-test",
+    "dag-parse-cost",
+    "sunday-drop-late",
+    "load-pool-size",
+    "sftp-manifest-check"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "add a CI job that copies dags/ to the scheduler bucket on every merge to main",
+   "files": [],
+   "relevant": [
+    "dagbag-before-sync",
+    "dagbag-test"
+   ],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "add a Spark task for the fx revaluation job to nightly_ingest; put it on the default queue so it starts sooner",
+   "files": [
+    "dags/nightly_ingest.py"
+   ],
+   "relevant": [
+    "spark-queue-split"
+   ],
+   "acceptable": [
+    "executor-cap",
+    "worker-memory-growth",
+    "dagbag-test",
+    "dag-retry-backoff",
+    "fx-weekend-gap"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "Airflow task logs are filling the worker disks again; switch logging to remote storage",
+   "files": [],
+   "relevant": [
+    "logs-to-remote-store"
+   ],
+   "acceptable": [
+    "structured-log-line",
+    "config-key-rules",
+    "env-yaml-overlays"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "",
+   "files": [
+    "dags/backfill.py"
+   ],
+   "relevant": [
+    "backfill-in-weeks",
+    "orders-backfill-progress"
+   ],
+   "acceptable": [
+    "announce-backfills",
+    "backfill-billing-night",
+    "catchup-flood",
+    "load-pool-size"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "make backfill_range default to 30 day chunks so the Q1 orders history finishes in one evening",
+   "files": [
+    "dags/backfill.py"
+   ],
+   "relevant": [
+    "backfill-in-weeks",
+    "orders-backfill-progress",
+    "fx-weekend-gap"
+   ],
+   "acceptable": [
+    "announce-backfills",
+    "load-pool-size",
+    "backfill-billing-night",
+    "small-file-explosion"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "a backfill scanned several terabytes last night without the budget guard stopping it; close the gap",
+   "files": [
+    "cost/budget.py"
+   ],
+   "relevant": [
+    "backfill-billing-night",
+    "dry-run-cost-guard"
+   ],
+   "acceptable": [
+    "announce-backfills",
+    "fact-scan-rule",
+    "backfill-in-weeks"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "keep the freshness and row count alerts quiet while a backfill is running",
+   "files": [
+    "quality/checks.py"
+   ],
+   "relevant": [
+    "announce-backfills"
+   ],
+   "acceptable": [
+    "severity-levels",
+    "row-count-floor",
+    "monday-freshness",
+    "backfill-in-weeks",
+    "quarantine-partition"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "when the row count check fails, fail the publish task instead of skipping it so on-call gets paged",
+   "files": [
+    "quality/checks.py",
+    "dags/nightly_ingest.py"
+   ],
+   "relevant": [
+    "quarantine-partition",
+    "severity-levels"
+   ],
+   "acceptable": [
+    "row-count-floor",
+    "dagbag-test"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "move the compact task after the quality gate in nightly_ingest so the checks start sooner",
+   "files": [
+    "dags/nightly_ingest.py"
+   ],
+   "relevant": [
+    "compact-after-load",
+    "small-file-explosion"
+   ],
+   "acceptable": [
+    "quarantine-partition",
+    "row-count-floor",
+    "dagbag-test"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "the Bravo pull died with 410 Gone halfway through the night; make it pick up where it left off",
+   "files": [
+    "ingest/rest_client.py"
+   ],
+   "relevant": [
+    "cursor-paging-fix",
+    "offset-paging-skip"
+   ],
+   "acceptable": [
+    "bravo-rate-limit",
+    "with-retry-snippet",
+    "stalled-page-hang",
+    "http-wait-pattern"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "teach with_retry to honour a Retry-After header on 429 responses",
+   "files": [
+    "ops/retry.py"
+   ],
+   "relevant": [
+    "bravo-rate-limit"
+   ],
+   "acceptable": [
+    "with-retry-snippet",
+    "http-wait-pattern",
+    "dag-retry-backoff"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "Acme rotated their SFTP credentials this morning; roll the new key out",
+   "files": [],
+   "relevant": [
+    "secrets-at-task-start"
+   ],
+   "acceptable": [
+    "env-yaml-overlays",
+    "sftp-module"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "save the Bravo API token in the Airflow connection UI so ops can change it without us",
+   "files": [],
+   "relevant": [
+    "secrets-at-task-start",
+    "env-yaml-overlays"
+   ],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "point RAW_BUCKET at the new production landing bucket",
+   "files": [
+    "config/settings.py"
+   ],
+   "relevant": [
+    "env-yaml-overlays"
+   ],
+   "acceptable": [
+    "config-key-rules",
+    "retention-policy"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "Bravo's orders API now includes the customer's phone number; land it in staging with the rest of the order",
+   "files": [
+    "ingest/rest_client.py"
+   ],
+   "relevant": [
+    "hmac-tokens"
+   ],
+   "acceptable": [
+    "email-in-task-logs",
+    "single-hmac-key",
+    "erasure-request",
+    "registry-source-of-truth"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "Acme renamed amount to gross_amount in their latest drop; update the contract to match",
+   "files": [
+    "contracts/partner_acme.yaml",
+    "contracts/registry.py"
+   ],
+   "relevant": [
+    "backward-compat-only",
+    "registry-source-of-truth"
+   ],
+   "acceptable": [
+    "acme-new-columns",
+    "silent-null-cast",
+    "failfast-reads"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "a partner switched order_id to a string and the rows that don't parse come through as zero",
+   "files": [],
+   "relevant": [
+    "silent-null-cast",
+    "failfast-reads"
+   ],
+   "acceptable": [
+    "backward-compat-only",
+    "quarantine-partition",
+    "registry-source-of-truth"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "add a quality check that alerts when a column of a partner feed suddenly turns mostly null",
+   "files": [
+    "quality/checks.py",
+    "quality/expectations.yaml"
+   ],
+   "relevant": [
+    "severity-levels",
+    "thresholds-in-yaml",
+    "check-fixtures"
+   ],
+   "acceptable": [
+    "silent-null-cast",
+    "quarantine-partition",
+    "row-count-floor"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "",
+   "files": [
+    "quality/expectations.yaml"
+   ],
+   "relevant": [
+    "thresholds-in-yaml",
+    "severity-levels"
+   ],
+   "acceptable": [
+    "row-count-floor",
+    "monday-freshness",
+    "check-fixtures"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "duplicate events from the web partner are reaching staging; drop the extra copies in the transform",
+   "files": [],
+   "relevant": [
+    "dedupe-idiom"
+   ],
+   "acceptable": [
+    "declare-grain",
+    "incremental-cases"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "finance says Saturday and Sunday revenue in fact_orders is well below their ledger",
+   "files": [],
+   "relevant": [
+    "fx-weekend-gap"
+   ],
+   "acceptable": [
+    "float-money-pattern",
+    "revenue-drift"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "cast amount_usd to double in the sessionize step, the decimal sum is slow",
+   "files": [
+    "transforms/sessionize.py"
+   ],
+   "relevant": [
+    "float-money-pattern",
+    "revenue-drift"
+   ],
+   "acceptable": [
+    "sessionize-expertise"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "try rewriting sessionize as pure SQL window functions so we can drop the Spark dependency",
+   "files": [
+    "transforms/sessionize.py"
+   ],
+   "relevant": [
+    "sessionize-in-sql"
+   ],
+   "acceptable": [
+    "no-dbt-rewrite",
+    "sessionize-expertise"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "upgrade the transforms to Spark 3.5",
+   "files": [],
+   "relevant": [
+    "spark-35-blocker"
+   ],
+   "acceptable": [
+    "shuffle-partitions-400",
+    "executor-cap"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "set SHUFFLE_PARTITIONS back to Spark's default; 400 tiny tasks is overkill",
+   "files": [
+    "transforms/sessionize.py"
+   ],
+   "relevant": [
+    "shuffle-partitions-400"
+   ],
+   "acceptable": [
+    "hot-key-skew",
+    "executor-cap",
+    "sessionize-expertise"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "events with no customer_id should be grouped into their own sessions rather than thrown away",
+   "files": [
+    "transforms/sessionize.py"
+   ],
+   "relevant": [
+    "hot-key-skew",
+    "salt-the-key"
+   ],
+   "acceptable": [
+    "sessionize-expertise",
+    "shuffle-partitions-400"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "let the Spark cluster scale to 80 executors for month end close",
+   "files": [
+    "config/settings.py"
+   ],
+   "relevant": [
+    "executor-cap"
+   ],
+   "acceptable": [
+    "config-key-rules",
+    "spark-queue-split",
+    "env-yaml-overlays"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "upsert late arriving orders into fact_orders with a MERGE in the loader",
+   "files": [
+    "warehouse/loader.py"
+   ],
+   "relevant": [
+    "replace-partition-load"
+   ],
+   "acceptable": [
+    "orders-merge-hot",
+    "loader-module",
+    "incremental-cases",
+    "copy-truncates-silently"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "product names longer than the column now abort the nightly load; widen the column",
+   "files": [],
+   "relevant": [
+    "shadow-table-migration",
+    "copy-truncates-silently"
+   ],
+   "acceptable": [
+    "loader-module"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "this is the slowest step of the nightly batch; make it faster",
+   "files": [
+    "warehouse/loader.py"
+   ],
+   "relevant": [
+    "orders-merge-hot",
+    "replace-partition-load"
+   ],
+   "acceptable": [
+    "load-pool-size",
+    "compact-after-load",
+    "small-file-explosion",
+    "loader-module",
+    "copy-truncates-silently"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "make the metrics API recycle its warehouse connections every hour",
+   "files": [
+    "api/metrics.py"
+   ],
+   "relevant": [
+    "dim-bloat",
+    "manual-vacuum"
+   ],
+   "acceptable": [
+    "metrics-latency",
+    "fact-scan-rule"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "add an endpoint that returns a customer's raw order rows from fact_orders",
+   "files": [
+    "api/metrics.py"
+   ],
+   "relevant": [
+    "gold-read-model",
+    "fact-scan-rule",
+    "problem-json-errors"
+   ],
+   "acceptable": [
+    "metrics-latency",
+    "metrics-cache-60s",
+    "export-allowlist"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "dashboards keep showing the previous numbers for up to a minute after the nightly publish",
+   "files": [],
+   "relevant": [
+    "metrics-cache-60s"
+   ],
+   "acceptable": [
+    "gold-read-model",
+    "metrics-latency"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "include the SQL error text in metrics API responses so analysts can debug their queries",
+   "files": [
+    "api/metrics.py"
+   ],
+   "relevant": [
+    "problem-json-errors"
+   ],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "add the customer's email address as a column in the CSV export",
+   "files": [
+    "exports/csv_export.py"
+   ],
+   "relevant": [
+    "export-allowlist",
+    "hmac-tokens"
+   ],
+   "acceptable": [
+    "export-driver-memory",
+    "parquet-first-exports"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "a customer's Parquet reader shows every created_at as a date in 1970",
+   "files": [],
+   "relevant": [
+    "int96-timestamps",
+    "micros-timestamp-fix"
+   ],
+   "acceptable": [
+    "parquet-first-exports"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "simplify export_parquet: collect the DataFrame to the driver and write it with pandas",
+   "files": [
+    "exports/parquet_export.py"
+   ],
+   "relevant": [
+    "export-driver-memory"
+   ],
+   "acceptable": [
+    "int96-timestamps",
+    "micros-timestamp-fix",
+    "parquet-first-exports"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "the churn forecast notebook needs about two hours; raise the runner's time limit for it",
+   "files": [
+    "notebooks/runner.py"
+   ],
+   "relevant": [
+    "sandboxed-notebook-runner"
+   ],
+   "acceptable": [
+    "notebook-smoke",
+    "executor-cap"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "have the revenue notebook write its results straight into the gold schema so the API can read them",
+   "files": [],
+   "relevant": [
+    "notebook-hygiene"
+   ],
+   "acceptable": [
+    "gold-read-model",
+    "sandboxed-notebook-runner"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "add a key version so the HMAC tokenization key can be rotated every quarter",
+   "files": [
+    "pii/masking.py"
+   ],
+   "relevant": [
+    "single-hmac-key",
+    "hmac-tokens"
+   ],
+   "acceptable": [
+    "erasure-request",
+    "shadow-table-migration"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "write down the process for onboarding a new on-call engineer",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "update the README with how to run the test suite locally",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "export the Jira backlog to a spreadsheet for sprint planning",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "set up log rotation on the team's VPN gateway",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "write a config schema for the internal feature flag service",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "migrate the CI runners from Jenkins to GitHub Actions",
+   "files": [],
+   "relevant": [],
+   "acceptable": [
+    "dagbag-before-sync",
+    "dagbag-test"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "add a retry queue for Slack notifications that fail to send from the alerting bot",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "import last quarter's OKRs into the planning document",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "update the dev container to Python 3.12",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "add a test that the command line tool prints the package version",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "bump paramiko to the latest patch release",
+   "files": [
+    "ingest/sftp_pull.py"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "sftp-module"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "fix the flake8 line length warnings",
+   "files": [
+    "contracts/registry.py"
+   ],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "build a Grafana dashboard for the Airflow scheduler's CPU and memory",
+   "files": [],
+   "relevant": [],
+   "acceptable": [
+    "dag-parse-cost",
+    "worker-memory-growth"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "set up pre-commit with black and isort for the whole repo",
+   "files": [],
+   "relevant": [],
+   "acceptable": [
+    "notebook-hygiene"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "write a pytest fixture that freezes the clock for the quality check tests",
+   "files": [
+    "quality/checks.py"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "check-fixtures",
+    "monday-freshness"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "add a .gitattributes rule so SQL files keep LF line endings",
+   "files": [
+    "transforms/orders_daily.sql"
+   ],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "add pagination to the user list in the internal admin app",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "schedule a weekly reminder in Slack for the team retro",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "expire customer export download links after 72 hours instead of 24",
+   "files": [
+    "config/settings.py"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "env-yaml-overlays",
+    "config-key-rules"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "handle the merge conflict in CHANGELOG.md after the rebase",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "rename the growth key in TEAM_BUDGET_USD to acquisition after the reorg",
+   "files": [
+    "cost/budget.py"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "dry-run-cost-guard"
+   ]
+  },
+  {
+   "world": "pipeline",
+   "task": "translate the error messages in the customer export screen into German",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "write a script that processes the vendor invoice CSVs finance emails us each month",
+   "files": [],
+   "relevant": [],
+   "acceptable": []
+  },
+  {
+   "world": "pipeline",
+   "task": "reformat expectations.yaml with two space indentation",
+   "files": [
+    "quality/expectations.yaml"
+   ],
+   "relevant": [],
+   "acceptable": [
+    "thresholds-in-yaml"
+   ]
+  }
+ ]
+}

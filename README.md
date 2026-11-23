@@ -809,9 +809,12 @@ rendered text for must-include notes, superseded or retracted notes leaking
 through, and abstention (nothing returned for an unrelated task). Run it with
 `PYTHONPATH=src` so the checkout, not an installed copy, is measured. Current
 figures: must-include recall 1.00 (30/30), leaks 0, abstention 1.00 (12/12).
-That abstention figure is in-sample (the scenarios were used while tuning); on
-16 held-out tasks never used for tuning it is **0.38 (6/16)**, a known weak
-spot: a single shared word can let an unrelated, labelled note through.
+That abstention figure is in-sample (the scenarios were used while tuning). On
+16 held-out tasks it is **0.38 (6/16)**, a known weak spot: a single shared word
+can let an unrelated, labelled note through. A larger benchmark with a locked test
+split (recall, noise tokens and clean-abstain, 111 dev and 215 test tasks) is in
+`tests/eval/bench/RESULTS.md`; it measures the same weakness (clean-abstain 0/70
+on the test split) and records the retrieval changes that were tried and not merged.
 `--service` runs the same scenarios through `MemoryService` (the boundary the
 MCP server and the CLI use; the prompt judged is the untrusted block) and gives
 the identical scorecard; `--shared` runs them on a shared store. The baseline

@@ -1,0 +1,1271 @@
+{
+ "files": {
+  "dags/nightly_ingest.py": "from datetime import timedelta\nfrom airflow import DAG\nfrom airflow.utils.dates import days_ago\n\ndefault_args = {\n    \"retries\": 3,\n    \"retry_delay\": timedelta(minutes=2),\n    \"retry_exponential_backoff\": True,\n    \"max_retry_delay\": timedelta(minutes=20),\n}\n\nwith DAG(\"nightly_ingest\", schedule_interval=\"0 2 * * *\", start_date=days_ago(1),\n         catchup=False, default_args=default_args, max_active_runs=1) as nightly_ingest:\n    pass  # sensors >> ingest >> transform >> quality gate >> publish\n",
+  "dags/backfill.py": "from airflow import DAG\n\n\ndef backfill_range(table, start_ds, end_ds, chunk_days=7):\n    \"\"\"Yield (chunk_start, chunk_end) windows; one DAG run per window.\"\"\"\n    ...\n\n\nwith DAG(\"backfill\", schedule_interval=None, catchup=False, max_active_runs=2) as backfill:\n    pass\n",
+  "ingest/sftp_pull.py": "import json\nimport paramiko\n\n\ndef pull_partner_drop(partner, ds, dest):\n    \"\"\"Wait for <file>.done, compare the size with manifest.json, then copy to the landing path.\"\"\"\n    manifest = json.loads(read_remote(partner, f\"{ds}/manifest.json\"))\n    for name, size in manifest[\"files\"].items():\n        copy_verified(partner, f\"{ds}/{name}\", dest, size)\n",
+  "ingest/rest_client.py": "import requests\n\nTIMEOUT = (5, 30)\n\n\ndef fetch_page(session, url, cursor=None):\n    resp = session.get(url, params={\"cursor\": cursor}, timeout=TIMEOUT)\n    resp.raise_for_status()\n    return resp.json()\n\n\ndef paginate(session, url, state):\n    cursor = state.get(\"cursor\")\n    while True:\n        page = fetch_page(session, url, cursor)\n        yield from page[\"items\"]\n        cursor = page.get(\"next_cursor\")\n        if not cursor:\n            break\n        state[\"cursor\"] = cursor\n",
+  "transforms/orders_daily.sql": "-- grain: one row per order_id per ds; unique key: order_id\nINSERT INTO fact_orders\nSELECT o.order_id, o.customer_id, o.amount * fx.rate AS amount_usd, o.ds\nFROM staging.orders o\nJOIN fx_rates fx ON fx.currency = o.currency AND fx.rate_date = o.rate_date\nWHERE o.ds = '{{ ds }}';\n",
+  "transforms/sessionize.py": "from pyspark.sql import functions as F, Window\n\nSHUFFLE_PARTITIONS = 400\n\n\ndef sessionize(events, gap_minutes=30):\n    w = Window.partitionBy(\"customer_id\").orderBy(\"event_ts\")\n    gap = F.col(\"event_ts\").cast(\"long\") - F.lag(\"event_ts\").over(w).cast(\"long\")\n    return events.withColumn(\"new_session\", (gap > gap_minutes * 60).cast(\"int\"))\n",
+  "warehouse/loader.py": "def merge_partition(conn, table, staged_path, ds):\n    \"\"\"Replace one ds partition atomically: delete then insert inside a transaction.\"\"\"\n    with conn.transaction():\n        conn.execute(f\"DELETE FROM {table} WHERE ds = %s\", (ds,))\n        conn.execute(f\"COPY INTO {table} FROM %s ON_ERROR = 'ABORT'\", (staged_path,))\n    return conn.row_count(table, ds)\n\n\ndef compact_partition(conn, table, ds, target_mb=256):\n    ...\n",
+  "warehouse/ddl/fact_orders.sql": "CREATE TABLE fact_orders (\n  order_id BIGINT NOT NULL,\n  customer_id BIGINT,\n  customer_region VARCHAR(64),\n  amount_usd DECIMAL(18,4),\n  ds DATE NOT NULL\n) CLUSTER BY (ds, customer_id);\n",
+  "contracts/registry.py": "def register_schema(subject, schema, version):\n    ...\n\n\ndef check_compat(subject, new_schema, mode=\"BACKWARD\"):\n    \"\"\"Reject removed columns and type narrowing for the subject.\"\"\"\n    old = fetch_latest(subject)\n    return [c for c in diff(old, new_schema) if c.breaks(mode)]\n",
+  "contracts/partner_acme.yaml": "subject: acme.orders\nversion: 14\nowner: partners@ledgerflow.example\ncolumns:\n  - {name: order_id, type: long, nullable: false}\n  - {name: currency, type: string, nullable: false}\n  - {name: amount, type: decimal(18,4), nullable: false}\n",
+  "quality/checks.py": "def row_count_check(table, ds, history, floor=0.7):\n    median = sorted(history)[len(history) // 2]\n    return table.rows(ds) >= floor * median\n\n\ndef run_checks(table, ds, checks):\n    failed = [c.name for c in checks if not c.run(table, ds)]\n    if failed:\n        quarantine(table, ds)\n    return failed\n",
+  "quality/expectations.yaml": "orders:\n  row_count: {severity: error, min_ratio: 0.7}\n  freshness: {severity: error, max_age_hours: 30}\n  currency_in_set: {severity: warn, values: [USD, EUR, GBP]}\n",
+  "api/metrics.py": "import hashlib\n\nCACHE_TTL_SECONDS = 60\nMAX_POINTS = 50_000\n\n\ndef metric_query(name, ds_from, ds_to, key):\n    cache_key = hashlib.sha1(f\"{name}{ds_from}{ds_to}\".encode()).hexdigest()\n    return cached(cache_key, CACHE_TTL_SECONDS, lambda: read_gold(name, ds_from, ds_to, MAX_POINTS))\n",
+  "notebooks/runner.py": "import papermill as pm\n\n\ndef run_notebook(src, out, ds, timeout_minutes=30):\n    pm.execute_notebook(src, out, parameters={\"ds\": ds, \"sandbox\": True},\n                        execution_timeout=timeout_minutes * 60)\n",
+  "exports/parquet_export.py": "def export_parquet(df, dest, row_group_mb=128):\n    df.write.option(\"parquet.block.size\", row_group_mb * 1024 * 1024) \\\n      .config(\"spark.sql.parquet.outputTimestampType\", \"TIMESTAMP_MICROS\") \\\n      .parquet(dest)\n",
+  "exports/csv_export.py": "import csv\n\n\ndef export_csv(rows, out, allowlist):\n    writer = csv.writer(out, quoting=csv.QUOTE_NONNUMERIC)\n    writer.writerow(allowlist)\n    for row in rows:\n        writer.writerow([row[c] for c in allowlist])\n",
+  "pii/masking.py": "import hmac, hashlib\n\n\ndef mask_email(value):\n    local, _, domain = value.partition(\"@\")\n    return local[:1] + \"***@\" + domain\n\n\ndef tokenize(value, key):\n    return hmac.new(key, value.strip().lower().encode(), hashlib.sha256).hexdigest()\n",
+  "cost/budget.py": "TEAM_BUDGET_USD = {\"growth\": 4000, \"finance\": 2500, \"platform\": 9000}\nMAX_SCAN_GB = 500\n\n\ndef enforce_budget(team, estimate_gb, approved=False):\n    if estimate_gb > MAX_SCAN_GB and not approved:\n        raise BudgetExceeded(team, estimate_gb)\n",
+  "config/settings.py": "import os\n\nENV = os.environ.get(\"LEDGERFLOW_ENV\", \"dev\")\nRAW_BUCKET = os.environ[\"RAW_BUCKET\"]\nSPARK_MAX_EXECUTORS = 40\nEXPORT_LINK_TTL_HOURS = 24\n",
+  "ops/retry.py": "import time\n\n\ndef with_retry(attempts=3, base=2.0, cap=1200, retry_on=(TimeoutError,)):\n    def wrap(fn):\n        def inner(*a, **kw):\n            for n in range(attempts):\n                try:\n                    return fn(*a, **kw)\n                except retry_on:\n                    time.sleep(min(cap, base ** n))\n            return fn(*a, **kw)\n        return inner\n    return wrap\n"
+ },
+ "records": [
+  {
+   "key": "pii-never-log",
+   "kind": "convention",
+   "pinned": true,
+   "fields": {
+    "category": "pii",
+    "rule": "never write raw email, phone or national id values to logs, task output or warehouse error tables; mask with pii.masking first",
+    "enforced_by": "lint rule ledgerflow-pii",
+    "exceptions": "the vault table, which is access controlled"
+   }
+  },
+  {
+   "key": "tasks-rerunnable",
+   "kind": "convention",
+   "pinned": true,
+   "fields": {
+    "category": "orchestration",
+    "rule": "every task must be safe to re-run for the same ds: replace the partition, never append to it",
+    "enforced_by": "review and the rerun test in CI",
+    "exceptions": ""
+   }
+  },
+  {
+   "key": "sftp-manifest-check",
+   "kind": "decision",
+   "fields": {
+    "title": "Pull partner SFTP drops only after the .done marker and a manifest size match",
+    "context": "Acme uploads large files in place; INC-318 loaded a half written 4 GB file as if it were complete, so the pull task must handle a file that is still being written and now compares each size with manifest.json before copying"
+   },
+   "scope": [
+    "ingest/**",
+    "dags/**"
+   ],
+   "anchors": [
+    [
+     "ingest/sftp_pull.py",
+     "pull_partner_drop"
+    ]
+   ]
+  },
+  {
+   "key": "sunday-drop-late",
+   "kind": "quirk",
+   "fields": {
+    "description": "Acme's Sunday drop lands between 03:10 and 06:40 UTC, not at midnight, so the SFTP sensor has to wait up to 4 hours in reschedule mode before it fails"
+   },
+   "scope": [
+    "dags/**",
+    "ingest/**"
+   ],
+   "anchors": [
+    [
+     "dags/nightly_ingest.py",
+     "nightly_ingest"
+    ]
+   ]
+  },
+  {
+   "key": "offset-paging-skip",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "offset_pagination_skip",
+    "signature": "paging the Bravo orders API by offset while new orders arrive skips or repeats rows; nightly counts drifted by about 0.3 percent",
+    "modules_affected": "ingest/rest_client.py"
+   },
+   "anchors": [
+    [
+     "ingest/rest_client.py",
+     "paginate"
+    ]
+   ]
+  },
+  {
+   "key": "cursor-paging-fix",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "follow the next_cursor token and save it in the ingest state after every page so a retry resumes where it stopped",
+    "caveats": "a cursor expires after 15 minutes; on a 410 restart from the stored high water mark"
+   },
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "offset-paging-skip"
+    }
+   ]
+  },
+  {
+   "key": "bravo-rate-limit",
+   "kind": "performance_constraint",
+   "fields": {
+    "operation": "Bravo REST API calls",
+    "constraint": "at most 5 requests a second per token; on a 429 sleep for Retry-After and do not open parallel pages",
+    "reason": "INC-331: three parallel pagers got our token blocked for 6 hours"
+   },
+   "scope": [
+    "ingest/**"
+   ]
+  },
+  {
+   "key": "http-wait-pattern",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "unbounded_http_wait",
+    "signature": "an HTTP call without a read timeout idles on a stalled socket until the task's execution_timeout kills it",
+    "modules_affected": "ingest/rest_client.py,ops/retry.py"
+   }
+  },
+  {
+   "key": "stalled-page-hang",
+   "kind": "bug",
+   "fields": {
+    "title": "Ingest task hung for 9 hours on a stalled REST page",
+    "root_cause": "the page request had no read timeout and the partner's load balancer kept the connection open (INC-342)",
+    "module": "ingest/rest_client.py"
+   },
+   "anchors": [
+    [
+     "ingest/rest_client.py",
+     "fetch_page"
+    ]
+   ],
+   "links": [
+    {
+     "rel": "INSTANCE_OF",
+     "to": "http-wait-pattern"
+    }
+   ]
+  },
+  {
+   "key": "secrets-at-task-start",
+   "kind": "decision",
+   "fields": {
+    "title": "Fetch partner SFTP keys from the secrets backend at the start of each attempt",
+    "context": "keys pasted into the Airflow connection UI were rotated by hand and broke the 02:00 run (INC-305); fetching by secret name means a rotation needs no deploy"
+   },
+   "scope": [
+    "ingest/**",
+    "config/**"
+   ]
+  },
+  {
+   "key": "sftp-module",
+   "kind": "module",
+   "fields": {
+    "path": "ingest/sftp_pull.py",
+    "purpose": "pulls partner drops, verifies the manifest and lands raw files, one task per partner"
+   }
+  },
+  {
+   "key": "dag-retry-backoff",
+   "kind": "decision",
+   "fields": {
+    "title": "Retry every task 3 times with exponential backoff capped at 20 minutes",
+    "context": "a flat 5 minute retry kept hammering the warehouse during the INC-297 outage and the retrying tasks held their queue slots"
+   },
+   "scope": [
+    "dags/**"
+   ],
+   "anchors": [
+    [
+     "dags/nightly_ingest.py",
+     "default_args"
+    ]
+   ]
+  },
+  {
+   "key": "load-pool-size",
+   "kind": "performance_constraint",
+   "fields": {
+    "operation": "warehouse load tasks",
+    "constraint": "pool warehouse_load has 6 slots; do not raise it above 8",
+    "reason": "past 8 concurrent COPY statements the warehouse queues them and p95 load time doubles"
+   },
+   "scope": [
+    "dags/**",
+    "warehouse/**"
+   ]
+  },
+  {
+   "key": "catchup-flood",
+   "kind": "quirk",
+   "fields": {
+    "description": "a newly deployed DAG with catchup=True schedules every missed ds since its start_date at once; leave catchup False and use the backfill DAG for history"
+   },
+   "scope": [
+    "dags/**"
+   ],
+   "anchors": [
+    [
+     "dags/nightly_ingest.py",
+     "nightly_ingest"
+    ]
+   ]
+  },
+  {
+   "key": "dags-in-partner-time",
+   "kind": "decision",
+   "fields": {
+    "title": "Schedule each DAG in the partner's local time zone",
+    "context": "partners think in their own business day, so a 02:00 local schedule lines up with their drop"
+   },
+   "scope": [
+    "dags/**"
+   ]
+  },
+  {
+   "key": "dags-in-utc",
+   "kind": "decision",
+   "supersedes": "dags-in-partner-time",
+   "fields": {
+    "title": "Schedule every DAG in UTC",
+    "context": "the March daylight saving change ran the nightly job twice for one logical date (INC-288) under the Europe/Berlin schedule; UTC has no repeated hour"
+   },
+   "scope": [
+    "dags/**"
+   ]
+  },
+  {
+   "key": "dagbag-test",
+   "kind": "test_convention",
+   "fields": {
+    "category": "dags",
+    "pattern": "every DAG file must import cleanly in the DagBag test with no network and no credentials; the test fails on any import error"
+   },
+   "scope": [
+    "tests/**",
+    "dags/**"
+   ]
+  },
+  {
+   "key": "dag-parse-cost",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "dag_parse_cost",
+    "signature": "API calls or warehouse queries at module level in a DAG file run on every scheduler parse and stretched the parse loop to 4 minutes",
+    "modules_affected": "dags/"
+   }
+  },
+  {
+   "key": "lazy-dag-config",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "move the lookup into a task callable or a Variable read inside a template, so parsing a DAG file does no I/O",
+    "caveats": "template rendering happens at run time, so a bad value shows up as a task failure rather than an import error"
+   },
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "dag-parse-cost"
+    }
+   ]
+  },
+  {
+   "key": "spark-queue-split",
+   "kind": "decision",
+   "fields": {
+    "title": "Run Spark tasks on the spark queue and light SQL tasks on the default queue",
+    "context": "a Spark job holding a worker slot for 50 minutes starved the quality checks behind it (INC-311)"
+   },
+   "scope": [
+    "dags/**",
+    "transforms/**"
+   ]
+  },
+  {
+   "key": "worker-memory-growth",
+   "kind": "quirk",
+   "fields": {
+    "description": "each Celery worker process grows by about 40 MB per task after importing pandas, so workers are recycled after 20 tasks with max_tasks_per_child"
+   },
+   "scope": [
+    "dags/**"
+   ]
+  },
+  {
+   "key": "orders-merge-hot",
+   "kind": "hot_path",
+   "fields": {
+    "name": "orders_partition_merge",
+    "frequency": "every night for 18 partitions, about 40 minutes of the 3 hour batch window"
+   },
+   "scope": [
+    "warehouse/loader.py"
+   ],
+   "anchors": [
+    [
+     "warehouse/loader.py",
+     "merge_partition"
+    ]
+   ]
+  },
+  {
+   "key": "per-partner-dag-question",
+   "kind": "open_question",
+   "fields": {
+    "question": "Should nightly_ingest split into one DAG per partner so a late drop from one partner does not hold the whole queue?"
+   },
+   "scope": [
+    "dags/**"
+   ]
+  },
+  {
+   "key": "logs-to-remote-store",
+   "kind": "session_decision",
+   "fields": {
+    "decision": "migrate task logs to remote storage on S3 before the Airflow upgrade",
+    "rationale": "local worker disks reached 85 percent from 14 days of task logs (OPS-71)"
+   },
+   "scope": [
+    "dags/**",
+    "config/**"
+   ]
+  },
+  {
+   "key": "structured-log-line",
+   "kind": "convention",
+   "fields": {
+    "category": "logging",
+    "rule": "write one JSON log line per task with dag_id, task_id, ds and row_count; no print statements",
+    "applies_to": "dags/,ingest/,warehouse/",
+    "enforced_by": "flake8 plugin",
+    "exceptions": ""
+   }
+  },
+  {
+   "key": "shuffle-partitions-400",
+   "kind": "decision",
+   "fields": {
+    "title": "Set spark.sql.shuffle.partitions to 400 for the sessionize job",
+    "context": "the default 200 gave 2 GB shuffle partitions and executors died with OOM (INC-322); 400 brings each to about 600 MB"
+   },
+   "scope": [
+    "transforms/**"
+   ],
+   "anchors": [
+    [
+     "transforms/sessionize.py",
+     "sessionize"
+    ]
+   ]
+  },
+  {
+   "key": "hot-key-skew",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "hot_key_skew",
+    "signature": "a null or default customer_id sends 30 percent of events to one reducer and the sessionize stage runs for 3 hours",
+    "modules_affected": "transforms/sessionize.py"
+   },
+   "anchors": [
+    [
+     "transforms/sessionize.py",
+     "sessionize"
+    ]
+   ]
+  },
+  {
+   "key": "salt-the-key",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "drop null customer_id rows first and salt the remaining hot keys into 16 buckets before the window, then merge the buckets",
+    "caveats": "remove the salt column before writing; a session that spans two buckets must be re-joined"
+   },
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "hot-key-skew"
+    }
+   ]
+  },
+  {
+   "key": "dedupe-idiom",
+   "kind": "idiom",
+   "fields": {
+    "pattern": "deduplicating events by event_id",
+    "preferred_form": "row_number() over (partition by event_id order by ingested_at desc) = 1 in a QUALIFY clause",
+    "avoid": "SELECT DISTINCT, which keeps both copies when a late row differs in a single column"
+   },
+   "scope": [
+    "transforms/**"
+   ]
+  },
+  {
+   "key": "declare-grain",
+   "kind": "convention",
+   "fields": {
+    "category": "sql",
+    "rule": "each transform file opens with a comment naming its grain and unique key; the test runner asserts that key is unique after every build",
+    "enforced_by": "CI test runner",
+    "exceptions": "",
+    "applies_to": "transforms/"
+   }
+  },
+  {
+   "key": "incremental-cases",
+   "kind": "required_test_case",
+   "fields": {
+    "for_pattern": "incremental transform",
+    "cases_required": "running the same ds twice gives identical row counts, a late arriving row updates in place, an empty partition writes zero rows without an error"
+   },
+   "scope": [
+    "tests/**",
+    "transforms/**"
+   ]
+  },
+  {
+   "key": "no-dbt-rewrite",
+   "kind": "alternative",
+   "fields": {
+    "option": "Rewrite the SQL transforms in dbt",
+    "rejected_because": "the Spark sessionization steps and the lineage emitter would have had to stay outside it, and the migration was estimated at 6 weeks with no change in output"
+   },
+   "scope": [
+    "transforms/**"
+   ]
+  },
+  {
+   "key": "fx-weekend-gap",
+   "kind": "quirk",
+   "fields": {
+    "description": "fx rates are published for weekdays only, so Saturday and Sunday orders must take Friday's rate; joining on the exact date silently drops about 9 percent of weekend revenue"
+   },
+   "scope": [
+    "transforms/**"
+   ],
+   "anchors": [
+    [
+     "transforms/orders_daily.sql",
+     "fx_rates"
+    ]
+   ]
+  },
+  {
+   "key": "float-money-pattern",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "float_money",
+    "signature": "amounts cast to double in a Spark step drift from the finance ledger by cents after summing",
+    "modules_affected": "transforms/"
+   }
+  },
+  {
+   "key": "revenue-drift",
+   "kind": "bug",
+   "fields": {
+    "title": "Revenue totals drifted a few cents from finance",
+    "root_cause": "the sessionize join cast amount to double; DECIMAL(18,4) end to end fixed it (INC-300)",
+    "module": "transforms/sessionize.py"
+   },
+   "links": [
+    {
+     "rel": "INSTANCE_OF",
+     "to": "float-money-pattern"
+    }
+   ]
+  },
+  {
+   "key": "sessionize-expertise",
+   "kind": "expertise_area",
+   "fields": {
+    "domain": "Spark sessionization and skew tuning",
+    "depth": "deep: took the job from 90 minutes to 25",
+    "modules": "transforms/sessionize.py"
+   }
+  },
+  {
+   "key": "sessionize-in-sql",
+   "kind": "refactoring_attempt",
+   "fields": {
+    "outcome": "reverted",
+    "approach": "rewrite sessionize as pure SQL window functions",
+    "reason_failed": "the gap window scanned 3 days of events per partition and cost 4 times the Spark job"
+   },
+   "scope": [
+    "transforms/**"
+   ]
+  },
+  {
+   "key": "spark-35-blocker",
+   "kind": "blocker",
+   "fields": {
+    "description": "cannot upgrade Spark to 3.5 until the cluster vendor ships the Iceberg connector fix (VEN-12)"
+   },
+   "scope": [
+    "transforms/**"
+   ]
+  },
+  {
+   "key": "aqe-regression",
+   "kind": "bug_pattern",
+   "retracted": "reproduced with adaptive execution on after the skew fix, so it was never the cause",
+   "fields": {
+    "name": "aqe_regression",
+    "signature": "adaptive query execution coalesces sessionize partitions too far and the stage runs slower",
+    "modules_affected": "transforms/sessionize.py"
+   }
+  },
+  {
+   "key": "replace-partition-load",
+   "kind": "decision",
+   "fields": {
+    "title": "Load by replacing the whole ds partition instead of row level MERGE",
+    "context": "MERGE on the 1.2 billion row fact took 55 minutes and could not handle a rerun after a partial failure; delete then insert inside one transaction is atomic"
+   },
+   "scope": [
+    "warehouse/**"
+   ],
+   "anchors": [
+    [
+     "warehouse/loader.py",
+     "merge_partition"
+    ]
+   ]
+  },
+  {
+   "key": "shadow-table-migration",
+   "kind": "convention",
+   "fields": {
+    "category": "migrations",
+    "rule": "migrate a warehouse table by building <name>_v2, backfilling it, then renaming both in one transaction; never ALTER a column type in place",
+    "enforced_by": "review",
+    "exceptions": "",
+    "applies_to": "warehouse/ddl/"
+   }
+  },
+  {
+   "key": "fact-scan-rule",
+   "kind": "performance_constraint",
+   "fields": {
+    "operation": "fact_orders queries",
+    "constraint": "cluster key is (ds, customer_id) and every query must filter on ds",
+    "reason": "an unfiltered scan reads 11 TB, takes 20 minutes and blocks the metrics API connection pool"
+   },
+   "scope": [
+    "warehouse/**",
+    "api/**"
+   ],
+   "anchors": [
+    [
+     "warehouse/ddl/fact_orders.sql",
+     "fact_orders"
+    ]
+   ]
+  },
+  {
+   "key": "small-file-explosion",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "small_file_explosion",
+    "signature": "backfills that write one tiny parquet file per task produced 380,000 objects and list calls took minutes",
+    "modules_affected": "warehouse/loader.py"
+   },
+   "anchors": [
+    [
+     "warehouse/loader.py",
+     "compact_partition"
+    ]
+   ]
+  },
+  {
+   "key": "compact-after-load",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "compact each partition to 256 MB files in a compact task right after the load",
+    "caveats": "run it before the quality gate, otherwise row counts read a stale file list"
+   },
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "small-file-explosion"
+    }
+   ]
+  },
+  {
+   "key": "retention-policy",
+   "kind": "decision",
+   "fields": {
+    "title": "Keep raw landing files for 90 days and fact tables for 7 years",
+    "context": "the finance audit needs seven years of orders, while raw files older than 90 days can be re-fetched from the partner"
+   },
+   "scope": [
+    "warehouse/**",
+    "ingest/**"
+   ]
+  },
+  {
+   "key": "copy-truncates-silently",
+   "kind": "quirk",
+   "fields": {
+    "description": "COPY INTO silently truncates strings longer than the column unless ON_ERROR is set to ABORT; INC-327 lost the tail of 14,000 product names before anyone noticed"
+   },
+   "scope": [
+    "warehouse/**"
+   ],
+   "anchors": [
+    [
+     "warehouse/loader.py",
+     "merge_partition"
+    ]
+   ]
+  },
+  {
+   "key": "loader-module",
+   "kind": "module",
+   "fields": {
+    "path": "warehouse/loader.py",
+    "purpose": "loads staged parquet into fact tables one ds partition at a time and records row counts"
+   }
+  },
+  {
+   "key": "region-free-text",
+   "kind": "tech_debt",
+   "fields": {
+    "location": "warehouse/ddl/fact_orders.sql",
+    "description": "customer_region is free text and has 41 spellings of EMEA; it should be an enum with a lookup table"
+   },
+   "anchors": [
+    [
+     "warehouse/ddl/fact_orders.sql",
+     "customer_region"
+    ]
+   ]
+  },
+  {
+   "key": "dim-bloat",
+   "kind": "bug",
+   "fields": {
+    "title": "Dimension tables grew to 3 times their size",
+    "root_cause": "dead rows were never vacuumed because the metrics API pool holds a snapshot open for hours (OPS-77)",
+    "module": "warehouse/loader.py"
+   }
+  },
+  {
+   "key": "manual-vacuum",
+   "kind": "workaround",
+   "fields": {
+    "solution": "run VACUUM on the dimension tables by hand every Monday.",
+    "description": "the automatic vacuum skips tables with open readers, until the metrics pool recycles its connections (OPS-77)"
+   },
+   "scope": [
+    "warehouse/**"
+   ],
+   "links": [
+    {
+     "rel": "WORKAROUND_FOR",
+     "to": "dim-bloat"
+    }
+   ]
+  },
+  {
+   "key": "schemas-as-repo-files",
+   "kind": "decision",
+   "fields": {
+    "title": "Keep partner schemas as JSON files in the repo with no registry",
+    "context": "simple, reviewable in a pull request and no extra service to run"
+   },
+   "scope": [
+    "contracts/**"
+   ]
+  },
+  {
+   "key": "registry-source-of-truth",
+   "kind": "decision",
+   "supersedes": "schemas-as-repo-files",
+   "fields": {
+    "title": "Run a schema registry as the source of truth for data contracts",
+    "context": "the JSON files in the repo drifted from what partners really sent and nobody noticed until INC-270"
+   },
+   "scope": [
+    "contracts/**"
+   ],
+   "anchors": [
+    [
+     "contracts/registry.py",
+     "register_schema"
+    ]
+   ]
+  },
+  {
+   "key": "backward-compat-only",
+   "kind": "decision",
+   "fields": {
+    "title": "Enforce BACKWARD compatibility on every registry subject",
+    "context": "a partner dropping the currency column broke fact_orders at 03:00 (INC-295); the registry now rejects removed columns and type narrowing"
+   },
+   "scope": [
+    "contracts/**"
+   ],
+   "anchors": [
+    [
+     "contracts/registry.py",
+     "check_compat"
+    ]
+   ]
+  },
+  {
+   "key": "acme-new-columns",
+   "kind": "quirk",
+   "fields": {
+    "description": "Acme adds optional columns without notice about once a quarter, so the import must ignore unknown columns and emit a schema_drift warning instead of failing the task"
+   },
+   "scope": [
+    "contracts/**",
+    "ingest/**"
+   ],
+   "anchors": [
+    [
+     "contracts/partner_acme.yaml",
+     "columns"
+    ]
+   ]
+  },
+  {
+   "key": "silent-null-cast",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "silent_null_cast",
+    "signature": "a partner changed a column from int to string and the reader turned the unparsable values into null, which then passed as zero",
+    "modules_affected": "contracts/,quality/checks.py"
+   }
+  },
+  {
+   "key": "failfast-reads",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "read partner files with the contract schema in FAILFAST mode so a bad cast fails the task",
+    "caveats": "route the failure to quarantine rather than retrying, since a retry cannot fix bad data"
+   },
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "silent-null-cast"
+    }
+   ]
+  },
+  {
+   "key": "row-count-floor",
+   "kind": "decision",
+   "fields": {
+    "title": "Fail the quality gate when a partition has under 70 percent of the 7 day median row count",
+    "context": "an empty partner file loaded zero rows and passed every not-null check (INC-314)"
+   },
+   "scope": [
+    "quality/**"
+   ],
+   "anchors": [
+    [
+     "quality/checks.py",
+     "row_count_check"
+    ]
+   ]
+  },
+  {
+   "key": "severity-levels",
+   "kind": "convention",
+   "fields": {
+    "category": "quality",
+    "rule": "checks tagged severity=error block publish and severity=warn only open a ticket; a new check starts as warn for two weeks",
+    "enforced_by": "expectations schema validation",
+    "exceptions": "",
+    "applies_to": "quality/"
+   }
+  },
+  {
+   "key": "check-fixtures",
+   "kind": "test_convention",
+   "fields": {
+    "category": "quality",
+    "pattern": "unit test each check against a tiny parquet fixture with one passing and one failing partition; tests never run checks against the real warehouse"
+   },
+   "scope": [
+    "tests/**",
+    "quality/**"
+   ]
+  },
+  {
+   "key": "monday-freshness",
+   "kind": "bug",
+   "fields": {
+    "title": "Freshness check failed every Monday",
+    "root_cause": "it compared max(ingested_at) with now and ignored that the Sunday drop lands at 06:40 UTC (INC-336)",
+    "module": "quality/checks.py"
+   },
+   "anchors": [
+    [
+     "quality/checks.py",
+     "run_checks"
+    ]
+   ]
+  },
+  {
+   "key": "thresholds-in-yaml",
+   "kind": "session_decision",
+   "fields": {
+    "decision": "move check thresholds out of Python into quality/expectations.yaml",
+    "rationale": "analysts can review a threshold change in a pull request without reading the check runner"
+   },
+   "scope": [
+    "quality/**"
+   ],
+   "anchors": [
+    [
+     "quality/expectations.yaml",
+     "orders"
+    ]
+   ]
+  },
+  {
+   "key": "quarantine-partition",
+   "kind": "project_pattern",
+   "fields": {
+    "name": "quarantine_partition",
+    "template": "a failed partition is moved to quarantine.<table>_<ds> and the publish task is skipped rather than failed",
+    "usage_context": "any blocking quality failure; downstream DAGs read only published tables"
+   },
+   "scope": [
+    "quality/**",
+    "dags/**"
+   ],
+   "anchors": [
+    [
+     "quality/checks.py",
+     "run_checks"
+    ]
+   ]
+  },
+  {
+   "key": "web-partner-nulls",
+   "kind": "quirk",
+   "retracted": "found null customer_ids produced by our own left join as well",
+   "fields": {
+    "description": "null customer_id values come only from the web partner's feed, so ignore them for the other partners"
+   },
+   "scope": [
+    "quality/**"
+   ]
+  },
+  {
+   "key": "backfill-full-reload",
+   "kind": "decision",
+   "fields": {
+    "title": "Backfill by truncating and reloading the whole table",
+    "context": "the simplest way to guarantee no stale rows are left behind"
+   },
+   "scope": [
+    "dags/**"
+   ]
+  },
+  {
+   "key": "backfill-in-weeks",
+   "kind": "decision",
+   "supersedes": "backfill-full-reload",
+   "fields": {
+    "title": "Backfill in 7 day chunks with max_active_runs of 2",
+    "context": "a 400 day backfill started as 400 parallel runs, filled the warehouse queue and delayed the nightly load by 5 hours (INC-320)"
+   },
+   "scope": [
+    "dags/**"
+   ],
+   "anchors": [
+    [
+     "dags/backfill.py",
+     "backfill_range"
+    ]
+   ]
+  },
+  {
+   "key": "announce-backfills",
+   "kind": "convention",
+   "fields": {
+    "category": "backfill",
+    "rule": "announce each backfill with the table, ds range and expected cost before starting, and set backfill=true in the run conf so alerts stay muted",
+    "enforced_by": "manual",
+    "exceptions": "",
+    "applies_to": "dags/backfill.py"
+   }
+  },
+  {
+   "key": "orders-backfill-progress",
+   "kind": "partial_work",
+   "fields": {
+    "work_type": "backfill of fact_orders 2025-01-01 to 2025-03-31",
+    "location": "dags/backfill.py",
+    "state": "weeks 1 to 9 done; week 10 failed on a missing fx rate, resume from 2025-03-05"
+   }
+  },
+  {
+   "key": "backfill-billing-night",
+   "kind": "bug",
+   "fields": {
+    "title": "A backfill cost 4,200 dollars in one night",
+    "root_cause": "the backfill DAG ran under a service account on the budget guard's exempt list (INC-339)",
+    "module": "cost/budget.py"
+   },
+   "anchors": [
+    [
+     "cost/budget.py",
+     "enforce_budget"
+    ]
+   ]
+  },
+  {
+   "key": "dry-run-cost-guard",
+   "kind": "decision",
+   "fields": {
+    "title": "Block queries whose dry run estimate is over 500 GB scanned unless they carry an approval tag",
+    "context": "an unfiltered scan cost 55 dollars (INC-309); the guard calls a dry run before it submits anything"
+   },
+   "scope": [
+    "cost/**"
+   ],
+   "anchors": [
+    [
+     "cost/budget.py",
+     "enforce_budget"
+    ]
+   ]
+  },
+  {
+   "key": "executor-cap",
+   "kind": "performance_constraint",
+   "fields": {
+    "operation": "Spark cluster sizing",
+    "constraint": "at most 40 executors, spot instances everywhere except the publish stage",
+    "reason": "monthly compute rose from 18k to 31k dollars after autoscaling was left unbounded in September"
+   },
+   "scope": [
+    "transforms/**",
+    "config/**"
+   ],
+   "anchors": [
+    [
+     "config/settings.py",
+     "SPARK_MAX_EXECUTORS"
+    ]
+   ]
+  },
+  {
+   "key": "metrics-cache-60s",
+   "kind": "decision",
+   "fields": {
+    "title": "Cache metric responses for 60 seconds keyed by query hash and ds range",
+    "context": "the wall dashboards update every 10 seconds on 30 screens and hit the warehouse 180 times a minute"
+   },
+   "scope": [
+    "api/**"
+   ],
+   "anchors": [
+    [
+     "api/metrics.py",
+     "metric_query"
+    ]
+   ]
+  },
+  {
+   "key": "metrics-latency",
+   "kind": "performance_constraint",
+   "fields": {
+    "operation": "GET /v2/metrics",
+    "constraint": "p95 under 800 ms and at most 50,000 points per response",
+    "reason": "the BI tool times out at 1 second and retries, which doubles the load"
+   },
+   "scope": [
+    "api/**"
+   ],
+   "anchors": [
+    [
+     "api/metrics.py",
+     "MAX_POINTS"
+    ]
+   ]
+  },
+  {
+   "key": "problem-json-errors",
+   "kind": "convention",
+   "fields": {
+    "category": "api",
+    "rule": "error responses use the problem+json shape with a trace_id; never return a stack trace or SQL text to a caller",
+    "enforced_by": "contract test",
+    "exceptions": "",
+    "applies_to": "api/"
+   }
+  },
+  {
+   "key": "gold-read-model",
+   "kind": "design_pattern",
+   "fields": {
+    "name": "gold table read model",
+    "why_chosen": "the API only reads pre-aggregated gold tables, so latency does not depend on fact table size",
+    "where_used": "api/metrics.py"
+   }
+  },
+  {
+   "key": "cache-stale-bug",
+   "kind": "bug",
+   "retracted": "the stale values came from one worker with a skewed clock, not from the cache",
+   "fields": {
+    "title": "Metrics API served yesterday's numbers after publish",
+    "root_cause": "the 60 second cache key ignored the publish version",
+    "module": "api/metrics.py"
+   }
+  },
+  {
+   "key": "sandboxed-notebook-runner",
+   "kind": "decision",
+   "fields": {
+    "title": "Run analyst notebooks through the notebook runner in a sandbox pod with a 30 minute limit",
+    "context": "a notebook left its Spark session open over a weekend and cost 900 dollars (INC-317)"
+   },
+   "scope": [
+    "notebooks/**"
+   ],
+   "anchors": [
+    [
+     "notebooks/runner.py",
+     "run_notebook"
+    ]
+   ]
+  },
+  {
+   "key": "notebook-hygiene",
+   "kind": "convention",
+   "fields": {
+    "category": "notebooks",
+    "rule": "strip outputs before commit, document the inputs in the first cell, and write results only to the analytics_sandbox schema; notebooks never write to gold tables",
+    "enforced_by": "pre-commit hook",
+    "exceptions": "",
+    "applies_to": "notebooks/"
+   }
+  },
+  {
+   "key": "notebook-smoke",
+   "kind": "test_convention",
+   "fields": {
+    "category": "notebooks",
+    "pattern": "smoke test every scheduled notebook with the runner in dry-run mode against the sample dataset; the whole test run must stay under 2 minutes"
+   },
+   "scope": [
+    "tests/**",
+    "notebooks/**"
+   ]
+  },
+  {
+   "key": "kernel-leak",
+   "kind": "bug_pattern",
+   "retracted": "memory growth was the open Spark session, not pandas",
+   "fields": {
+    "name": "kernel_memory_leak",
+    "signature": "long notebook runs grow to 12 GB because pandas never releases intermediate frames",
+    "modules_affected": "notebooks/runner.py"
+   }
+  },
+  {
+   "key": "parquet-first-exports",
+   "kind": "decision",
+   "fields": {
+    "title": "Offer Parquet as the default export and CSV only up to 1 million rows",
+    "context": "customers' 40 million row CSV exports timed out and the Parquet file is 8 times smaller (SUP-902)"
+   },
+   "scope": [
+    "exports/**"
+   ],
+   "anchors": [
+    [
+     "exports/parquet_export.py",
+     "export_parquet"
+    ]
+   ]
+  },
+  {
+   "key": "int96-timestamps",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "parquet_int96_timestamps",
+    "signature": "Spark wrote timestamps as INT96 and a customer's reader showed them as 1970 dates",
+    "modules_affected": "exports/parquet_export.py"
+   },
+   "anchors": [
+    [
+     "exports/parquet_export.py",
+     "export_parquet"
+    ]
+   ]
+  },
+  {
+   "key": "micros-timestamp-fix",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "set spark.sql.parquet.outputTimestampType to TIMESTAMP_MICROS in the export's Spark config",
+    "caveats": "exports written before the change must be regenerated, so tell the customer"
+   },
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "int96-timestamps"
+    }
+   ]
+  },
+  {
+   "key": "export-driver-memory",
+   "kind": "performance_constraint",
+   "fields": {
+    "operation": "customer export job",
+    "constraint": "stream in 128 MB row groups and keep driver memory under 4 GB; never collect() a result",
+    "reason": "INC-306: collect() on the orders export killed the driver at 9 GB"
+   },
+   "scope": [
+    "exports/**"
+   ],
+   "anchors": [
+    [
+     "exports/csv_export.py",
+     "export_csv"
+    ]
+   ]
+  },
+  {
+   "key": "export-allowlist",
+   "kind": "convention",
+   "fields": {
+    "category": "exports",
+    "rule": "customer facing exports pass through pii.masking with the export's column allowlist; a column that is not on the list is dropped, not exported",
+    "enforced_by": "contract test",
+    "exceptions": "",
+    "applies_to": "exports/"
+   }
+  },
+  {
+   "key": "hmac-tokens",
+   "kind": "decision",
+   "fields": {
+    "title": "Tokenize email and phone with a keyed HMAC in staging and keep raw values only in the vault table",
+    "context": "a GDPR erasure (GDPR-88) then touches one table instead of 60"
+   },
+   "scope": [
+    "pii/**"
+   ],
+   "anchors": [
+    [
+     "pii/masking.py",
+     "tokenize"
+    ]
+   ]
+  },
+  {
+   "key": "erasure-request",
+   "kind": "project_pattern",
+   "fields": {
+    "name": "erasure_request",
+    "template": "delete the vault row, null the token column in staging and rerun the affected ds partitions through the transform",
+    "usage_context": "a GDPR erasure ticket; the whole process must finish within 30 days and write the audit table entry"
+   },
+   "scope": [
+    "pii/**",
+    "transforms/**"
+   ]
+  },
+  {
+   "key": "email-in-task-logs",
+   "kind": "bug",
+   "fields": {
+    "title": "Email addresses found in Airflow task logs",
+    "root_cause": "a debug log of the REST response body wrote customer emails (INC-325)",
+    "module": "ingest/rest_client.py"
+   },
+   "anchors": [
+    [
+     "ingest/rest_client.py",
+     "fetch_page"
+    ]
+   ]
+  },
+  {
+   "key": "single-hmac-key",
+   "kind": "tech_debt",
+   "fields": {
+    "location": "pii/masking.py",
+    "description": "one global HMAC key; quarterly rotation needs a key version column that does not exist yet"
+   },
+   "anchors": [
+    [
+     "pii/masking.py",
+     "tokenize"
+    ]
+   ]
+  },
+  {
+   "key": "env-yaml-overlays",
+   "kind": "decision",
+   "fields": {
+    "title": "Read config from per environment YAML overlays and secrets only from the secrets backend",
+    "context": "a staging bucket name committed in settings.py pointed production exports at staging (INC-310)"
+   },
+   "scope": [
+    "config/**"
+   ],
+   "anchors": [
+    [
+     "config/settings.py",
+     "RAW_BUCKET"
+    ]
+   ]
+  },
+  {
+   "key": "config-key-rules",
+   "kind": "convention",
+   "fields": {
+    "category": "config",
+    "rule": "every new config key needs a default in settings.py and a line in the config reference document; deploy refuses unknown keys",
+    "enforced_by": "deploy check",
+    "exceptions": "",
+    "applies_to": "config/"
+   }
+  },
+  {
+   "key": "with-retry-snippet",
+   "kind": "snippet",
+   "fields": {
+    "name": "with_retry",
+    "code": "@with_retry(attempts=3, base=2.0, cap=1200, retry_on=(Timeout, Throttled))",
+    "usage_context": "any call to a partner API or the warehouse; never retry on a validation error"
+   },
+   "scope": [
+    "ops/**",
+    "ingest/**"
+   ],
+   "anchors": [
+    [
+     "ops/retry.py",
+     "with_retry"
+    ]
+   ]
+  },
+  {
+   "key": "dagbag-before-sync",
+   "kind": "decision",
+   "fields": {
+    "title": "Sync DAG files to the scheduler bucket only after the DagBag test passes",
+    "context": "a syntax error pushed at 01:50 stopped the whole nightly run (INC-289)"
+   },
+   "scope": [
+    "dags/**",
+    "config/**"
+   ]
+  }
+ ]
+}

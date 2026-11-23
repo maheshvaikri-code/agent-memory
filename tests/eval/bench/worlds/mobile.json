@@ -1,0 +1,1256 @@
+{
+ "files": {
+  "src/sync/syncEngine.ts": "import { outbox } from './outbox';\nimport { resolve } from './conflicts';\n\nexport const BATCH_SIZE = 50;\nexport const MAX_BACKOFF_MS = 60000;\nexport const SYNC_INTERVAL_MS = 15 * 60 * 1000;\n\nexport async function runSync(api, db) {\n  const rows = await outbox.peek(db, BATCH_SIZE);\n  if (rows.length) await api.push(rows);\n  const changes = await pullChanges(api, db);\n  for (const change of changes) await resolve(db, change);\n}\n\nexport async function pullChanges(api, db) {\n  const cursor = await db.getSetting('sync_cursor');\n  return api.pull({ since: cursor });\n}\n",
+  "src/sync/outbox.ts": "export const OUTBOX_LIMIT = 500;\n\nexport const outbox = {\n  async enqueue(db, op) {\n    const id = newId();\n    await db.run('INSERT INTO outbox (id, op, created_at) VALUES (?, ?, ?)', [id, JSON.stringify(op), Date.now()]);\n    return id;\n  },\n  async peek(db, n) {\n    return db.all('SELECT id, op FROM outbox ORDER BY created_at LIMIT ?', [n]);\n  },\n  async markSent(db, ids) {\n    await db.run(`DELETE FROM outbox WHERE id IN (${ids.map(() => '?').join(',')})`, ids);\n  },\n};\n",
+  "src/sync/conflicts.ts": "// Last writer wins, using the server's updatedAt (never the device clock).\nexport async function resolve(db, change) {\n  const local = await db.get('SELECT updated_at FROM waypoints WHERE id = ?', [change.id]);\n  if (!local || change.updatedAt > local.updated_at) {\n    await db.run('REPLACE INTO waypoints (id, name, notes, updated_at) VALUES (?, ?, ?, ?)',\n      [change.id, change.name, change.notes, change.updatedAt]);\n  }\n}\n",
+  "src/location/backgroundLocation.ts": "import { Platform } from 'react-native';\n\nexport const DISTANCE_FILTER_M = 15;\n\nexport function startBackground(native, onFix) {\n  return native.start({\n    distanceFilter: DISTANCE_FILTER_M,\n    desiredAccuracy: 'high',\n    pausesLocationUpdatesAutomatically: false,\n    foregroundService: Platform.OS === 'android'\n      ? { title: 'Trailmate is recording', channel: 'recording' }\n      : undefined,\n  }, onFix);\n}\n",
+  "src/location/trackRecorder.ts": "import { DISTANCE_FILTER_M } from './backgroundLocation';\n\nexport const MIN_ACCURACY_M = 30;\nexport const FLUSH_BATCH = 20;\nexport const MAX_SPEED_MS = 12;\n\nlet buffer = [];\n\nexport async function onLocation(db, fix) {\n  if (fix.accuracy > MIN_ACCURACY_M) return;\n  buffer.push(fix);\n  if (buffer.length >= FLUSH_BATCH) {\n    const batch = buffer;\n    buffer = [];\n    await db.transaction((tx) => batch.forEach((p) => tx.run('INSERT INTO track_points VALUES (?,?,?,?)', [p.t, p.lat, p.lon, p.alt])));\n  }\n}\n",
+  "src/permissions/permissionGate.ts": "import { Linking, AppState } from 'react-native';\n\nexport type PermState = 'granted' | 'denied' | 'blocked';\n\nexport async function requestLocation(perms, background = false): Promise<PermState> {\n  const fg = await perms.request('location.whenInUse');\n  if (fg !== 'granted') return fg === 'blocked' ? 'blocked' : 'denied';\n  if (!background) return 'granted';\n  return perms.request('location.always');\n}\n\nexport function openSettings() {\n  return Linking.openSettings();\n}\n",
+  "src/push/notifications.ts": "import messaging from '@react-native-firebase/messaging';\n\nexport const ALERT_CHANNEL = 'trail-alerts-v2';\n\nexport async function registerToken(api, store) {\n  const token = await messaging().getToken();\n  if (token !== (await store.get('fcm_token'))) {\n    await api.registerPushToken(token);\n    await store.set('fcm_token', token);\n  }\n}\n\nexport function routeNotification(msg, navigate) {\n  if (msg.data && msg.data.deepLink) navigate(msg.data.deepLink);\n}\n",
+  "src/iap/purchases.ts": "import * as RNIap from 'react-native-iap';\n\nexport const PRO_SKUS = ['trailmate_pro_monthly', 'trailmate_pro_yearly'];\n\nexport function onPurchaseUpdate(api) {\n  return RNIap.purchaseUpdatedListener(async (purchase) => {\n    const res = await api.verifyReceipt(purchase);\n    if (res.entitled) await RNIap.finishTransaction({ purchase, isConsumable: false });\n  });\n}\n\nexport async function restore(api) {\n  const purchases = await RNIap.getAvailablePurchases();\n  return api.syncEntitlements(purchases);\n}\n",
+  "src/maps/tileCache.ts": "export const MAX_CACHE_MB = 500;\nexport const TILE_TTL_DAYS = 30;\n\nexport async function putTile(fs, key, bytes) {\n  const tmp = `${key}.tmp`;\n  await fs.writeFile(tmp, bytes);\n  await fs.rename(tmp, key);\n}\n\nexport async function evictLru(fs, index) {\n  while (index.totalBytes() > MAX_CACHE_MB * 1024 * 1024) {\n    await fs.unlink(index.oldest());\n  }\n}\n",
+  "src/maps/offlineRegions.ts": "export const MAX_REGION_TILES = 20000;\nexport const MIN_ZOOM = 10;\nexport const MAX_ZOOM = 16;\nconst PARALLEL_REQUESTS = 4;\n\nexport function planRegion(bbox) {\n  const tiles = tilesFor(bbox, MIN_ZOOM, MAX_ZOOM);\n  if (tiles.length > MAX_REGION_TILES) throw new Error('region too large');\n  return tiles;\n}\n\nexport async function download(queue, tiles) {\n  return queue.run(tiles, { concurrency: PARALLEL_REQUESTS });\n}\n",
+  "src/crash/reporter.ts": "import * as Sentry from '@sentry/react-native';\n\nexport function releaseName(version, build) {\n  return `trailmate@${version}+${build}`;\n}\n\nexport function initCrashReporting(version, build) {\n  Sentry.init({\n    dsn: process.env.SENTRY_DSN,\n    release: releaseName(version, build),\n    maxBreadcrumbs: 50,\n    beforeSend: scrubEvent,\n  });\n}\n",
+  "src/storage/db.ts": "export const SCHEMA_VERSION = 7;\n\nconst MIGRATIONS = {\n  1: 'CREATE TABLE waypoints (id TEXT PRIMARY KEY, name TEXT, notes TEXT, updated_at INTEGER)',\n  2: 'CREATE TABLE outbox (id TEXT PRIMARY KEY, op TEXT, created_at INTEGER)',\n  // 3..7 add tracks, track_points, settings, tile_index, entitlements\n};\n\nexport async function runMigrations(db) {\n  let v = await db.pragma('user_version');\n  while (v < SCHEMA_VERSION) {\n    v += 1;\n    await db.transaction((tx) => { tx.exec(MIGRATIONS[v]); tx.pragma(`user_version = ${v}`); });\n  }\n}\n",
+  "src/api/client.ts": "export class ApiError extends Error {\n  constructor(public status: number, public code: string, message: string) { super(message); }\n}\n\nexport async function request(path, init) {\n  const res = await fetch(`${API_BASE}${path}`, init);\n  if (!res.ok) {\n    const body = await res.json().catch(() => ({}));\n    throw new ApiError(res.status, body.code || 'unknown', body.message || res.statusText);\n  }\n  return res.json();\n}\n",
+  "cli/trailmate_cli/export.py": "import click\n\n\n@click.command(\"export\")\n@click.option(\"--format\", \"fmt\", type=click.Choice([\"gpx\", \"geojson\"]), default=\"gpx\")\n@click.option(\"--track-id\", multiple=True)\n@click.argument(\"out\", type=click.Path())\ndef export_cmd(fmt, track_id, out):\n    \"\"\"Export tracks from the Trailmate API to a GPX 1.1 or GeoJSON file.\"\"\"\n    tracks = fetch_tracks(track_id)\n    write_gpx(tracks, out) if fmt == \"gpx\" else write_geojson(tracks, out)\n",
+  "cli/trailmate_cli/gpx_import.py": "from xml.etree.ElementTree import iterparse  # swapped for defusedxml, see TM-148\n\nMAX_BYTES = 20 * 1024 * 1024\n\n\ndef read_points(path):\n    for _, el in iterparse(path, events=(\"end\",)):\n        if el.tag.endswith(\"trkpt\"):\n            yield float(el.get(\"lat\")), float(el.get(\"lon\")), el.findtext(\"{*}time\")\n            el.clear()\n",
+  "release/fastlane/Fastfile": "default_platform(:ios)\n\nplatform :ios do\n  lane :beta do\n    increment_build_number(build_number: ENV[\"CI_RUN_NUMBER\"])\n    build_app(scheme: \"Trailmate\")\n    upload_to_testflight\n  end\nend\n\nplatform :android do\n  lane :beta do\n    gradle(task: \"bundle\", build_type: \"Release\")\n    upload_to_play_store(track: \"internal\")\n  end\nend\n",
+  ".github/workflows/release.yml": "name: release\non:\n  push:\n    tags: [\"v*\"]\njobs:\n  build-ios:\n    runs-on: macos-14\n    steps:\n      - uses: actions/checkout@v4\n      - run: sudo xcode-select -s /Applications/Xcode_15.4.app\n      - run: bundle exec fastlane ios beta\n  build-android:\n    runs-on: ubuntu-22.04\n    steps:\n      - uses: actions/checkout@v4\n      - run: bundle exec fastlane android beta\n",
+  "android/app/build.gradle": "android {\n    compileSdkVersion 34\n    defaultConfig {\n        applicationId \"app.trailmate\"\n        minSdkVersion 24\n        targetSdkVersion 34\n        versionCode System.getenv(\"CI_RUN_NUMBER\")?.toInteger() ?: 1\n        versionName \"1.7.0\"\n    }\n}\nproject.ext.react = [enableHermes: true]\n",
+  "android/app/src/main/AndroidManifest.xml": "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\">\n  <uses-permission android:name=\"android.permission.ACCESS_FINE_LOCATION\" />\n  <uses-permission android:name=\"android.permission.FOREGROUND_SERVICE_LOCATION\" />\n  <application>\n    <service android:name=\".RecordingService\" android:foregroundServiceType=\"location\" />\n  </application>\n</manifest>\n",
+  "ios/Trailmate/Info.plist": "<dict>\n  <key>NSLocationWhenInUseUsageDescription</key>\n  <string>Trailmate shows your position on the trail map.</string>\n  <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>\n  <string>Trailmate keeps recording your hike while the screen is off.</string>\n  <key>UIBackgroundModes</key>\n  <array><string>location</string><string>remote-notification</string></array>\n</dict>\n",
+  "tests/sync/syncEngine.test.ts": "import { runSync, MAX_BACKOFF_MS } from '../../src/sync/syncEngine';\n\njest.useFakeTimers();\n\ntest('a timeout after the server committed does not duplicate the row', async () => {\n  const api = fakeApi({ failAfterCommit: true });\n  await runSync(api, memoryDb());\n  await runSync(api, memoryDb());\n  expect(api.committed).toHaveLength(1);\n});\n\ntest('backoff never exceeds the cap', () => {\n  expect(nextDelay(20)).toBeLessThanOrEqual(MAX_BACKOFF_MS);\n});\n",
+  "tests/cli/test_gpx_import.py": "from pathlib import Path\n\nfrom trailmate_cli.gpx_import import read_points\n\nFIXTURES = Path(__file__).parent / \"fixtures\"\n\n\ndef test_naive_time_is_read_as_utc():\n    points = list(read_points(FIXTURES / \"naive_time.gpx\"))\n    assert points[0][2].endswith(\"Z\") or \"+\" not in points[0][2]\n\n\ndef test_entity_bomb_is_rejected():\n    import pytest\n    with pytest.raises(Exception):\n        list(read_points(FIXTURES / \"billion_laughs.gpx\"))\n"
+ },
+ "records": [
+  {
+   "key": "never-log-location",
+   "kind": "convention",
+   "pinned": true,
+   "fields": {
+    "category": "privacy",
+    "rule": "never log raw GPS coordinates, user ids or push tokens; log a hashed id and the 2 decimal grid cell instead",
+    "enforced_by": "lint rule no-raw-coords",
+    "exceptions": ""
+   }
+  },
+  {
+   "key": "no-secrets-in-bundle",
+   "kind": "convention",
+   "pinned": true,
+   "fields": {
+    "category": "security",
+    "rule": "never ship API keys or signing secrets in the JS bundle or in the app config; read them from CI secrets at build time",
+    "enforced_by": "secret scan in CI",
+    "exceptions": ""
+   }
+  },
+  {
+   "key": "module-db",
+   "kind": "module",
+   "fields": {
+    "path": "src/storage/db.ts",
+    "purpose": "opens the SQLite database and runs the numbered schema migrations on startup"
+   },
+   "anchors": [
+    [
+     "src/storage/db.ts",
+     "runMigrations"
+    ]
+   ]
+  },
+  {
+   "key": "dec-sqlite-local",
+   "kind": "decision",
+   "fields": {
+    "title": "Store tracks and waypoints in SQLite, not AsyncStorage",
+    "context": "AsyncStorage stalled at about 4 MB of serialized tracks on Android (TM-118); SQLite holds 100k points and lets sync query by updated_at; tracks saved by older builds are imported from AsyncStorage on first launch"
+   },
+   "anchors": [
+    [
+     "src/storage/db.ts",
+     "runMigrations"
+    ]
+   ]
+  },
+  {
+   "key": "dec-schema-version",
+   "kind": "decision",
+   "fields": {
+    "title": "Track the schema version with PRAGMA user_version",
+    "context": "a separate migrations table cost an extra read at cold start, while user_version is written atomically with the DDL, so a half migrated database is detectable"
+   },
+   "anchors": [
+    [
+     "src/storage/db.ts",
+     "SCHEMA_VERSION"
+    ]
+   ]
+  },
+  {
+   "key": "conv-migrations",
+   "kind": "convention",
+   "fields": {
+    "category": "database",
+    "rule": "every schema change is a new numbered migration; never edit a released migration, and write a down step for each one",
+    "enforced_by": "CI check",
+    "exceptions": "",
+    "applies_to": "src/storage/"
+   }
+  },
+  {
+   "key": "bug-migrate-crash",
+   "kind": "bug",
+   "fields": {
+    "title": "App crashed on launch after the 1.7 update for users coming from 1.4",
+    "root_cause": "migration 5 added a NOT NULL column with no default and existing rows violated it, and the runner retried the migrate step in a loop (TM-163)",
+    "module": "src/storage/db.ts"
+   },
+   "anchors": [
+    [
+     "src/storage/db.ts",
+     "runMigrations"
+    ]
+   ]
+  },
+  {
+   "key": "fix-migrate-crash",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "add the column nullable, backfill it in a second migration, then add the constraint",
+    "caveats": "SQLite cannot add a constraint in place, so rebuild the table inside one transaction and bump user_version last"
+   },
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "bug-migrate-crash"
+    }
+   ]
+  },
+  {
+   "key": "rtc-migrate",
+   "kind": "required_test_case",
+   "fields": {
+    "for_pattern": "schema migration",
+    "cases_required": "upgrade from every released schema version to the current one on a fixture database, and a migration that throws leaves the old version intact"
+   },
+   "scope": [
+    "src/storage/**",
+    "tests/**"
+   ]
+  },
+  {
+   "key": "td-json-columns",
+   "kind": "tech_debt",
+   "fields": {
+    "location": "src/storage/db.ts",
+    "description": "the elevation profile is recomputed from track_points on every track open instead of being stored, about 400 ms for a 20000 point track; caching it in a column would need a migrate in db.ts"
+   },
+   "anchors": [
+    [
+     "src/storage/db.ts",
+     "MIGRATIONS"
+    ]
+   ]
+  },
+  {
+   "key": "dec-settings-doc",
+   "kind": "decision",
+   "fields": {
+    "title": "Keep user preferences as one document per user on the backend",
+    "context": "units, map style and the set of alert regions sync as a single JSON document so a new phone restores them in one request, and the settings export for support tickets reuses the same document (TM-094)"
+   },
+   "scope": [
+    "src/sync/**",
+    "src/api/**"
+   ]
+  },
+  {
+   "key": "module-sync-engine",
+   "kind": "module",
+   "fields": {
+    "path": "src/sync/syncEngine.ts",
+    "purpose": "pushes the outbox in batches of 50 and pulls server changes since the last cursor; runs on foreground, on connectivity regain and every 15 minutes"
+   },
+   "anchors": [
+    [
+     "src/sync/syncEngine.ts",
+     "runSync"
+    ]
+   ]
+  },
+  {
+   "key": "dec-conflict-device-clock",
+   "kind": "decision",
+   "fields": {
+    "title": "Resolve sync conflicts by comparing device timestamps",
+    "context": "simplest option and needs no extra server round trip"
+   },
+   "scope": [
+    "src/sync/**"
+   ]
+  },
+  {
+   "key": "dec-lww",
+   "kind": "decision",
+   "fields": {
+    "title": "Resolve sync conflicts by server updatedAt, last writer wins",
+    "context": "device clocks drift: TM-131 lost a 3 hour hike note when a phone clock was 2 days ahead; field level merge buys nothing because the waypoint editor only has name and notes"
+   },
+   "anchors": [
+    [
+     "src/sync/conflicts.ts",
+     "resolve"
+    ]
+   ],
+   "supersedes": "dec-conflict-device-clock"
+  },
+  {
+   "key": "bug-outbox-dup",
+   "kind": "bug",
+   "fields": {
+    "title": "Waypoint duplicated after a sync retry",
+    "root_cause": "the outbox row was only marked sent after the response was processed, so a timeout after the server committed sent it again (TM-142)",
+    "module": "src/sync/outbox.ts"
+   },
+   "anchors": [
+    [
+     "src/sync/outbox.ts",
+     "enqueue"
+    ]
+   ]
+  },
+  {
+   "key": "fix-idempotency",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "send the outbox row id as the Idempotency-Key header and have the server dedupe for 24 hours",
+    "caveats": "generate the key at enqueue time, never at send time, or a retry gets a new key"
+   },
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "bug-outbox-dup"
+    }
+   ]
+  },
+  {
+   "key": "perf-sync-batch",
+   "kind": "performance_constraint",
+   "fields": {
+    "operation": "sync push batch",
+    "constraint": "at most 50 rows per request",
+    "reason": "the API gateway config rejects bodies over 1 MB and a 50 row batch with track segments is about 600 KB"
+   },
+   "anchors": [
+    [
+     "src/sync/syncEngine.ts",
+     "BATCH_SIZE"
+    ]
+   ]
+  },
+  {
+   "key": "bp-sync-loop",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "sync_retry_loop",
+    "signature": "a failed push retried every 2 seconds with no backoff drains the battery and hammers the API on a flaky trail connection",
+    "modules_affected": "src/sync/"
+   }
+  },
+  {
+   "key": "fix-backoff",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "exponential backoff starting at 2 s and doubling up to a 60 s cap with full jitter, reset after any success",
+    "caveats": "keep the cap in MAX_BACKOFF_MS, the fake timer tests rely on that constant"
+   },
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "bp-sync-loop"
+    }
+   ]
+  },
+  {
+   "key": "quirk-netinfo",
+   "kind": "quirk",
+   "fields": {
+    "description": "NetInfo reports isConnected true on captive portal wifi, so check isInternetReachable before starting a sync; on Android it is null for the first second after launch"
+   },
+   "scope": [
+    "src/sync/**"
+   ]
+  },
+  {
+   "key": "wk-netinfo",
+   "kind": "workaround",
+   "fields": {
+    "solution": "treat a null isInternetReachable as unknown and probe GET /health with a 3 s timeout",
+    "description": "only on cold start, afterwards trust the NetInfo event"
+   },
+   "links": [
+    {
+     "rel": "WORKAROUND_FOR",
+     "to": "quirk-netinfo"
+    }
+   ]
+  },
+  {
+   "key": "hot-sync-pull",
+   "kind": "hot_path",
+   "fields": {
+    "name": "syncEngine.pullChanges",
+    "frequency": "on every foreground and every 15 minutes, so about 4 calls per active hour"
+   },
+   "anchors": [
+    [
+     "src/sync/syncEngine.ts",
+     "pullChanges"
+    ]
+   ]
+  },
+  {
+   "key": "tc-sync-fake-timers",
+   "kind": "test_convention",
+   "fields": {
+    "category": "sync",
+    "pattern": "drive the sync engine with jest fake timers and an in-memory outbox; a test never sleeps for a real backoff or the runner hits its 5 s timeout"
+   },
+   "scope": [
+    "tests/**"
+   ]
+  },
+  {
+   "key": "rtc-outbox",
+   "kind": "required_test_case",
+   "fields": {
+    "for_pattern": "outbox retry",
+    "cases_required": "a timeout after the server commit does not duplicate, backoff caps at 60 s, and the queue survives an app restart"
+   },
+   "anchors": [
+    [
+     "tests/sync/syncEngine.test.ts",
+     "runSync"
+    ]
+   ]
+  },
+  {
+   "key": "dec-api-errors",
+   "kind": "decision",
+   "fields": {
+    "title": "Return API errors as one JSON envelope with status, code and message",
+    "context": "the client maps code to a localized string; before this each endpoint invented its own error shape and the app handled four of them (TM-070); the envelope schema lives in the shared API spec"
+   },
+   "anchors": [
+    [
+     "src/api/client.ts",
+     "ApiError"
+    ]
+   ]
+  },
+  {
+   "key": "module-bg-location",
+   "kind": "module",
+   "fields": {
+    "path": "src/location/backgroundLocation.ts",
+    "purpose": "wraps the native location service; starts a foreground service on Android and enables background updates on iOS"
+   },
+   "anchors": [
+    [
+     "src/location/backgroundLocation.ts",
+     "startBackground"
+    ]
+   ]
+  },
+  {
+   "key": "dec-sample-1hz",
+   "kind": "decision",
+   "fields": {
+    "title": "Sample GPS at 1 Hz while recording",
+    "context": "gives the smoothest line on the map"
+   },
+   "scope": [
+    "src/location/**"
+   ]
+  },
+  {
+   "key": "dec-distance-filter",
+   "kind": "decision",
+   "fields": {
+    "title": "Record a track point every 15 meters instead of every second",
+    "context": "1 Hz filled 8 MB per 4 hour hike and cost 11 percent battery per hour in field tests (TM-097)"
+   },
+   "anchors": [
+    [
+     "src/location/backgroundLocation.ts",
+     "DISTANCE_FILTER_M"
+    ]
+   ],
+   "supersedes": "dec-sample-1hz"
+  },
+  {
+   "key": "quirk-ios-pause",
+   "kind": "quirk",
+   "fields": {
+    "description": "iOS pauses location updates after about 10 minutes without movement when pausesLocationUpdatesAutomatically is true, which split a lunch stop recording in two (TM-104)"
+   },
+   "anchors": [
+    [
+     "src/location/backgroundLocation.ts",
+     "startBackground"
+    ]
+   ]
+  },
+  {
+   "key": "bug-android-fgs",
+   "kind": "bug",
+   "fields": {
+    "title": "Background recording stops on Android 14 after 20 minutes",
+    "root_cause": "the foreground service had no foregroundServiceType location in the manifest, so the OS killed it (TM-151)",
+    "module": "android/app/src/main/AndroidManifest.xml"
+   },
+   "anchors": [
+    [
+     "android/app/src/main/AndroidManifest.xml",
+     "RecordingService"
+    ]
+   ]
+  },
+  {
+   "key": "fix-fgs",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "declare android:foregroundServiceType=\"location\" on the service and request FOREGROUND_SERVICE_LOCATION",
+    "caveats": "Play Console needs the foreground service declaration form filled before the release is approved"
+   },
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "bug-android-fgs"
+    }
+   ]
+  },
+  {
+   "key": "conv-accuracy",
+   "kind": "convention",
+   "fields": {
+    "category": "location",
+    "rule": "drop fixes with horizontal accuracy worse than 30 m before writing them to the track",
+    "enforced_by": "unit test",
+    "exceptions": "",
+    "applies_to": "src/location/trackRecorder.ts"
+   },
+   "anchors": [
+    [
+     "src/location/trackRecorder.ts",
+     "MIN_ACCURACY_M"
+    ]
+   ]
+  },
+  {
+   "key": "perf-track-write",
+   "kind": "performance_constraint",
+   "fields": {
+    "operation": "track point write",
+    "constraint": "batch 20 points per SQLite transaction",
+    "reason": "single row writes took 4 ms each and blocked the JS thread while recording"
+   },
+   "anchors": [
+    [
+     "src/location/trackRecorder.ts",
+     "FLUSH_BATCH"
+    ]
+   ]
+  },
+  {
+   "key": "td-location-singleton",
+   "kind": "tech_debt",
+   "fields": {
+    "location": "src/location/trackRecorder.ts",
+    "description": "the recorder keeps its buffer in a module level variable, so two recordings cannot run together; it needs a session object"
+   },
+   "anchors": [
+    [
+     "src/location/trackRecorder.ts",
+     "buffer"
+    ]
+   ]
+  },
+  {
+   "key": "bp-gps-spike",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "gps_spike",
+    "signature": "one fix jumps 200 m or more and comes back, inflating distance and elevation gain in the track stats",
+    "modules_affected": "src/location/"
+   }
+  },
+  {
+   "key": "fix-gps-spike",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "reject a point that implies more than 12 m/s from the previous one, then smooth elevation with a 5 point median",
+    "caveats": "cycling mode raises the speed limit to 25 m/s"
+   },
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "bp-gps-spike"
+    }
+   ]
+  },
+  {
+   "key": "conv-log-old",
+   "kind": "convention",
+   "fields": {
+    "category": "logging",
+    "rule": "use console.log with a [tm] prefix for diagnostics",
+    "enforced_by": "manual",
+    "exceptions": "",
+    "applies_to": "src/"
+   }
+  },
+  {
+   "key": "conv-log",
+   "kind": "convention",
+   "fields": {
+    "category": "logging",
+    "rule": "use the logger module with levels; debug logs are stripped from release builds and warnings become Sentry breadcrumbs",
+    "enforced_by": "lint rule no-console",
+    "exceptions": "",
+    "applies_to": "src/"
+   },
+   "supersedes": "conv-log-old"
+  },
+  {
+   "key": "quirk-ios-bg-fetch",
+   "kind": "quirk",
+   "fields": {
+    "description": "iOS background fetch fires every 15 minutes, so the alert refresh can rely on that interval"
+   },
+   "retracted": "iOS schedules fetches opportunistically; the interval was measured at 15 minutes to several hours"
+  },
+  {
+   "key": "module-permission-gate",
+   "kind": "module",
+   "fields": {
+    "path": "src/permissions/permissionGate.ts",
+    "purpose": "single entry for requesting location and notification permissions; exposes granted, denied or blocked to the screens"
+   },
+   "anchors": [
+    [
+     "src/permissions/permissionGate.ts",
+     "requestLocation"
+    ]
+   ]
+  },
+  {
+   "key": "dec-perm-sequence",
+   "kind": "decision",
+   "fields": {
+    "title": "Ask for foreground location first and background only when the user starts a recording",
+    "context": "onboarding experiment TM-089 got 71 percent opt-in with the staged ask and 38 percent with Always up front"
+   },
+   "anchors": [
+    [
+     "src/permissions/permissionGate.ts",
+     "requestLocation"
+    ]
+   ]
+  },
+  {
+   "key": "alt-always-first",
+   "kind": "alternative",
+   "fields": {
+    "option": "request Always location during onboarding",
+    "rejected_because": "App Review rejected build 1.4 under guideline 5.1.1 because the purpose string did not explain background use"
+   },
+   "anchors": [
+    [
+     "ios/Trailmate/Info.plist",
+     "NSLocationAlwaysAndWhenInUseUsageDescription"
+    ]
+   ]
+  },
+  {
+   "key": "conv-permission-copy",
+   "kind": "convention",
+   "fields": {
+    "category": "ux",
+    "rule": "show the in-app rationale screen before any system permission prompt, because iOS only lets you ask once",
+    "enforced_by": "review",
+    "exceptions": "",
+    "applies_to": "src/permissions/"
+   }
+  },
+  {
+   "key": "bug-blocked-loop",
+   "kind": "bug",
+   "fields": {
+    "title": "Permission prompt shown in a loop after the user chose Don't ask again on Android",
+    "root_cause": "the gate handled blocked like denied and requested again; the request resolves instantly with no dialog, so the screen re-rendered forever (TM-160)",
+    "module": "src/permissions/permissionGate.ts"
+   },
+   "anchors": [
+    [
+     "src/permissions/permissionGate.ts",
+     "requestLocation"
+    ]
+   ]
+  },
+  {
+   "key": "fix-blocked-loop",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "on blocked, route to a screen that calls Linking.openSettings and re-check the state when AppState becomes active",
+    "caveats": "never call request again, Android returns immediately"
+   },
+   "anchors": [
+    [
+     "src/permissions/permissionGate.ts",
+     "openSettings"
+    ]
+   ],
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "bug-blocked-loop"
+    }
+   ]
+  },
+  {
+   "key": "module-notifications",
+   "kind": "module",
+   "fields": {
+    "path": "src/push/notifications.ts",
+    "purpose": "registers the FCM token, creates the Android channels and routes a tapped notification to its deep link"
+   },
+   "anchors": [
+    [
+     "src/push/notifications.ts",
+     "registerToken"
+    ]
+   ]
+  },
+  {
+   "key": "dec-fcm-both",
+   "kind": "decision",
+   "fields": {
+    "title": "Use FCM for both iOS and Android push delivery",
+    "context": "one server process and one Firebase config per build flavor instead of two integrations; the APNs key is uploaded to the Firebase console and the legacy GCM keys were migrated in the same change (TM-076)"
+   }
+  },
+  {
+   "key": "bug-push-token-stale",
+   "kind": "bug",
+   "fields": {
+    "title": "Weather alerts stopped arriving after an app reinstall",
+    "root_cause": "the server log showed UNREGISTERED for the old FCM token because the new one was only sent on login; tokens are now re-registered on every cold start when they differ (TM-166)",
+    "module": "src/push/notifications.ts"
+   },
+   "anchors": [
+    [
+     "src/push/notifications.ts",
+     "registerToken"
+    ]
+   ]
+  },
+  {
+   "key": "quirk-android-channel",
+   "kind": "quirk",
+   "fields": {
+    "description": "Android 8+ ignores sound and importance changes once a channel exists; set them on a new channel id, hence trail-alerts-v2"
+   },
+   "anchors": [
+    [
+     "src/push/notifications.ts",
+     "ALERT_CHANNEL"
+    ]
+   ]
+  },
+  {
+   "key": "conv-push-payload",
+   "kind": "convention",
+   "fields": {
+    "category": "api",
+    "rule": "push payloads carry only a deep link and a title; the app fetches the body on open so no trail location leaves the server inside a notification",
+    "enforced_by": "review",
+    "exceptions": "",
+    "applies_to": "src/push/"
+   }
+  },
+  {
+   "key": "oq-silent-push",
+   "kind": "open_question",
+   "fields": {
+    "question": "Can a silent push wake iOS to refresh an alert region while the app is force quit? Apple docs say no but we have not measured it"
+   },
+   "scope": [
+    "src/push/**"
+   ]
+  },
+  {
+   "key": "module-purchases",
+   "kind": "module",
+   "fields": {
+    "path": "src/iap/purchases.ts",
+    "purpose": "wraps react-native-iap: loads the Pro products, starts a purchase and finishes the transaction once the server confirms"
+   },
+   "anchors": [
+    [
+     "src/iap/purchases.ts",
+     "onPurchaseUpdate"
+    ]
+   ]
+  },
+  {
+   "key": "dec-server-receipt",
+   "kind": "decision",
+   "fields": {
+    "title": "Validate store receipts on our server, never trust the device",
+    "context": "a jailbroken test phone unlocked Pro offline in TM-125; the server process checks with Apple and Google before it sets the entitlement"
+   },
+   "anchors": [
+    [
+     "src/iap/purchases.ts",
+     "onPurchaseUpdate"
+    ]
+   ]
+  },
+  {
+   "key": "bug-pending-purchase",
+   "kind": "bug",
+   "fields": {
+    "title": "Pro users charged but not upgraded on slow Android payment methods",
+    "root_cause": "Play returns PENDING for cash based payments; the code treated any non-error result as purchased and finishTransaction was never reached (TM-172)",
+    "module": "src/iap/purchases.ts"
+   },
+   "anchors": [
+    [
+     "src/iap/purchases.ts",
+     "onPurchaseUpdate"
+    ]
+   ]
+  },
+  {
+   "key": "fix-pending-purchase",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "handle PENDING separately: grant Pro only when purchaseState is PURCHASED, keep PENDING ones in a local list and re-check them when the app returns to the foreground",
+    "caveats": "acknowledge within 3 days or Google refunds the purchase"
+   },
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "bug-pending-purchase"
+    }
+   ]
+  },
+  {
+   "key": "rtc-iap",
+   "kind": "required_test_case",
+   "fields": {
+    "for_pattern": "purchase flow",
+    "cases_required": "a pending purchase does not grant Pro, a duplicate transaction id is ignored, and a refunded entitlement is revoked on the next sync"
+   },
+   "scope": [
+    "src/iap/**",
+    "tests/**"
+   ]
+  },
+  {
+   "key": "bug-iap-price",
+   "kind": "bug",
+   "fields": {
+    "title": "Price shown with the wrong currency symbol",
+    "root_cause": "the localized price string was cached across a locale change",
+    "module": "src/iap/purchases.ts"
+   },
+   "retracted": "could not reproduce on a physical device; it was a simulator locale setting"
+  },
+  {
+   "key": "module-tile-cache",
+   "kind": "module",
+   "fields": {
+    "path": "src/maps/tileCache.ts",
+    "purpose": "disk cache for raster map tiles keyed by z/x/y with LRU eviction"
+   },
+   "anchors": [
+    [
+     "src/maps/tileCache.ts",
+     "evictLru"
+    ]
+   ]
+  },
+  {
+   "key": "dec-tile-cache-500",
+   "kind": "decision",
+   "fields": {
+    "title": "Cap the tile cache at 500 MB with LRU eviction",
+    "context": "low end Android phones with 32 GB showed the app at 3 GB in settings (TM-109); 500 MB holds about 60000 tiles at 8 KB"
+   },
+   "anchors": [
+    [
+     "src/maps/tileCache.ts",
+     "MAX_CACHE_MB"
+    ]
+   ]
+  },
+  {
+   "key": "bug-tile-corrupt",
+   "kind": "bug",
+   "fields": {
+    "title": "Gray squares on the map after the app was killed mid download",
+    "root_cause": "a tile was written straight to its final path, so a kill left a truncated PNG (TM-137)",
+    "module": "src/maps/tileCache.ts"
+   },
+   "anchors": [
+    [
+     "src/maps/tileCache.ts",
+     "putTile"
+    ]
+   ]
+  },
+  {
+   "key": "fix-tile-corrupt",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "write to <name>.tmp, then rename it; on startup delete any leftover .tmp files",
+    "caveats": "rename is atomic only within one volume, so keep the tmp file next to the cache"
+   },
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "bug-tile-corrupt"
+    }
+   ]
+  },
+  {
+   "key": "module-offline-regions",
+   "kind": "module",
+   "fields": {
+    "path": "src/maps/offlineRegions.ts",
+    "purpose": "lets a user download a rectangle of tiles for zoom 10 to 16 and tracks progress in a download queue"
+   },
+   "anchors": [
+    [
+     "src/maps/offlineRegions.ts",
+     "planRegion"
+    ]
+   ]
+  },
+  {
+   "key": "dec-region-old",
+   "kind": "decision",
+   "fields": {
+    "title": "Allow offline regions up to 50000 tiles",
+    "context": "covers a whole national park in one download"
+   },
+   "scope": [
+    "src/maps/**"
+   ]
+  },
+  {
+   "key": "dec-region-limit",
+   "kind": "decision",
+   "fields": {
+    "title": "Limit an offline region to 20000 tiles",
+    "context": "a user picked a whole country at zoom 16 and the queue ran for 9 hours; 20000 tiles is about 160 MB, enough for one hike area (TM-122)"
+   },
+   "anchors": [
+    [
+     "src/maps/offlineRegions.ts",
+     "MAX_REGION_TILES"
+    ]
+   ],
+   "supersedes": "dec-region-old"
+  },
+  {
+   "key": "dp-download-queue",
+   "kind": "design_pattern",
+   "fields": {
+    "name": "Serial tile download queue",
+    "why_chosen": "one worker with 4 parallel requests stays under the tile provider's limit of 10 requests per second",
+    "where_used": "src/maps/offlineRegions.ts"
+   },
+   "anchors": [
+    [
+     "src/maps/offlineRegions.ts",
+     "download"
+    ]
+   ]
+  },
+  {
+   "key": "quirk-tile-etag",
+   "kind": "quirk",
+   "fields": {
+    "description": "the tile server returns the same ETag after a map data update because it hashes the URL, so ETag revalidation never refreshes a tile"
+   },
+   "scope": [
+    "src/maps/**"
+   ]
+  },
+  {
+   "key": "wk-tile-stale",
+   "kind": "workaround",
+   "fields": {
+    "solution": "treat tiles older than 30 days as stale and fetch them again",
+    "description": "until the provider fixes its ETags (PRV-4412)"
+   },
+   "links": [
+    {
+     "rel": "WORKAROUND_FOR",
+     "to": "quirk-tile-etag"
+    }
+   ]
+  },
+  {
+   "key": "module-crash-reporter",
+   "kind": "module",
+   "fields": {
+    "path": "src/crash/reporter.ts",
+    "purpose": "initialises Sentry, names releases trailmate@version+build and keeps the last 50 breadcrumbs; the settings screen offers a log export for support tickets"
+   },
+   "anchors": [
+    [
+     "src/crash/reporter.ts",
+     "initCrashReporting"
+    ]
+   ]
+  },
+  {
+   "key": "dec-sentry",
+   "kind": "decision",
+   "fields": {
+    "title": "Use Sentry for crash reporting instead of Crashlytics",
+    "context": "one project covers JS and native crashes and takes Hermes source maps, while Crashlytics lost symbolication for Hermes bytecode (TM-081)"
+   },
+   "scope": [
+    "src/crash/**"
+   ]
+  },
+  {
+   "key": "conv-release-name",
+   "kind": "convention",
+   "fields": {
+    "category": "release",
+    "rule": "the Sentry release string is trailmate@<version>+<build>, built by releaseName() for both the app and the source map upload",
+    "enforced_by": "unit test",
+    "exceptions": "",
+    "applies_to": "src/crash/,release/"
+   }
+  },
+  {
+   "key": "bug-sourcemaps",
+   "kind": "bug",
+   "fields": {
+    "title": "Crash stack traces unreadable for build 1.6.2",
+    "root_cause": "source maps were uploaded under release 1.6.2 but the app reported 1.6.2+412, so Sentry found no match (TM-155)",
+    "module": "src/crash/reporter.ts"
+   },
+   "anchors": [
+    [
+     "src/crash/reporter.ts",
+     "releaseName"
+    ]
+   ]
+  },
+  {
+   "key": "fix-sourcemaps",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "derive the release string in one function used by both the upload step and init",
+    "caveats": "the upload script must import releaseName from reporter.ts instead of copying the format, and the CI step must read the build number from the same env var Fastlane uses"
+   },
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "bug-sourcemaps"
+    }
+   ]
+  },
+  {
+   "key": "perf-cold-start",
+   "kind": "performance_constraint",
+   "fields": {
+    "operation": "cold start to first map frame",
+    "constraint": "under 2.5 s on a Pixel 4a",
+    "reason": "initialising the crash reporter eagerly added 340 ms, so it is deferred until after the first render"
+   },
+   "anchors": [
+    [
+     "src/crash/reporter.ts",
+     "initCrashReporting"
+    ]
+   ]
+  },
+  {
+   "key": "bp-hermes-date",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "hermes_date_parse",
+    "signature": "Hermes cannot parse an ISO date with a space instead of T, so the sync cursor came back NaN",
+    "modules_affected": "src/sync/"
+   },
+   "retracted": "the cause was a malformed cursor from the server (TM-139), not Hermes"
+  },
+  {
+   "key": "dec-cli-python",
+   "kind": "decision",
+   "fields": {
+    "title": "Write the CLI in Python with click, not in Node",
+    "context": "the data team already uses Python for GPX tooling and the CLI shares no code with the app (TM-064)"
+   },
+   "scope": [
+    "cli/**"
+   ]
+  },
+  {
+   "key": "module-cli-export",
+   "kind": "module",
+   "fields": {
+    "path": "cli/trailmate_cli/export.py",
+    "purpose": "exports tracks from the Trailmate API to GPX 1.1 or GeoJSON"
+   },
+   "anchors": [
+    [
+     "cli/trailmate_cli/export.py",
+     "export_cmd"
+    ]
+   ]
+  },
+  {
+   "key": "module-cli-import",
+   "kind": "module",
+   "fields": {
+    "path": "cli/trailmate_cli/gpx_import.py",
+    "purpose": "reads GPX files, validates them and uploads the tracks and waypoints"
+   },
+   "anchors": [
+    [
+     "cli/trailmate_cli/gpx_import.py",
+     "read_points"
+    ]
+   ]
+  },
+  {
+   "key": "dec-gpx-11",
+   "kind": "decision",
+   "fields": {
+    "title": "Export GPX 1.1 with Trailmate fields inside the extensions block",
+    "context": "Garmin and Komoot importers drop unknown elements outside extensions, so pace and elevation gain go inside it (TM-113)"
+   },
+   "anchors": [
+    [
+     "cli/trailmate_cli/export.py",
+     "write_gpx"
+    ]
+   ]
+  },
+  {
+   "key": "bug-gpx-xxe",
+   "kind": "bug",
+   "fields": {
+    "title": "GPX import froze the CLI on a hostile file",
+    "root_cause": "the stdlib XML parser expanded nested entities in a 40 KB billion laughs document (TM-148)",
+    "module": "cli/trailmate_cli/gpx_import.py"
+   },
+   "anchors": [
+    [
+     "cli/trailmate_cli/gpx_import.py",
+     "read_points"
+    ]
+   ]
+  },
+  {
+   "key": "fix-gpx-xxe",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "parse with defusedxml and reject files over 20 MB before reading them",
+    "caveats": "the size check goes first, defusedxml alone still loads a huge but valid document"
+   },
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "bug-gpx-xxe"
+    }
+   ]
+  },
+  {
+   "key": "bp-gpx-naive-time",
+   "kind": "bug_pattern",
+   "fields": {
+    "name": "gpx_naive_time",
+    "signature": "time elements without a Z suffix are read as local time, so an export then import round trip shifts the track by the importer's UTC offset",
+    "modules_affected": "cli/trailmate_cli/gpx_import.py"
+   }
+  },
+  {
+   "key": "fix-gpx-naive-time",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "read a time without an offset as UTC, as the GPX spec requires, and warn once per file",
+    "caveats": "some watches write local time; offer an --assume-tz flag rather than guessing"
+   },
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "bp-gpx-naive-time"
+    }
+   ]
+  },
+  {
+   "key": "perf-gpx-stream",
+   "kind": "performance_constraint",
+   "fields": {
+    "operation": "GPX import of a large file",
+    "constraint": "stream with iterparse and stay under 200 MB of memory for a 20 MB file",
+    "reason": "building the full tree used 1.4 GB on a 12 MB multi-day document and the CLI was killed"
+   },
+   "anchors": [
+    [
+     "cli/trailmate_cli/gpx_import.py",
+     "read_points"
+    ]
+   ]
+  },
+  {
+   "key": "idiom-cli-errors",
+   "kind": "idiom",
+   "fields": {
+    "pattern": "reporting a CLI error",
+    "preferred_form": "raise click.ClickException with a one line message so a failed export exits with code 2",
+    "avoid": "printing a traceback to the user"
+   },
+   "scope": [
+    "cli/**"
+   ]
+  },
+  {
+   "key": "tc-gpx-fixtures",
+   "kind": "test_convention",
+   "fields": {
+    "category": "cli",
+    "pattern": "GPX tests use the files in tests/cli/fixtures and assert on parsed points, not on raw XML strings"
+   },
+   "anchors": [
+    [
+     "tests/cli/test_gpx_import.py",
+     "FIXTURES"
+    ]
+   ]
+  },
+  {
+   "key": "pw-gpx-dedupe",
+   "kind": "partial_work",
+   "fields": {
+    "work_type": "GPX import dedupe",
+    "location": "cli/trailmate_cli/gpx_import.py",
+    "state": "the time plus lat plus lon key is done, the 1 second tolerance for near duplicate points is not started"
+   },
+   "anchors": [
+    [
+     "cli/trailmate_cli/gpx_import.py",
+     "read_points"
+    ]
+   ]
+  },
+  {
+   "key": "module-fastfile",
+   "kind": "module",
+   "fields": {
+    "path": "release/fastlane/Fastfile",
+    "purpose": "lanes: beta uploads to TestFlight and the Play internal track, release promotes with a phased rollout"
+   },
+   "anchors": [
+    [
+     "release/fastlane/Fastfile",
+     "beta"
+    ]
+   ]
+  },
+  {
+   "key": "dec-phased",
+   "kind": "decision",
+   "fields": {
+    "title": "Roll out store releases in phases of 5, 20, 50 and 100 percent",
+    "context": "a bad 1.5.0 reached every user within 3 hours and the crash free rate fell to 94 percent (TM-101); the rollout steps are in the release runbook document"
+   },
+   "scope": [
+    "release/**"
+   ]
+  },
+  {
+   "key": "conv-build-number",
+   "kind": "convention",
+   "fields": {
+    "category": "release",
+    "rule": "the build number comes from the CI run number; never set versionCode or CFBundleVersion by hand or in the app config",
+    "enforced_by": "CI check",
+    "exceptions": "",
+    "applies_to": "release/,android/app/build.gradle"
+   },
+   "anchors": [
+    [
+     "android/app/build.gradle",
+     "versionCode"
+    ]
+   ]
+  },
+  {
+   "key": "bug-ci-runner",
+   "kind": "bug",
+   "fields": {
+    "title": "iOS archive failed on the macOS runner after an Xcode update",
+    "root_cause": "the build log showed the runner image moved to a newer Xcode and the pinned CocoaPods could not build with it; the image and Xcode path are now pinned (TM-170)",
+    "module": ".github/workflows/release.yml"
+   },
+   "anchors": [
+    [
+     ".github/workflows/release.yml",
+     "build-ios"
+    ]
+   ]
+  },
+  {
+   "key": "fix-ci-runner",
+   "kind": "fix_pattern",
+   "fields": {
+    "fix_template": "pin the runner to macos-14 and select Xcode 15.4 with xcode-select before the pod install",
+    "caveats": "revisit when GitHub retires the macos-14 image"
+   },
+   "links": [
+    {
+     "rel": "FIX_FOR",
+     "to": "bug-ci-runner"
+    }
+   ]
+  },
+  {
+   "key": "quirk-play-version",
+   "kind": "quirk",
+   "fields": {
+    "description": "Play Console rejects a bundle whose versionCode is not higher than any track, even one from a rejected release; bump the build before retrying"
+   },
+   "anchors": [
+    [
+     "android/app/build.gradle",
+     "versionCode"
+    ]
+   ]
+  },
+  {
+   "key": "alt-eas-build",
+   "kind": "alternative",
+   "fields": {
+    "option": "move release builds to Expo EAS Build",
+    "rejected_because": "the native location modules need custom config plugins and free tier queue times ran 40 minutes"
+   },
+   "scope": [
+    "release/**"
+   ]
+  }
+ ]
+}
