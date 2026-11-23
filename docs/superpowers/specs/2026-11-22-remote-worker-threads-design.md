@@ -10,7 +10,7 @@ It succeeds when:
 
 - While one tool call is slow, an unauthenticated request is still answered promptly (target: well under 0.5 s with a call held for 3 s) and a call by a different token completes.
 - A token revoked while its call is running gets that call's result. The token's next request is refused at the guard as before. The service is closed once its last call has finished, and never while a call is using it.
-- A normal shutdown with a call in flight lets the call finish (bounded; not yet verified, see section 6), then closes every service, and each still leaves its checkpoint.
+- A normal stop (uvicorn's graceful stop) delivers the result of every running call, waiting as long as the call takes, and then closes every service, each leaving its checkpoint. This is measured with a real server and pinned by a test (section 6).
 - The authentication, role, identity, audit and scrubbing behaviour of the remote spec is unchanged, and so is the stdio server.
 - Median `memory_recall` over the in-process HTTP app stays within 25% or 2 ms (whichever is larger) of the same measurement on `main` in the same session. (About 8 ms before this change.)
 
@@ -34,8 +34,9 @@ This is a responsiveness change, not a throughput change. Python's GIL means CPU
 
 - Each cached service has a lease count and a `retired` flag, under the existing `Principals` lock.
 - `lease()` runs the sweep, finds or opens the service, and takes a lease. The lease is released when the `with` block ends, on success, error or cancellation.
+- The `Principals` lock guards only the bookkeeping. A service is opened (which can wait up to 10 s for the store's file lock) and the services a sweep finds idle are closed outside it, so one token's first call never holds up another token's lease or a finishing call's release. If two first calls for one token race, one service is kept and the other is closed; if `close()` runs while a service is being opened, the new service is closed and the call gets the `internal` shutting-down error.
 - **The sweep** pops the service of a token that left the file. With no lease on it, it is closed now (as today). With leases, it is marked retired and closed by the release of its last lease. A retired service gets no new lease: its token is gone, so the guard refuses the token before a new call reaches it.
-- **`close()`** (shutdown) refuses new leases, closes every idle service, then waits for the leases on the others to drain for at most `drain_seconds` (default 15). After that it closes the rest anyway and logs a warning naming how many calls were still running. `MemoryService.close()` itself takes the service lock, so it also waits for a call already inside a method.
+- **`close()`** refuses new leases, closes every idle service, then waits for the leases on the others to drain for at most `drain_seconds` (default 15). After that it closes the rest anyway and logs a warning naming how many services were still leased (not how many calls). `DRAIN_SECONDS` applies only to a direct `Principals.close()` made while leases are held: the `run_http` `finally` path and tests. At a normal stop of the server no lease is held when the lifespan shutdown runs (see section 6), so `close()` closes every service at once. `MemoryService.close()` itself takes the service lock, so a close also waits for a call already inside a method.
 - `service_for(principal)` stays, unchanged in behaviour, for tests and callers that do not hold a lease. `run()` uses `lease()`.
 - A token's service keeps its own lock, so two calls by the same token still run one after the other. That preserves the per-token session semantics. Calls by different tokens run at the same time, and meet only at the store's journal and OS file lock, which already coordinate several services in one process.
 
@@ -49,7 +50,7 @@ The guard, token file, roles, the read-only view, the error codes and messages, 
 |---|---|
 | Revoke while that token's call runs | The call completes. The service closes after its last lease. The next request gets the fixed 401. |
 | Sweep races a call that is about to enter its method | The lease was taken first, so the service is retired, not closed. |
-| Shutdown with calls running | They finish if within `drain_seconds`; then every service closes and leaves a checkpoint. Beyond it, the rest close and a warning is logged; those calls can fail with `internal`. |
+| Normal stop with calls running | uvicorn waits for the calls as long as they take and delivers their results; the lifespan shutdown then closes every service at once (no lease is held by then), each leaving a checkpoint. No call fails with `internal` and no warning is logged. A hung call delays the stop until the process is killed. |
 | A call raises or the client disconnects | The lease is released in a `finally`. The count returns to zero. |
 | More calls than workers | They queue. Authentication and other guard answers are unaffected. A queued call has no timeout of its own (see limits). |
 | Two calls by one token | Serialised by the service lock, in arrival order as far as the lock allows. |
@@ -62,7 +63,7 @@ Concurrency tests use a gate (a `threading.Event`) inside a patched service meth
 1. A held call does not delay an unauthenticated request (401 within 0.5 s) or a different token's call.
 2. Two calls by one token run one after the other. Calls by two tokens overlap.
 3. Revoke during a call: the call returns ok, the service is closed after the call, the token's next request is 401, `open_count` falls.
-4. Shutdown during a call: the call returns ok, then every service closes and the store has a checkpoint. With a call that outlives `drain_seconds`, `close()` returns after about that long, logs the warning, and the process does not hang.
+4. Shutdown during a call: the call returns ok, then every service closes and the store has a checkpoint. A direct `Principals.close()` made while a call holds a lease and outlives `drain_seconds` returns after about that long, logs the warning, and does not hang.
 5. With `max_workers=2` and three held calls, the third does not start until one ends, and the guard still answers meanwhile.
 6. The lease count returns to zero after a call that raises a `ServiceError`, an unexpected exception, and a cancelled request.
 7. The audit `ms` of a queued call includes its wait; the audit line still carries no argument, result or token.
@@ -82,8 +83,8 @@ The README "Known limits" line "Calls are served one at a time ..." and the remo
 - The cap is a constructor argument, not a command-line flag.
 - Calls by one token are serialised by its service lock, so a slow call delays that token's other calls (not other tokens').
 - A disconnected client's call still runs to completion.
-- At shutdown, a call that outlives `drain_seconds` can fail.
-- The 15 s drain in `Principals.close` bounds only a close that runs while calls are still leased; at a normal stop uvicorn's own graceful wait (unbounded by default) lets running calls finish first, so a hung call can delay shutdown. Measured behaviour of a stop with a call in flight is not yet pinned by a test.
+- A direct `Principals.close()` while a call holds a lease and outlives `drain_seconds` closes that service under the call, which can then fail with `internal`. A normal server stop does not do this.
+- Shutdown, as measured with a real uvicorn server: a normal stop waits for a running call as long as it takes (uvicorn's graceful wait is unbounded by default), delivers the call's result to the client, and only then runs the lifespan shutdown. At that moment no lease is held, because mcp's session manager has already finished the calls, so `Principals.close` closes every service at once and each leaves a checkpoint. `DRAIN_SECONDS` therefore applies only to a direct `Principals.close()` while leases are held (the `run_http` `finally` path and tests). No call fails with `internal` and no warning is logged at a normal stop. A hung call delays the stop until the process is killed; even a second Ctrl+C (`force_exit`) waits for it, because the anyio worker threads cannot be abandoned and `MemoryService.close` takes the lock the call holds. `timeout_graceful_shutdown=15` was tried and is worse: the client gets HTTP 500 and an ASGI traceback, and the stop still takes as long as the call. It must not be added to `run_http`. A real-server test pins this (`test_a_stop_with_a_call_in_flight_delivers_its_result_and_leaves_a_checkpoint`).
 - No per-token quota, no per-call timeout, no health endpoint. The other known limits of the remote spec stand.
 
 ## 7. Out of scope

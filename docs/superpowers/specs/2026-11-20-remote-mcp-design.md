@@ -138,7 +138,7 @@ OAuth flows; built-in TLS; more than one store or repo per server; more than two
 - `created_at` has one-second resolution, so revoking and re-creating a same-name same-role token within one second inherits the old service.
 - `--public-url` is validated and its host lower-cased, but a trailing dot or a Host header in upper case is not normalised and fails closed with 421.
 - Every throttled request still writes one WARNING line, so a flood of bad tokens is a flood of log lines.
-- Tool calls no longer block one another: they run in a worker pool, and the limits that remain (queueing over the cap, one token's calls serialised, shutdown drain) are in section 6 of `2026-11-22-remote-worker-threads-design.md`.
+- A slow call no longer blocks other tokens or authentication; calls over the cap queue and one token's calls still run one after the other. Tool calls run in a worker pool, and the limits that remain (queueing over the cap, one token's calls serialised, shutdown drain) are in section 6 of `2026-11-22-remote-worker-threads-design.md`.
 - The inner app still receives the Authorization header in its ASGI scope.
 
 ## 12. Findings from the spike and the build
