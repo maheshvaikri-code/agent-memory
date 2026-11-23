@@ -13,6 +13,7 @@ from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from anyio import to_thread
 from mcp.server.transport_security import TransportSecuritySettings
 
 from ..mcp_server import build_server
@@ -21,6 +22,7 @@ from .limits import FailureLimiter, GuardMiddleware, audit_log, current_principa
 from .tokens import Principal, TokenFile
 
 LOOPBACK_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+DEFAULT_WORKERS = 8
 
 
 class StartupError(Exception):
@@ -210,7 +212,10 @@ class CloseOnShutdown:
 
         async def watching(message):
             if message["type"] in ("lifespan.shutdown.complete", "lifespan.shutdown.failed"):
-                self.principals.close()                    # idempotent; the server is stopping anyway
+                try:
+                    await to_thread.run_sync(self.principals.close)   # idempotent; drains running calls
+                except Exception:
+                    self.principals.close()
             await send(message)
 
         await self.app(scope, receive, watching)
@@ -239,16 +244,17 @@ def public_hosts(public_url: str) -> List[str]:
 
 
 def build_app(base: ServiceConfig, tokens: TokenFile, *, public_url: str = "",
-              limiter: Optional[FailureLimiter] = None):
-    """(asgi_app, principals). The app authenticates every request before anything else."""
+              limiter: Optional[FailureLimiter] = None, max_workers: int = DEFAULT_WORKERS):
+    """(asgi_app, principals). The app authenticates every request before anything else. Tool
+    calls run in at most `max_workers` worker threads; the guard stays on the event loop."""
     principals = Principals(base, tokens)
     hosts = LOOPBACK_HOSTS + public_hosts(public_url)
 
-    def provider():
+    def lease():
         principal = current_principal.get()
         if principal is None:                          # the guard always sets it: fail closed
             raise ServiceError("forbidden", "no authenticated caller")
-        return principals.service_for(principal), principal.role
+        return principals.lease(principal)
 
     def observer(tool: str, outcome: str, ms: int) -> None:
         principal = current_principal.get()
@@ -256,7 +262,7 @@ def build_app(base: ServiceConfig, tokens: TokenFile, *, public_url: str = "",
                        principal.name if principal else "-", tool, outcome, ms)
 
     server = build_server(
-        provider=provider, trust_client_name=False, observer=observer, scrub=path_scrubber(base),
+        lease=lease, workers=max_workers, trust_client_name=False, observer=observer, scrub=path_scrubber(base),
         settings={"stateless_http": True, "json_response": True,
                   "transport_security": TransportSecuritySettings(
                       enable_dns_rebinding_protection=True, allowed_hosts=hosts,
