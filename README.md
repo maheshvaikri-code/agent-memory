@@ -384,13 +384,14 @@ and not instructions. Every `<` inside a note is escaped as `&lt;` (after foldin
 characters), so a note cannot close the block or open a tag of its own, and terminal control
 characters are dropped.
 
-Recall drops a note whose only link to the task is a single weak word match: a common word, or
-a generic task word such as "write", "handle" or "configure". The note stays if the match is
-a rare word, is backed by the task's files (scope) or by an identifier, or if the note is
-pinned. A store with fewer than 25 notes keeps these weak matches, because showing too much
-costs little there. An empty recall is the normal answer for a task the notes do not cover. On
-the benchmark's locked test split this removed about a fifth of the noise tokens (see
-`tests/eval/bench/RESULTS.md`); it does not make every unrelated task come back empty.
+Recall drops a note whose only link to the task is a single weak word match (a common word, or a
+generic task word such as "write", "handle" or "configure") unless the match is rare (a word held by at
+most 10 notes and at most 15% of the store), is backed by the task's files (scope), is an identifier, or the
+note is pinned. A store with fewer than 25 candidate notes keeps these weak matches. An empty recall is
+the normal answer for a task the notes do not cover, but expect most unrelated tasks still to return some
+notes. On the locked benchmark test split (`tests/eval/bench/RESULTS.md`) this removed about 20% of the
+noise tokens, missed 2 more relevant notes out of 253, and only 1 of 70 empty tasks came back empty.
+Recall at 5,000 records was measured 25-34% slower in a same-session check.
 
 What an agent cannot do through the tools: delete anything (there is no delete; notes are
 retracted or superseded and kept), choose or change the store, name a file outside the
@@ -817,9 +818,11 @@ rendered text for must-include notes, superseded or retracted notes leaking
 through, and abstention (nothing returned for an unrelated task). Run it with
 `PYTHONPATH=src` so the checkout, not an installed copy, is measured. Current
 figures: must-include recall 1.00 (30/30), leaks 0, abstention 1.00 (12/12).
-That abstention figure is in-sample (the scenarios were used while tuning); on
-16 held-out tasks never used for tuning it is **0.38 (6/16)**, a known weak
-spot: a single shared word can let an unrelated, labelled note through.
+That abstention figure is in-sample (the scenarios were used while tuning). On
+16 held-out tasks the original figure was **0.38 (6/16)** on `main`, and it is
+**0.75 (12/16)** with the retrieval levers on this branch; the held-out set was
+looked at while tuning the levers, so it no longer counts as untouched. The
+benchmark with a locked test split is described in `tests/eval/bench/RESULTS.md`.
 `--service` runs the same scenarios through `MemoryService` (the boundary the
 MCP server and the CLI use; the prompt judged is the untrusted block) and gives
 the identical scorecard; `--shared` runs them on a shared store. The baseline
@@ -830,7 +833,7 @@ The strict latency gates are opt-in: `python -m pytest tests -m perf`. One of
 them is recall through the service at 5,000 records, which must have a p95
 under 50 ms (`tests/test_service_perf.py`). **That gate currently fails on the
 development laptop.** These are measured numbers, not a promise. At full clock
-the p95 is about 44-45 ms (median 36-42 ms). Once the laptop throttles under
+the p95 is about 44-45 ms (median 36-42 ms; measured before the retrieval change). Once the laptop throttles under
 sustained load, the p95 rises to about 86-88 ms (100 ms in the
 test's own run). The remaining cost is the engine's ranking over thousands of
 candidates. The run takes several minutes, because the 5,000-record tests

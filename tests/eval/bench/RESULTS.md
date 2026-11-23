@@ -5,6 +5,8 @@ Baseline: the unchanged retriever (branch feature/recall-quality, no retrieval c
 Saved runs: `tests/eval/bench/runs/dev-baseline.json`, `tests/eval/bench/runs/test-baseline.json`.
 The test split was run twice in total: once as this baseline, and once on the final retriever (see "Final
 result: test split" below, `tests/eval/bench/runs/test-after.json`). It is not run again.
+Read "Final review findings (retrieval levers)" at the end before relying on the lever results: the whole-branch
+review recommends against merging them as configured.
 
 ## Baseline, dev split
 
@@ -30,7 +32,7 @@ superseded/retracted leaks  0
 
 ## In-sample scorecard (`python -m tests.eval.run --service`)
 
-48 scenarios, all conditions pass (task_only 6/6, files_only 6/6, absent 6/6, irrelevant 6/6,
+50 scenarios, all conditions pass (task_only 6/6, files_only 6/6, absent 6/6, irrelevant 6/6,
 adjacent 6/6, superseded 6/6, stale 6/6, guardrail 8/8); must-include recall 1.00 (30/30);
 superseded or retracted leaks 0; abstention 1.00 (12/12).
 
@@ -50,9 +52,16 @@ seeing results is a form of tuning, so the original 0.38 stays the headline.
 
 Measured after a rest, twice: 36.3 ms, then 35.5 ms (consistent, no sign of throttling).
 
-## Label corrections
+## Label corrections / world changes
 
-none
+No label was corrected after the test split was locked. One label edit was made on the dev split before any
+retrieval run, in the Task 8 fix, and was not listed here until now: commit 4e61d6e demoted `bug-migrate-crash`
+from `relevant` to `acceptable` in `dev-mobile.json` (the elevation-column task), so that the task stays at
+four relevant records or fewer once `td-json-columns` was promoted from `acceptable` to `relevant`. Dev
+split only; no test label or world changed.
+
+`tests/eval/bench/bench.sha256` now locks the three worlds, `model.py`, `judge.py`, `build.py` and `stats.py`
+(`test_benchmark_definition_files_are_unchanged`); a later change to any of them is recorded in this section.
 
 ## Known borderline labels
 
@@ -155,8 +164,8 @@ concept; the plan's code counts only informative concepts. Both were measured on
 | spec reading: `concepts` = all distinct matched concepts, provided one is informative; only-generic means weak | 0.9875 (158/160) | 1013.6 | 0/37 | 0 |
 | plan's stricter reading: `concepts` = informative concepts only | 0.9875 (158/160) | 1009.1 | 0/37 | 0 |
 
-The difference is 4.5 tokens per task (0.4% of noise), far below the 3-point threshold, so the spec
-reading ships. The same change makes the whole-identifier rule test the informative terms: a generic word
+The difference is 4.5 tokens per task (0.4% of noise), below the 3% difference in noise tokens per task set as the bar for treating the two readings as different,
+so the spec reading ships. The same change makes the whole-identifier rule test the informative terms: a generic word
 that is also a record's own compound token (a caller symbol `setup` against a record that writes `setUp`)
 no longer lifts that record by itself.
 
@@ -330,7 +339,7 @@ task, 0/37, 0 leaks. The saved comparison baseline is 1139.4 tokens per task.
 
 Reading: with this model the channel only adds records. Cosines between unrelated coding text are 0.4 to 0.65,
 so floors up to 0.55 flood: noise rises 47% (1390.3 against 947.8 tokens), the in-sample abstention scenarios
-fail (0/12) and so does every held-out abstention (0/16). At 0.65 the channel is mostly inert on dev but still
+fail (0/12) and so does every held-out abstention (0/16). At 0.65 the channel slightly adds noise on dev (1010.8 against 947.8 tokens, +6.6%) and still
 breaks in-sample and held-out cases (11/12, 9/16). At 0.75 almost nothing passes and the result equals the
 no-channel run (945.9 against 947.8 tokens, a 0.2% difference). No floor reduces noise or abstains on an empty
 task; the two relevant records lost at floors 0.35 to 0.55 (`compact-after-load`, `cursor-paging-fix`) were
@@ -346,7 +355,7 @@ pushed out of the 2000-token budget by the extra noise (both are present when th
 | 0.6 | 0.9812 (157/160) | 10.59 | 661.0 | 432.4 | 775.4 | 0/37 | 0 | 30/30, 12/12 | 12/16 | `fx-weekend-gap` |
 | 0.7 | 0.9563 (153/160) | 7.72 | 493.7 | 247.8 | 616.6 | 5/37 | 0 | 28/30, 12/12 | 15/16 | `declare-grain`, `erasure-request`, `expand-then-contract`, `fx-weekend-gap`, `hmac-tokens` |
 
-Arm B's two useful rows. Recall-preserving: tau 0.5, 158/160, noise 903.5 tokens (4.7% below the final
+Arm B's two rows that bear on the rules. Recall-preserving: tau 0.5, 158/160, noise 903.5 tokens (4.7% below the final
 retriever, 21% below the 1139.4 baseline), 0/37. Noise-cutting: tau 0.7, noise 493.7 tokens (48% below the
 final retriever, 57% below the baseline), but dev recall falls to 153/160, clean-abstain is 5/37 (0.135), and
 two in-sample scenarios fail (28/30: the "write a database migration for the orders table" task_only
@@ -429,7 +438,8 @@ lists, index and query timings).
 - The existing additive channel (arm A) with bge-small adds noise at every floor that lets anything through and
   is inert above about 0.75; it never abstains on an empty task and it breaks the in-sample and held-out
   abstention cases at floors up to 0.65. It does not move dev recall (the loss at low floors is budget crowding).
-- The confirmation filter (arm B) is the only semantic use that reduces noise. At tau 0.5 it costs nothing in
+- The confirmation filter (arm B) is the only semantic setting measured here that lowered noise below the
+  no-channel run. At tau 0.5 it costs nothing in
   recall and takes 4.7% more off the final retriever's noise; at tau 0.7 it reaches a 57% cut against the
   baseline, with a recall cost of 5 dev records (0.9563) and a clean-abstain of 0.135. Neither row approaches
   the 0.80 clean-abstain target, because most remaining noise is scope, two-word and graph evidence that the
@@ -552,7 +562,7 @@ within 3 ms of the median in each run). The guard test passes with a wide margin
 
 | Figure | Baseline | After |
 |---|---|---|
-| In-sample scorecard (`python -m tests.eval.run --service`) | 48 scenarios, all conditions pass; recall 30/30; leaks 0; abstention 12/12 | same: all conditions pass; recall 30/30; leaks 0; abstention 12/12 |
+| In-sample scorecard (`python -m tests.eval.run --service`) | 50 scenarios, all conditions pass; recall 30/30; leaks 0; abstention 12/12 | same: all conditions pass; recall 30/30; leaks 0; abstention 12/12 |
 | Held-out abstention, original labels (headline) | 0.38 (6/16) | 0.75 (12/16) |
 | Held-out abstention, relabelled after review (not substituted) | 0.50 (8/16) | 0.9375 (15/16) |
 
@@ -597,8 +607,9 @@ Full default suite (`python -m pytest tests -q -p no:cacheprovider`): 1231 passe
   measurement of real use.
 - Locking the test split is a discipline made visible by a checksum, not a technical barrier.
 - The thresholds (RARE_SHARE, SMALL_STORE, RARE_CAP, the generic-word list) were set on the dev split, which
-  is also what the in-sample and held-out figures were tuned against; dev recall of 0.9875 against 0.9644 on
-  test shows that dev is the optimistic side.
+  is also what the in-sample and held-out figures were tuned against. Compare the change, not the levels
+  (the levels differ because the two splits differ): the baseline-to-final change in recall was 0 on dev
+  (158/160 both) and -0.79 point on test (246/253 to 244/253).
 - Lever 7 (RARE_CAP) was added after the dev results of levers 1-3 were seen. It is not pre-registered. It
   was judged on the test split with everything else.
 - The cap does not scale with the store: RARE_CAP is an absolute 10 records however many records there are,
@@ -611,3 +622,60 @@ Full default suite (`python -m pytest tests -q -p no:cacheprovider`): 1231 passe
   only at a recall cost and reaches clean-abstain 0.135 at best); they were not measured on the test split.
   Whether to make embeddings a default is the user's decision.
 - The three new test-split misses were not diagnosed (see above).
+
+## Final review findings (retrieval levers)
+
+Added after the whole-branch review, which ran after the test-split result above. The review recommends against
+merging the retrieval levers as configured. Nothing below is fixed: `src/` stays exactly as measured on the test
+split (ruling R16), so the defects are documented, not repaired. The reviewer's evidence:
+
+1. Critical: `RARE_CAP = 10` drops every single-word match on a topic that more than 10 notes hold, at any store
+   size. Reproduced: in a store of 300 records with 12 notes about "ledger", the task "ledger" returns 12 notes
+   on `main` and 0 on the branch; "how do we handle the ledger" returns 12 against 0. In a 5,000-record store
+   "rare" means at most 0.2% of the records. Spec 5.1 had chosen relative document frequency (a share of the
+   store), not an absolute count. The benchmark worlds hold 75 to 100 records, so the benchmark cannot see this.
+   Lever 7 also passed the R2 in-sample gate only because it depends on store size: it does not bind at the
+   40-record in-sample world but does bind at about 90 records.
+2. Important: lever 2 (graph seeds from non-weak survivors) regresses small stores. A fix linked to a weakly
+   matched bug in an 8-record store is shown on `main` and not on the branch; `tests/test_evidence_floor.py` pins
+   that as intended. Lever 2 had zero measured effect on the benchmark, and spec section 7 says a lever that does
+   not earn its place is dropped, not left in. It was left in.
+3. Important: the identifier lift covers camelCase only, but the service passes ALL-CAPS and alphanumeric codes
+   (`ECONNRESET`, `E11000`, `JWT`) and the parts of snake_case names as symbols. Reproduced: 30 of 300 records
+   mention `ECONNRESET`; `main` returns 30, the branch 0.
+4. Important: latency. `passes()` now does per-candidate work (a set difference, `_concepts`, a `min` over
+   document frequencies, a kwargs dict, `classify`) for every fused candidate. A cProfile over 40 recalls on the
+   5,000-record probe shows `passes` at 4.0 s of `_rank`'s 14.6 s. The reviewer suggests a cheap fix: return
+   STRONG for scope and semantic hits before any work, memoise the lexical tier by the `matched` frozenset, and
+   cache record compound tokens on the index. It was not applied, because `src/` is frozen. The 25-34% slowdown
+   measured above depends on the workload: a service-level probe with 5,000 conventions showed no difference in
+   one session.
+
+Also on record:
+
+- The dev-to-test gap is the change, not the levels: the baseline-to-final recall change was 0 on dev and
+  -0.79 point on test (see "Known limits").
+- Lever 4 (the tail) was not built under the pre-registered rule and can no longer be judged on this test split.
+- The three new test misses (`english-stemming-quirk`, `dagbag-test`, `small-file-explosion`) were deliberately
+  not diagnosed, to keep the split clean.
+- Reviving the levers needs the fixes above plus a fresh locked test split, because this one has now been seen
+  against this lever family.
+
+Merge shape the controller will give the user: merge the benchmark, the runner, the locks, the results and the
+docs; hold the retrieval levers (the `src/agent_memory/retrieval/evidence.py` and `retriever.py` changes,
+`tests/test_evidence*.py` and the README recall note) on a separate branch. If the levers are held back,
+`tests/eval/test_bench_dev.py` has to be re-pinned: it asserts the levers' dev numbers (noise at most 1090
+tokens per task) and would need the baseline figure (1139.4 tokens per task) instead.
+
+## Known world inconsistencies (not edited: editing a world changes what the locked labels mean)
+
+Found in the Task 4 and 5 reviews and deferred. The worlds are locked by `bench.sha256`; none of these was
+corrected.
+
+- Pipeline world: `sunday-drop-late` (the sensor window against 06:40); `dags-in-utc` (March against October);
+  the `revenue-drift` module; the `monday-freshness` anchor; the `shuffle-partitions-400` arithmetic; the
+  `dim-bloat` module.
+- Mobile world: `bug-migrate-crash` (the retry loop against what `db.ts` does); missing down steps in the
+  migrations; the `defusedxml` comment; the Fastfile phased rollout; `dp-download-queue` (serial against 4
+  parallel); the `conv-release-name` unit test; a missing fixtures directory; the `dec-gpx-11` anchor; a
+  mixed pre-fix and post-fix file state.

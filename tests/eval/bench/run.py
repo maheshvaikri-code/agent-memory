@@ -3,6 +3,7 @@
   --label NAME     name for the saved run (default "run")
   --save           write tests/eval/bench/runs/<split>-<label>.json
   --against NAME   compare with runs/<split>-NAME.json and print acceptance rules 1-4
+  --force          let --save overwrite an existing runs/test-*.json or runs/*-baseline.json
 """
 import dataclasses
 import json
@@ -68,33 +69,58 @@ def _table(summary: judge.Summary) -> str:
     ])
 
 
+class UsageError(Exception):
+    """A bad command line; main() prints it on stderr and exits with code 2."""
+
+
+def _protected(path: Path) -> bool:
+    return path.name.startswith("test-") or path.name.endswith("-baseline.json")
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
 
     def option(name, default=None):
-        return argv[argv.index(name) + 1] if name in argv else default
+        if name not in argv:
+            return default
+        at = argv.index(name) + 1
+        if at >= len(argv) or argv[at].startswith("--"):
+            raise UsageError(f"missing value after {name}")
+        return argv[at]
 
-    split = option("--split")
-    if split not in model.SPLITS:
-        print(__doc__)
+    try:
+        split = option("--split")
+        if split not in model.SPLITS:
+            print(__doc__)
+            return 2
+        label = option("--label", "run")
+        against = option("--against")
+        before = None
+        if against:
+            path = RUNS / f"{split}-{against}.json"
+            if not path.exists():
+                raise UsageError(f"no saved run to compare with: {path}")
+            before = json.loads(path.read_text(encoding="utf-8"))["summary"]
+        target = RUNS / f"{split}-{label}.json"
+        if "--save" in argv and "--force" not in argv and target.exists() and _protected(target):
+            raise UsageError(f"refusing to overwrite {target} (a test-split run or a baseline); "
+                             "pass --force to replace it")
+    except UsageError as error:
+        sys.stderr.write(f"error: {error}\n")
         return 2
-    label = option("--label", "run")
     results = run_split(split)
     summary = judge.summarise(results)
     out = [f"split {split}, label {label}", _table(summary)]
     if "--save" in argv:
         RUNS.mkdir(exist_ok=True)
-        path = RUNS / f"{split}-{label}.json"
         payload = {"label": label, "split": split, "summary": dataclasses.asdict(summary),
                    "tasks": [dict(world=r.world, task=r.task, empty=r.empty, shown=r.shown,
                                   missed=r.missed, noise=r.noise, noise_tokens=r.noise_tokens,
                                   leaks=r.leaks) for r in results]}
-        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        with open(target, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(payload, indent=1) + "\n")
-        out.append(f"saved {path}")
-    against = option("--against")
-    if against:
-        before = json.loads((RUNS / f"{split}-{against}.json").read_text(encoding="utf-8"))["summary"]
+        out.append(f"saved {target}")
+    if before is not None:
         out.append(f"rules against {against}:")
         for name, ok, detail in rules(before, dataclasses.asdict(summary)):
             out.append(f"  {'PASS' if ok else 'FAIL'}  {name}: {detail}")

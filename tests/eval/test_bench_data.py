@@ -112,3 +112,27 @@ def test_locked_test_split_is_unchanged():
     assert sorted(expected) == [p.name for p in files]
     for path in files:
         assert _digest(path) == expected[path.name], f"{path.name} changed after it was locked"
+
+
+BENCH_LOCKED = ["worlds/saas.json", "worlds/pipeline.json", "worlds/mobile.json",
+                "model.py", "judge.py", "build.py", "stats.py"]
+
+
+def test_benchmark_definition_files_are_unchanged():
+    """The worlds, the loader, the judge, the builder and the statistics define what the locked
+    labels mean. Changing one changes the benchmark: if it must change, update bench.sha256 and
+    record the change in tests/eval/bench/RESULTS.md under "Label corrections / world changes"."""
+    lock = model.BENCH / "bench.sha256"
+    assert lock.exists(), "tests/eval/bench/bench.sha256 is missing"
+    expected = {}
+    for line in lock.read_text().splitlines():
+        if line.strip():
+            digest, name = line.split(None, 1)
+            expected[name.strip()] = digest
+    assert sorted(expected) == sorted(BENCH_LOCKED), (
+        "the locked file list differs; record the change in tests/eval/bench/RESULTS.md under "
+        '"Label corrections / world changes"')
+    for name in BENCH_LOCKED:
+        assert _digest(model.BENCH / name) == expected[name], (
+            f"{name} changed after the benchmark was locked; record the change in "
+            'tests/eval/bench/RESULTS.md under "Label corrections / world changes" and update bench.sha256')

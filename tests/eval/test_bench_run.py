@@ -51,3 +51,74 @@ def test_relabelled_heldout_counts_the_three_reviewed_tasks():
         "improve error messages in the onboarding wizard",
         "configure the sentry error reporting DSN",
     }
+
+
+# --- command line guards. run_split is always stubbed: these never run a real split. ---
+
+import json
+
+import pytest
+
+
+@pytest.fixture
+def cli(tmp_path, monkeypatch):
+    """The runner with a temporary runs directory and a stub in place of run_split."""
+    calls = []
+    monkeypatch.setattr(run, "RUNS", tmp_path)
+    monkeypatch.setattr(run, "run_split", lambda split: calls.append(split) or [])
+    return calls
+
+
+def _saved(path, label="old"):
+    path.write_text(json.dumps({"label": label, "summary": summary()}), encoding="utf-8")
+
+
+def test_save_refuses_to_overwrite_a_test_split_run(cli, tmp_path, capsys):
+    _saved(tmp_path / "test-after.json")
+    assert run.main(["--split", "test", "--label", "after", "--save"]) == 2
+    assert "refusing to overwrite" in capsys.readouterr().err
+    assert json.loads((tmp_path / "test-after.json").read_text())["label"] == "old"
+    assert cli == [], "the split must not even run"
+
+
+def test_save_refuses_to_overwrite_a_baseline(cli, tmp_path, capsys):
+    _saved(tmp_path / "dev-baseline.json")
+    assert run.main(["--split", "dev", "--label", "baseline", "--save"]) == 2
+    assert "refusing to overwrite" in capsys.readouterr().err
+    assert json.loads((tmp_path / "dev-baseline.json").read_text())["label"] == "old"
+
+
+def test_force_allows_overwriting_a_protected_run(cli, tmp_path):
+    _saved(tmp_path / "dev-baseline.json")
+    assert run.main(["--split", "dev", "--label", "baseline", "--save", "--force"]) == 0
+    assert json.loads((tmp_path / "dev-baseline.json").read_text())["label"] == "baseline"
+
+
+def test_save_overwrites_an_ordinary_dev_run_and_creates_a_new_protected_one(cli, tmp_path):
+    _saved(tmp_path / "dev-trial.json")
+    assert run.main(["--split", "dev", "--label", "trial", "--save"]) == 0
+    assert run.main(["--split", "dev", "--label", "baseline", "--save"]) == 0
+    assert (tmp_path / "dev-baseline.json").exists()
+
+
+def test_a_missing_against_file_is_a_clean_error(cli, capsys):
+    assert run.main(["--split", "dev", "--against", "nothing"]) == 2
+    err = capsys.readouterr().err
+    assert "no saved run to compare with" in err and "dev-nothing.json" in err
+    assert cli == []
+
+
+def test_against_compares_with_a_saved_run(cli, tmp_path, capsys):
+    _saved(tmp_path / "dev-baseline.json")
+    assert run.main(["--split", "dev", "--against", "baseline"]) == 0
+    assert "rules against baseline" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("argv", [["--split", "dev", "--label"],
+                                  ["--split", "dev", "--against"],
+                                  ["--split"],
+                                  ["--split", "dev", "--label", "--save"]])
+def test_a_missing_option_value_is_a_clean_error(cli, capsys, argv):
+    assert run.main(argv) == 2
+    assert "missing value after" in capsys.readouterr().err
+    assert cli == []

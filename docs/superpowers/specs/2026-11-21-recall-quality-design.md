@@ -1,6 +1,6 @@
 # Recall quality (sub-project 4): design
 
-Status: implemented; the acceptance rules were measured once on the locked test split, see tests/eval/bench/RESULTS.md (which rules passed and which failed is stated there). Written 2026-11-21. Builds on the retrieval and record model (`2026-11-16-retrieval-and-record-model-design.md`); its results file is `tests/eval/RESULTS.md`.
+Status: implemented as a benchmark and a measured set of retrieval levers; the success criterion of section 1 (every rule of section 6 holds) was NOT met: rules 1, 3 and 4 failed on the locked test split (see section 10 and tests/eval/bench/RESULTS.md). Written 2026-11-21. Builds on the retrieval and record model (`2026-11-16-retrieval-and-record-model-design.md`); its results file is `tests/eval/RESULTS.md`.
 
 ## 1. Purpose and success
 
@@ -173,3 +173,11 @@ pre-registered rule is decided by its first condition (dev drop-recall equals th
 ruled out and measured, and lever 7 was added after the dev results of levers 1-3. The semantic arm was
 measured on dev only (section 5.3 and the bench results); whether embeddings should become a default is
 left to the user, and this section does not recommend either way.
+
+Two notes on what was not done. Section 5.3 asks the report to end with a recommendation on whether the semantic
+channel should become a default; the implementer deliberately did not write one. The numbers are recorded in the
+"Semantic arm" section of `tests/eval/bench/RESULTS.md` and the decision is left to the user. Section 7 says a
+lever that does not earn its place is dropped, not left in; that was not applied to lever 2 (graph seeds from
+non-weak survivors), which had zero measured effect, and the final review flagged it (see "Final review
+findings (retrieval levers)" in the bench results, which also records that the review recommends against
+merging the levers as configured).
