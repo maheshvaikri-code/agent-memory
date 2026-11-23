@@ -167,8 +167,8 @@ def build_server(service: Optional[MemoryService] = None, *,
     async def memory_supersede(old_id: str, kind: str, fields: Dict[str, Any], ctx: Context,
                          files: Optional[List[str]] = None,
                          evidence: str = "") -> Dict[str, Any]:
-        return await dispatch(ctx, "memory_supersede", old_id=old_id, kind=kind, fields=fields, files=files,
-                   evidence=evidence)
+        return await dispatch(ctx, "memory_supersede", old_id=old_id, kind=kind, fields=fields,
+                              files=files, evidence=evidence)
 
     @app.tool(description="Mark a note as wrong. It is kept for the record and no longer returned.")
     async def memory_retract(id: str, ctx: Context, reason: str = "") -> Dict[str, Any]:
