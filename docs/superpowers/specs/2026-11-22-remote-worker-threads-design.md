@@ -10,7 +10,7 @@ It succeeds when:
 
 - While one tool call is slow, an unauthenticated request is still answered promptly (target: well under 0.5 s with a call held for 3 s) and a call by a different token completes.
 - A token revoked while its call is running gets that call's result. The token's next request is refused at the guard as before. The service is closed once its last call has finished, and never while a call is using it.
-- A normal shutdown with a call in flight lets the call finish (bounded), then closes every service, and each still leaves its checkpoint.
+- A normal shutdown with a call in flight lets the call finish (bounded; not yet verified, see section 6), then closes every service, and each still leaves its checkpoint.
 - The authentication, role, identity, audit and scrubbing behaviour of the remote spec is unchanged, and so is the stdio server.
 - Median `memory_recall` over the in-process HTTP app stays within 25% or 2 ms (whichever is larger) of the same measurement on `main` in the same session. (About 8 ms before this change.)
 
