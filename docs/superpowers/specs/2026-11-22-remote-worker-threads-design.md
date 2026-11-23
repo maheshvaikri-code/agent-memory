@@ -1,6 +1,6 @@
 # Remote server worker threads (sub-project 3b follow-up): design
 
-Status: approved in conversation (approach 1, "let an in-flight call finish after a revoke"), written 2026-11-22. Changes the concurrency model described in section 5 ("Concurrency") of `2026-11-20-remote-mcp-design.md`; everything else in that spec stands.
+Status: implemented (branch feature/remote-worker-threads); approved in conversation (approach 1, "let an in-flight call finish after a revoke"), written 2026-11-22. Changes the concurrency model described in section 5 ("Concurrency") of `2026-11-20-remote-mcp-design.md`; everything else in that spec stands.
 
 ## 1. Purpose and success
 
@@ -83,8 +83,24 @@ The README "Known limits" line "Calls are served one at a time ..." and the remo
 - Calls by one token are serialised by its service lock, so a slow call delays that token's other calls (not other tokens').
 - A disconnected client's call still runs to completion.
 - At shutdown, a call that outlives `drain_seconds` can fail.
+- The 15 s drain in `Principals.close` bounds only a close that runs while calls are still leased; at a normal stop uvicorn's own graceful wait (unbounded by default) lets running calls finish first, so a hung call can delay shutdown. Measured behaviour of a stop with a call in flight is not yet pinned by a test.
 - No per-token quota, no per-call timeout, no health endpoint. The other known limits of the remote spec stand.
 
 ## 7. Out of scope
 
 Stdio; a process per token; per-call timeouts; per-token concurrency quotas; changing the storage layer or the service API; any change to recall quality.
+
+## 8. Measured
+
+Median `memory_recall` over 200 calls through the in-process HTTP app (`tests/remote_latency.py`), main and
+this branch alternated in one session, three runs each:
+
+| Run | main | branch |
+|---|---|---|
+| 1 | 6.41 ms | 6.61 ms |
+| 2 | 6.11 ms | 6.34 ms |
+| 3 | 5.93 ms | 6.32 ms |
+
+The medians of medians are 6.11 ms on main and 6.34 ms on this branch (+0.23 ms, about +4%), inside the bound of section 1 (25% or 2 ms, whichever is larger).
+With one call held, an unauthenticated request was answered in 16 to 47 ms over three runs of the real-server test (before this change: 2.75 s with the
+call held for 3 s).
