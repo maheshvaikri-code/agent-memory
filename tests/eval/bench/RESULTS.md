@@ -1,5 +1,11 @@
 # Benchmark results
 
+**Status of the retrieval levers.** The levers described below (`evidence.py`, the `retriever.py` change, the
+`tests/test_evidence*.py` files, the README recall note) are NOT part of what was merged. They live, with this
+file's "after" numbers measured against them, on the branch `experiment/recall-levers` (commit e25382a). The merged
+code is the unchanged retriever, and `tests/eval/test_bench_dev.py` is pinned to the baseline dev figures
+(noise 1139.4 tokens per task). Everything below that says "final retriever" or "after" refers to the experiment branch.
+
 Baseline: the unchanged retriever (branch feature/recall-quality, no retrieval code changed), run with
 `PYTHONPATH=src python -m tests.eval.bench.run --split dev|test --label baseline --save`.
 Saved runs: `tests/eval/bench/runs/dev-baseline.json`, `tests/eval/bench/runs/test-baseline.json`.
@@ -661,11 +667,10 @@ Also on record:
 - Reviving the levers needs the fixes above plus a fresh locked test split, because this one has now been seen
   against this lever family.
 
-Merge shape the controller will give the user: merge the benchmark, the runner, the locks, the results and the
-docs; hold the retrieval levers (the `src/agent_memory/retrieval/evidence.py` and `retriever.py` changes,
-`tests/test_evidence*.py` and the README recall note) on a separate branch. If the levers are held back,
-`tests/eval/test_bench_dev.py` has to be re-pinned: it asserts the levers' dev numbers (noise at most 1090
-tokens per task) and would need the baseline figure (1139.4 tokens per task) instead.
+Merge shape chosen: the benchmark, the runner, the locks, the results and the docs are merged; the retrieval levers
+(`src/agent_memory/retrieval/evidence.py` and `retriever.py` changes, `tests/test_evidence*.py`, the README recall
+note) are held back on `experiment/recall-levers`, and `tests/eval/test_bench_dev.py` is re-pinned to the baseline
+dev figures (recall 0.9875, noise 1139.4 tokens per task).
 
 ## Known world inconsistencies (not edited: editing a world changes what the locked labels mean)
 

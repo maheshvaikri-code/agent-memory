@@ -17,7 +17,7 @@ Run on 2026-11-16 with `PYTHONPATH=src python -m tests.eval.run`:
 - superseded or retracted leaks: 0
 - abstention: 1.00 (12/12)
 
-Held-out abstention (scenarios never used for tuning): 0.38 (6/16)
+Held-out abstention (16 tasks held out from the scenarios; see the sub-project 4 section below): 0.38 (6/16)
 
 The final fix wave added two guardrail scenarios (a decision matched by its
 constraint text, `tests/eval/world.py` gained the constraint) and the
@@ -44,7 +44,8 @@ little about tasks the tuning never saw.
 
 `tests/eval/heldout.py` holds 16 plausible tasks the world stores nothing
 about: the final reviewer's 12 and 4 more written before the set was first
-run. They are never used for tuning. Same harness and rule: nothing but the
+run. They were not used for tuning when this was written; sub-project 4 (below) later looked at them while
+tuning experimental levers, so treat them as no longer independent. Same harness and rule: nothing but the
 pinned set may appear. Result: **0.38 (6/16)**; the reviewer's 12 alone
 score 0.42 (5/12).
 
@@ -174,7 +175,9 @@ measured the same when compared one after the other.
 ## Recall quality benchmark (sub-project 4)
 
 The recall-quality work (spec `docs/superpowers/specs/2026-11-21-recall-quality-design.md`) is measured on a
-separate benchmark; its figures, the lever trials and the acceptance-rule table are in
+separate benchmark. The "after" figures in this section are for the retrieval levers, which were not merged: they
+are on the branch `experiment/recall-levers`, and the retriever on main is unchanged (the "before" column).
+The benchmark is measured on main; its figures, the lever trials and the acceptance-rule table are in
 `tests/eval/bench/RESULTS.md`. The figures that touch this scorecard, before (the unchanged retriever) and
 after (the final retriever):
 

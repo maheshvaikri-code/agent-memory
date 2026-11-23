@@ -16,7 +16,6 @@ from ..record import (BACKGROUND, GUARDRAIL, GUIDANCE, KINDS, RESOLVED_FIELD, SE
                       MemoryRecord, NodeRef)
 from .budget import TokenCounter
 from .channels import graph_neighbours, scope_scores
-from .evidence import GENERIC_STEMS, SMALL_STORE, WEAK, classify
 from .lexical import BM25
 from .render import HEADERS, render, render_item
 from .tokenize import _WORD, compound_tokens, token_set, tokenize, tokens_for
@@ -360,7 +359,7 @@ class Retriever:
     def _rank(self, query: str, files: List[str], kinds: Optional[Iterable[str]] = None,
               strict: bool = False, extra_refs: Iterable[NodeRef] = (),
               cands: Optional[Dict[NodeRef, MemoryRecord]] = None,
-              role: Any = None, symbol_text: str = "") -> "_Ranking":
+              role: Any = None) -> "_Ranking":
         if kinds is not None:
             kinds = list(kinds)         # a generator would be spent by the role below
         if role is None:
@@ -378,8 +377,6 @@ class Retriever:
         query_text = f"{query} {stems}"
         query_tokens = tokenize(query_text) + list(compound_tokens(query_text))
         words = _camel_groups(query_text)
-        identifiers = frozenset(compound_tokens(query_text))   # joined form of each camelCase word
-        symbol_terms = frozenset(tokenize(symbol_text))        # terms the caller gave as symbols
         index = self._index(cands, role)
         bm25 = index.bm25
         lexical, hits = bm25.match(query_tokens)     # scores; matched terms
@@ -402,8 +399,6 @@ class Retriever:
                 q = quality[ref] if quality is not None else 1.0
                 fused[ref] = fused.get(ref, 0.0) + WEIGHTS[name] * q / (RRF_K + rank)
 
-        tiers: Dict[NodeRef, str] = {}
-
         def passes(ref: NodeRef) -> bool:
             matched = hits.get(ref, _NONE)
             in_scope = scope.get(ref, 0.0) >= SCOPE_FLOOR
@@ -411,45 +406,16 @@ class Retriever:
                 distinctive = any(bm25.df[t] <= DISTINCTIVE_DF for t in matched)
                 count = _concepts(matched, words)
                 return count >= 2 or (count == 1 and (in_scope or distinctive))
-            if not (matched or in_scope or ref in semantic):
-                return False
-            informative = matched - GENERIC_STEMS
-            rec = cands.get(ref)
-            # generic words count toward a record that also has an informative concept; a record
-            # matched only by generic words is weak
-            args: Dict[str, Any] = dict(
-                in_scope=in_scope, semantic=ref in semantic,
-                concepts=_concepts(matched, words) if informative else 0,
-                rarest_df=min((bm25.df[t] for t in informative), default=None),
-                n=bm25.n, distinctive_df=DISTINCTIVE_DF)
-            tier = classify(**args)
-            if tier == WEAK and informative and (
-                    not identifiers.isdisjoint(informative)
-                    or (rec is not None and symbol_terms
-                        and not (informative & symbol_terms).isdisjoint(compound_tokens(rec.text)))):
-                # a whole identifier is evidence however common it is in the store: a camelCase
-                # word the task writes, or a symbol / context identifier (the service lower-cases
-                # those) that the record spells as one compound token. A plain task word never
-                # qualifies by how a record happens to spell it.
-                # A camelCase identifier whose joined stem is itself generic (setUp -> "setup") does
-                # not lift a record on its own: intended.
-                tier = classify(identifier=True, **args)
-            tiers[ref] = tier
-            pinned = (rec is not None and rec.priority == "must"
-                      and rec.scope == ["*"])     # always shown: keep its ranking data
-            return tiers[ref] != WEAK or bm25.n < SMALL_STORE or pinned
+            return bool(matched) or in_scope or ref in semantic
 
         survivors = {ref: score for ref, score in fused.items() if passes(ref)}
 
         linked: Dict[NodeRef, NodeRef] = {}
         inherited_scores: Dict[NodeRef, float] = {}
-        pool = {ref: v for ref, v in survivors.items() if tiers.get(ref) != WEAK}
-        if not strict and pool:
-            # the top GRAPH_SEEDS of the strong and medium survivors, ties broken by ref so the
-            # result never depends on dict order; a weak survivor (a small store, or a pinned
-            # record that matched weakly) does not pull its neighbours in
-            floor = heapq.nlargest(GRAPH_SEEDS, pool.values())[-1]
-            seeds = dict(sorted(((ref, v) for ref, v in pool.items() if v >= floor),
+        if not strict and survivors:
+            # the top GRAPH_SEEDS, ties broken by ref so the result never depends on dict order
+            floor = heapq.nlargest(GRAPH_SEEDS, survivors.values())[-1]
+            seeds = dict(sorted(((ref, v) for ref, v in survivors.items() if v >= floor),
                                 key=lambda kv: (-kv[1], str(kv[0])))[:GRAPH_SEEDS])
             for ref, (inherited, seed) in graph_neighbours(self.graph, seeds, cands).items():
                 if ref not in survivors:
@@ -648,8 +614,7 @@ class Retriever:
         files = [norm_path(f, self.repo_root) for f in (files or [])]
         query = " ".join([task or ""] + list(symbols or []))
         cands = self._candidates(kinds)     # read once per recall
-        ranking = self._rank(query, files, kinds, cands=cands,
-                             symbol_text=" ".join(symbols or []))
+        ranking = self._rank(query, files, kinds, cands=cands)
         ranked_refs = set(ranking.refs)
         if always_on is None:
             always_on = kinds is None

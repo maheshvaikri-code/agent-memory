@@ -1,6 +1,6 @@
-"""Dev-split guard for the final retriever. Runs the dev split only (never the locked test split).
+"""Dev-split guard for the retriever on main (the unchanged baseline). Runs the dev split only (never the locked test split).
 
-The bounds are the final configuration's dev figures (recall 0.9875, noise 947.8 tokens per task, leaks 0),
+The bounds are the baseline's dev figures (recall 0.9875, noise 1139.4 tokens per task, leaks 0),
 with a 1 point recall margin and a 15% noise margin, so a later change that quietly loses recall or
 adds noise shows up in the default suite.
 """
@@ -11,7 +11,7 @@ import pytest
 from tests.eval.bench import judge, run
 
 DEV_RECALL = 0.9875
-DEV_NOISE_TOKENS = 947.8
+DEV_NOISE_TOKENS = 1139.4
 
 
 @pytest.fixture(scope="module")
