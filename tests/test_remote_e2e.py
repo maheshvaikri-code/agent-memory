@@ -270,3 +270,49 @@ def test_a_graceful_stop_folds_the_journal_and_keeps_the_note(repo, tmp_path):
         assert any("zorblax" in json.dumps(item) for item in found["items"])
     finally:
         service.close()
+
+
+def test_a_held_call_does_not_stop_other_callers_on_a_real_server(live, monkeypatch):
+    url, tokens, _ = live
+    a, b = tokens.create("alice", "read-write"), tokens.create("bob", "read-write")
+    entered, release = threading.Event(), threading.Event()
+    original = MemoryService._context
+
+    def held(self, context):
+        entered.set()
+        release.wait(20)
+        return original(self, context)
+
+    monkeypatch.setattr(MemoryService, "_context", held)
+    result = {}
+
+    def hold_one():
+        async def go():
+            async with streamablehttp_client(url, headers={"Authorization": f"Bearer {a}"}) as (r, w, _):
+                async with ClientSession(r, w) as client:
+                    await client.initialize()
+                    return await call(client, "memory_recall", task="anything")
+        result["alice"] = run(go())
+
+    async def bob_status():
+        async with streamablehttp_client(url, headers={"Authorization": f"Bearer {b}"}) as (r, w, _):
+            async with ClientSession(r, w) as client:
+                await client.initialize()
+                return await call(client, "memory_status")
+
+    holder = threading.Thread(target=hold_one)
+    holder.start()
+    try:
+        assert entered.wait(20)
+        started = time.monotonic()
+        request = urllib.request.Request(url, data=b"{}", headers={"Content-Type": "application/json"})
+        with pytest.raises(urllib.error.HTTPError) as refused:
+            urllib.request.urlopen(request, timeout=5)
+        assert refused.value.code == 401 and time.monotonic() - started < 1.0
+        started = time.monotonic()
+        failed, _text = run(bob_status())
+        assert not failed and time.monotonic() - started < 3.0
+    finally:
+        release.set()
+        holder.join(30)
+    assert not result["alice"][0]

@@ -217,3 +217,51 @@ def test_a_note_written_from_a_worker_thread_carries_the_token_name(base, tokens
         assert not failed and status["agent"] == "alice"     # the token's name, not a client claim
     assert threads and threads[0] != threading.get_ident()   # it ran on a worker, not the test's thread
     principals.close()
+
+
+def test_a_mixed_burst_with_a_revoke_in_the_middle_loses_nothing(base, tokens):
+    names = [f"agent{i}" for i in range(8)]
+    secrets = {name: tokens.create(name, "read-write") for name in names}
+    app, principals = build_app(base, tokens, max_workers=4)
+    lock = threading.Lock()
+    outcomes = []                                           # (name, status, text)
+    counter = [0]
+
+    def attempt(client, name, secret, i):
+        kind = i % 4
+        if kind == 0:
+            name_, args = "memory_recall", {"task": f"queue quirk {i}"}
+        elif kind == 1:
+            name_, args = "memory_remember", {"kind": "quirk",
+                                              "fields": {"description": f"burst note {i}"}}
+        elif kind == 2:
+            name_, args = "memory_status", {}
+        else:
+            name_, args = "memory_check", {"approach": f"approach {i}"}
+        response = rpc(client, secret, "tools/call", {"name": name_, "arguments": args}, call_id=i)
+        text = response.text if response.status_code != 200 else \
+            response.json()["result"]["content"][0]["text"]
+        with lock:
+            outcomes.append((name, response.status_code, text))
+
+    def work(client, i):
+        with lock:
+            counter[0] += 1
+            first_half_done = counter[0] == 80
+        if first_half_done:                                 # in the middle: one token goes, one arrives
+            tokens.revoke("agent3")
+            secrets["agent9"] = tokens.create("agent9", "read-write")
+        name = names[i % 8]
+        attempt(client, name, secrets[name], i)
+
+    with TestClient(app, base_url=ADDRESS) as client:
+        with concurrent.futures.ThreadPoolExecutor(16) as pool:
+            for future in [pool.submit(work, client, i) for i in range(200)]:
+                future.result(120)
+        assert not tool(client, secrets["agent9"], "memory_status")[0]
+    assert len(outcomes) == 200
+    for name, status, text in outcomes:
+        assert status == 200 or (status in (401, 429) and name == "agent3"), (name, status, text)   # 429: the failure limiter
+        assert "service is closed" not in text and '"internal"' not in text, text
+    assert principals.leases_held == 0 and principals.retired_count == 0
+    principals.close()
