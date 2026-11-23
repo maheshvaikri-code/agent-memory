@@ -13,7 +13,7 @@ from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from anyio import to_thread
+from anyio import CancelScope, to_thread
 from mcp.server.transport_security import TransportSecuritySettings
 
 from ..mcp_server import build_server
@@ -60,7 +60,9 @@ class Principals:
     """A lazily opened MemoryService per (name, role, creation time) of a token. Each has the
     token's name as its agent, `allow_must` off and paths redacted. A call holds a lease on its
     service for its whole duration. A token that left the file has its service closed at the next
-    call, or, if a call is still using it, when that call's lease ends."""
+    call, or, if a call is still using it, when that call's lease ends. The lock guards only the
+    bookkeeping: a service is opened and closed outside it, because both can wait on the store's
+    file lock and one token's wait must not hold up the other tokens."""
 
     def __init__(self, base: ServiceConfig, tokens: TokenFile):
         self._base, self._tokens = base, tokens
@@ -87,18 +89,36 @@ class Principals:
             return sum(e.leases for e in self._services.values()) + \
                 sum(e.leases for e in self._retired)
 
-    def _entry_for(self, principal: Principal) -> _Entry:
-        """The caller holds the lock."""
-        if self._closed:
-            raise ServiceError("internal", "the server is shutting down")
-        self._sweep()
+    def _obtain(self, principal: Principal, take_lease: bool) -> _Entry:
+        """The principal's entry, opening its service if need be, counting a lease on it when
+        asked. The lock is held only to look up, to sweep and to insert; the service is built and
+        every sweep close happens outside it."""
         key = (principal.name, principal.role, principal.created_at)
-        entry = self._services.get(key)
-        if entry is None:
-            entry = _Entry(MemoryService(replace(self._base, agent=principal.name,
-                                                 allow_must=False, read_only=False,
-                                                 redact_paths=True)))
-            self._services[key] = entry
+        with self._lock:
+            if self._closed:
+                raise ServiceError("internal", "the server is shutting down")
+            idle = self._sweep()
+            entry = self._services.get(key)
+            if entry is not None and take_lease:
+                entry.leases += 1
+        for departed in idle:
+            self._close_quietly(departed.service)
+        if entry is not None:
+            return entry
+        built = MemoryService(replace(self._base, agent=principal.name, allow_must=False,
+                                      read_only=False, redact_paths=True))
+        with self._lock:
+            closed = self._closed
+            entry = None if closed else self._services.get(key)
+            if not closed and entry is None:
+                entry = self._services[key] = _Entry(built)
+            if entry is not None and take_lease:
+                entry.leases += 1
+        if closed:
+            self._close_quietly(built)
+            raise ServiceError("internal", "the server is shutting down")
+        if entry.service is not built:                     # another thread opened it first
+            self._close_quietly(built)
         return entry
 
     @staticmethod
@@ -108,17 +128,13 @@ class Principals:
     def service_for(self, principal: Principal):
         """The service (or read-only view) without holding it open. Tests and callers that do not
         run a call use this; a call uses `lease`."""
-        with self._lock:
-            entry = self._entry_for(principal)
-        return self._view(principal, entry.service)
+        return self._view(principal, self._obtain(principal, False).service)
 
     @contextlib.contextmanager
     def lease(self, principal: Principal):
         """Hold the principal's service open for the duration of the `with` block; yields
         (service or read-only view, role). Released on success, error or cancellation."""
-        with self._lock:
-            entry = self._entry_for(principal)
-            entry.leases += 1
+        entry = self._obtain(principal, True)
         try:
             yield self._view(principal, entry.service), principal.role
         finally:
@@ -136,28 +152,32 @@ class Principals:
                 self._retired.remove(entry)
             self._changed.notify_all()
 
-    def _sweep(self) -> None:
-        """Close the services of tokens that left the file, but only on a consistent, clean
-        snapshot: no error before the read and the same generation around it (every refresh
-        that changes anything bumps it, so the entries came from one clean read). Otherwise do
-        nothing and do not record the generation, so the next call retries. An outage lists no
-        tokens; closing then would lose every session (requests still fail closed at the guard).
-        A departed service with a call running is retired, not closed: its last lease closes it."""
+    def _sweep(self) -> List[_Entry]:
+        """The caller holds the lock. Returns the idle entries of tokens that left the file,
+        already removed, for the caller to close once it has released the lock. Only on a
+        consistent, clean snapshot: no error before the read and the same generation around it
+        (every refresh that changes anything bumps it, so the entries came from one clean read).
+        Otherwise it does nothing and does not record the generation, so the next call retries.
+        An outage lists no tokens; closing then would lose every session (requests still fail
+        closed at the guard). A departed service with a call running is retired, not returned:
+        its last lease closes it."""
         before = self._tokens.generation
         if self._tokens.error:
-            return
+            return []
         entries = self._tokens.entries()
         if self._tokens.generation != before or before == self._generation:
-            return                         # the file changed or failed meanwhile, or nothing new
+            return []                      # the file changed or failed meanwhile, or nothing new
         self._generation = before
         live = {(e.name, e.role, e.created_at) for e in entries}
+        idle: List[_Entry] = []
         for key in [k for k in self._services if k not in live]:
             entry = self._services.pop(key)
             if entry.leases == 0:
-                self._close_quietly(entry.service)
+                idle.append(entry)
             else:
                 entry.retired = True
                 self._retired.append(entry)
+        return idle
 
     @staticmethod
     def _close_quietly(service: MemoryService) -> None:
@@ -213,7 +233,8 @@ class CloseOnShutdown:
         async def watching(message):
             if message["type"] in ("lifespan.shutdown.complete", "lifespan.shutdown.failed"):
                 try:
-                    await to_thread.run_sync(self.principals.close)   # idempotent; drains running calls
+                    with CancelScope(shield=True):         # a cancelled lifespan must not skip the close
+                        await to_thread.run_sync(self.principals.close)   # idempotent; drains calls
                 except Exception:
                     self.principals.close()
             await send(message)
@@ -262,7 +283,8 @@ def build_app(base: ServiceConfig, tokens: TokenFile, *, public_url: str = "",
                        principal.name if principal else "-", tool, outcome, ms)
 
     server = build_server(
-        lease=lease, workers=max_workers, trust_client_name=False, observer=observer, scrub=path_scrubber(base),
+        lease=lease, workers=max_workers, trust_client_name=False, observer=observer,
+        scrub=path_scrubber(base),
         settings={"stateless_http": True, "json_response": True,
                   "transport_security": TransportSecuritySettings(
                       enable_dns_rebinding_protection=True, allowed_hosts=hosts,
