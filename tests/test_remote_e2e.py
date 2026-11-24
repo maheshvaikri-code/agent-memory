@@ -331,11 +331,13 @@ def test_a_held_call_does_not_stop_other_callers_on_a_real_server(live, monkeypa
         started = time.monotonic()
         request = urllib.request.Request(url, data=b"{}", headers={"Content-Type": "application/json"})
         with pytest.raises(urllib.error.HTTPError) as refused:
-            urllib.request.urlopen(request, timeout=5)
-        assert refused.value.code == 401 and time.monotonic() - started < 1.0
+            urllib.request.urlopen(request, timeout=10)
+        # The bounds only have to tell "answered while the call is held" from "waited for it" (the
+        # hold lasts up to 20 s), so they are generous: a full-suite run on a loaded machine is slow.
+        assert refused.value.code == 401 and time.monotonic() - started < 5.0
         started = time.monotonic()
         failed, _text = run(bob_status())
-        assert not failed and time.monotonic() - started < 3.0
+        assert not failed and time.monotonic() - started < 10.0
     finally:
         release.set()
         holder.join(30)
