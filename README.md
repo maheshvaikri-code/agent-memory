@@ -336,8 +336,11 @@ Request bodies over 1 MB get 413, and a bearer value over 512 characters is refu
   and role within one second reuses the old service.
 - `--public-url` is validated and its host lower-cased; a trailing dot or a Host header in upper
   case is not normalised and is refused with 421.
-- Calls are served one at a time; a slow call (for example a store-lock wait of up to 10 s while
-  another process checkpoints) delays all callers, including authentication of new requests.
+- Tool calls run in a pool of 8 worker threads, so a slow call (for example a store-lock wait of up to
+  10 s while another process checkpoints) no longer delays authentication or other tokens. Calls over
+  the 8 queue without a timeout, calls by one token still run one after the other, and a client that
+  disconnects does not stop its call. A revoked token's running call finishes; its service closes
+  afterwards. A normal stop lets running calls finish before the services close.
 - Every throttled request still writes one WARNING line to the audit log.
 - Reaching a server from a different `amem`: if `amem token` or `amem serve --http` is not
   found, the `amem` on your PATH may come from another checkout than the one in front of you.

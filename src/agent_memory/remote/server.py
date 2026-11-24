@@ -2,6 +2,7 @@
 Imports `mcp`; load it lazily."""
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import logging
 import os
@@ -12,6 +13,7 @@ from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from anyio import CancelScope, to_thread
 from mcp.server.transport_security import TransportSecuritySettings
 
 from ..mcp_server import build_server
@@ -20,6 +22,7 @@ from .limits import FailureLimiter, GuardMiddleware, audit_log, current_principa
 from .tokens import Principal, TokenFile
 
 LOOPBACK_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+DEFAULT_WORKERS = 8
 
 
 class StartupError(Exception):
@@ -42,15 +45,31 @@ class ReadOnlyView:
         return self._service.status()
 
 
+DRAIN_SECONDS = 15.0
+
+
+class _Entry:
+    """A cached service, how many calls hold it open, and whether its token has gone."""
+    __slots__ = ("service", "leases", "retired")
+
+    def __init__(self, service: MemoryService):
+        self.service, self.leases, self.retired = service, 0, False
+
+
 class Principals:
     """A lazily opened MemoryService per (name, role, creation time) of a token. Each has the
-    token's name as its agent, `allow_must` off and paths redacted. A token that left the file
-    has its service closed at the next call."""
+    token's name as its agent, `allow_must` off and paths redacted. A call holds a lease on its
+    service for its whole duration. A token that left the file has its service closed at the next
+    call, or, if a call is still using it, when that call's lease ends. The lock guards only the
+    bookkeeping: a service is opened and closed outside it, because both can wait on the store's
+    file lock and one token's wait must not hold up the other tokens."""
 
     def __init__(self, base: ServiceConfig, tokens: TokenFile):
         self._base, self._tokens = base, tokens
         self._lock = threading.Lock()
-        self._services: Dict[Tuple[str, str, str], MemoryService] = {}
+        self._changed = threading.Condition(self._lock)    # signalled when a retired service is released
+        self._services: Dict[Tuple[str, str, str], _Entry] = {}
+        self._retired: List[_Entry] = []                   # departed tokens' services still in use
         self._generation = -1
         self._closed = False
 
@@ -59,36 +78,106 @@ class Principals:
         with self._lock:
             return len(self._services)
 
-    def service_for(self, principal: Principal):
+    @property
+    def retired_count(self) -> int:
+        with self._lock:
+            return len(self._retired)
+
+    @property
+    def leases_held(self) -> int:
+        with self._lock:
+            return sum(e.leases for e in self._services.values()) + \
+                sum(e.leases for e in self._retired)
+
+    def _obtain(self, principal: Principal, take_lease: bool) -> _Entry:
+        """The principal's entry, opening its service if need be, counting a lease on it when
+        asked. The lock is held only to look up, to sweep and to insert; the service is built and
+        every sweep close happens outside it."""
+        key = (principal.name, principal.role, principal.created_at)
         with self._lock:
             if self._closed:
                 raise ServiceError("internal", "the server is shutting down")
-            self._sweep()
-            key = (principal.name, principal.role, principal.created_at)
-            service = self._services.get(key)
-            if service is None:
-                service = MemoryService(replace(self._base, agent=principal.name,
-                                                allow_must=False, read_only=False,
-                                                redact_paths=True))
-                self._services[key] = service
+            idle = self._sweep()
+            entry = self._services.get(key)
+            if entry is not None and take_lease:
+                entry.leases += 1
+        for departed in idle:
+            self._close_quietly(departed.service)
+        if entry is not None:
+            return entry
+        built = MemoryService(replace(self._base, agent=principal.name, allow_must=False,
+                                      read_only=False, redact_paths=True))
+        with self._lock:
+            closed = self._closed
+            entry = None if closed else self._services.get(key)
+            if not closed and entry is None:
+                entry = self._services[key] = _Entry(built)
+            if entry is not None and take_lease:
+                entry.leases += 1
+        if closed:
+            self._close_quietly(built)
+            raise ServiceError("internal", "the server is shutting down")
+        if entry.service is not built:                     # another thread opened it first
+            self._close_quietly(built)
+        return entry
+
+    @staticmethod
+    def _view(principal: Principal, service: MemoryService):
         return ReadOnlyView(service) if principal.role == "read-only" else service
 
-    def _sweep(self) -> None:
-        """Close the services of tokens that left the file, but only on a consistent, clean
-        snapshot: no error before the read and the same generation around it (every refresh
-        that changes anything bumps it, so the entries came from one clean read). Otherwise do
-        nothing and do not record the generation, so the next call retries. An outage lists no
-        tokens; closing then would lose every session (requests still fail closed at the guard)."""
+    def service_for(self, principal: Principal):
+        """The service (or read-only view) without holding it open. Tests and callers that do not
+        run a call use this; a call uses `lease`."""
+        return self._view(principal, self._obtain(principal, False).service)
+
+    @contextlib.contextmanager
+    def lease(self, principal: Principal):
+        """Hold the principal's service open for the duration of the `with` block; yields
+        (service or read-only view, role). Released on success, error or cancellation."""
+        entry = self._obtain(principal, True)
+        try:
+            yield self._view(principal, entry.service), principal.role
+        finally:
+            self._release(entry)
+
+    def _release(self, entry: _Entry) -> None:
+        with self._lock:
+            entry.leases -= 1
+            last = entry.retired and entry.leases == 0 and entry in self._retired
+        if not last:
+            return
+        self._close_quietly(entry.service)                 # outside the lock: a close can take a moment
+        with self._changed:
+            if entry in self._retired:
+                self._retired.remove(entry)
+            self._changed.notify_all()
+
+    def _sweep(self) -> List[_Entry]:
+        """The caller holds the lock. Returns the idle entries of tokens that left the file,
+        already removed, for the caller to close once it has released the lock. Only on a
+        consistent, clean snapshot: no error before the read and the same generation around it
+        (every refresh that changes anything bumps it, so the entries came from one clean read).
+        Otherwise it does nothing and does not record the generation, so the next call retries.
+        An outage lists no tokens; closing then would lose every session (requests still fail
+        closed at the guard). A departed service with a call running is retired, not returned:
+        its last lease closes it."""
         before = self._tokens.generation
         if self._tokens.error:
-            return
+            return []
         entries = self._tokens.entries()
         if self._tokens.generation != before or before == self._generation:
-            return                         # the file changed or failed meanwhile, or nothing new
+            return []                      # the file changed or failed meanwhile, or nothing new
         self._generation = before
         live = {(e.name, e.role, e.created_at) for e in entries}
+        idle: List[_Entry] = []
         for key in [k for k in self._services if k not in live]:
-            self._close_quietly(self._services.pop(key))
+            entry = self._services.pop(key)
+            if entry.leases == 0:
+                idle.append(entry)
+            else:
+                entry.retired = True
+                self._retired.append(entry)
+        return idle
 
     @staticmethod
     def _close_quietly(service: MemoryService) -> None:
@@ -97,12 +186,34 @@ class Principals:
         except Exception:
             logging.getLogger(__name__).exception("a service could not be closed cleanly")
 
-    def close(self) -> None:
+    def close(self, drain_seconds: float = DRAIN_SECONDS) -> None:
+        """Refuse new leases, close every idle service, wait up to `drain_seconds` for running
+        calls to finish (their last lease closes their service), then close what is left and
+        say so. Closing a service still takes its own lock, so a forced close waits for a call
+        inside a method, which the store's lock timeout bounds. Idempotent."""
         with self._lock:
             self._closed = True
-            services, self._services = list(self._services.values()), {}
-        for service in services:
-            self._close_quietly(service)
+            for entry in self._services.values():
+                entry.retired = True
+                self._retired.append(entry)
+            self._services = {}
+            idle = [e for e in self._retired if e.leases == 0]
+            self._retired = [e for e in self._retired if e.leases > 0]
+        for entry in idle:
+            self._close_quietly(entry.service)
+        deadline = time.monotonic() + drain_seconds
+        with self._changed:
+            while self._retired:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._changed.wait(remaining)
+            stuck, self._retired = self._retired, []
+        if stuck:
+            logging.getLogger(__name__).warning(
+                "closing %d service(s) with calls still running", len(stuck))
+        for entry in stuck:
+            self._close_quietly(entry.service)
 
 
 class CloseOnShutdown:
@@ -121,7 +232,11 @@ class CloseOnShutdown:
 
         async def watching(message):
             if message["type"] in ("lifespan.shutdown.complete", "lifespan.shutdown.failed"):
-                self.principals.close()                    # idempotent; the server is stopping anyway
+                try:
+                    with CancelScope(shield=True):         # a cancelled lifespan must not skip the close
+                        await to_thread.run_sync(self.principals.close)   # idempotent; drains calls
+                except Exception:
+                    self.principals.close()
             await send(message)
 
         await self.app(scope, receive, watching)
@@ -150,16 +265,17 @@ def public_hosts(public_url: str) -> List[str]:
 
 
 def build_app(base: ServiceConfig, tokens: TokenFile, *, public_url: str = "",
-              limiter: Optional[FailureLimiter] = None):
-    """(asgi_app, principals). The app authenticates every request before anything else."""
+              limiter: Optional[FailureLimiter] = None, max_workers: int = DEFAULT_WORKERS):
+    """(asgi_app, principals). The app authenticates every request before anything else. Tool
+    calls run in at most `max_workers` worker threads; the guard stays on the event loop."""
     principals = Principals(base, tokens)
     hosts = LOOPBACK_HOSTS + public_hosts(public_url)
 
-    def provider():
+    def lease():
         principal = current_principal.get()
         if principal is None:                          # the guard always sets it: fail closed
             raise ServiceError("forbidden", "no authenticated caller")
-        return principals.service_for(principal), principal.role
+        return principals.lease(principal)
 
     def observer(tool: str, outcome: str, ms: int) -> None:
         principal = current_principal.get()
@@ -167,7 +283,8 @@ def build_app(base: ServiceConfig, tokens: TokenFile, *, public_url: str = "",
                        principal.name if principal else "-", tool, outcome, ms)
 
     server = build_server(
-        provider=provider, trust_client_name=False, observer=observer, scrub=path_scrubber(base),
+        lease=lease, workers=max_workers, trust_client_name=False, observer=observer,
+        scrub=path_scrubber(base),
         settings={"stateless_http": True, "json_response": True,
                   "transport_security": TransportSecuritySettings(
                       enable_dns_rebinding_protection=True, allowed_hosts=hosts,
