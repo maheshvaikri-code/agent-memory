@@ -208,10 +208,12 @@ class Principals:
                 if remaining <= 0:
                     break
                 self._changed.wait(remaining)
+            # The stuck entries leave `_retired` here, so a late `_release` of theirs sees
+            # `entry in self._retired` is false and does not close them a second time.
             stuck, self._retired = self._retired, []
         if stuck:
             logging.getLogger(__name__).warning(
-                "closing %d service(s) with calls still running", len(stuck))
+                "closing %d service(s) that are still leased by running calls", len(stuck))
         for entry in stuck:
             self._close_quietly(entry.service)
 

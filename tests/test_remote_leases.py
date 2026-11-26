@@ -132,7 +132,7 @@ def test_close_gives_up_after_the_drain_time_and_says_so(base, tokens, caplog):
     with caplog.at_level(logging.WARNING, logger="agent_memory.remote.server"):
         principals.close(drain_seconds=0.3)
     assert seen["service"]._closed
-    assert any("still running" in record.getMessage() for record in caplog.records)
+    assert any("still leased" in record.getMessage() for record in caplog.records)
     release.set()
     worker.join(5)                                        # the late release must not raise
     assert principals.leases_held == 0

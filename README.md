@@ -324,9 +324,10 @@ Request bodies over 1 MB get 413, and a bearer value over 512 characters is refu
 **Known limits.**
 
 - Tokens are checked at request time. Revoking one stops it at the next request; its service
-  closes at the next call after a clean read of the token file. A revoke during an in-flight
-  request can leave a service open for the revoked token until the next token-file change or
-  shutdown (the guard still refuses the token).
+  closes at the next call after a clean read of the token file, or after its last running call
+  if one is in flight. A request that was already authenticated can reach the service just after
+  the revoke and open a fresh one, which stays open until the next token-file change or shutdown
+  (the guard still refuses the token's later requests).
 - The failure limiter is global, not per address: 20 failed authentications in 60 seconds make
   further invalid tokens get 429. A valid token always passes.
 - The token file mode (0600) is best effort on Windows; keep the file in a private directory.
