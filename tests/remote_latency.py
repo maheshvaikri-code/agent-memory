@@ -40,6 +40,8 @@ def main(calls: int = 200) -> None:
                                                  "params": {"name": name, "arguments": arguments}},
                                    headers=headers)
             response.raise_for_status()
+            if response.json()["result"].get("isError"):      # a tool error is still HTTP 200
+                raise SystemExit(f"{name} failed: {response.text[:200]}")
 
         with TestClient(app, base_url="http://127.0.0.1:8765") as client:
             for i in range(40):
@@ -55,8 +57,8 @@ def main(calls: int = 200) -> None:
                 times.append((time.perf_counter() - started) * 1000)
         principals.close()
     times.sort()
-    print(f"median {statistics.median(times):.2f} ms  p95 {times[int(0.95 * len(times)) - 1]:.2f} ms "
-          f"over {calls} calls")
+    print(f"min {times[0]:.2f} ms  median {statistics.median(times):.2f} ms  "
+          f"p95 {times[int(0.95 * len(times)) - 1]:.2f} ms  over {calls} calls")
 
 
 if __name__ == "__main__":
