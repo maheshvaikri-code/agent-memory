@@ -132,7 +132,7 @@ def build_server(service: Optional[MemoryService] = None, *,
                       max_tokens: Optional[int] = None,
                       context: str = "") -> Dict[str, Any]:
         return await dispatch(ctx, "memory_recall", task=task, files=files, symbols=symbols,
-                   max_tokens=max_tokens, context=context or None)
+                              max_tokens=max_tokens, context=context or None)
 
     @app.tool(description="Check a proposed approach against recorded failures: rejected "
                           "alternatives, bug patterns, failed refactors, constraints. Call "
@@ -155,7 +155,7 @@ def build_server(service: Optional[MemoryService] = None, *,
                         confidence: Optional[float] = None,
                         priority: str = "") -> Dict[str, Any]:
         return await dispatch(ctx, "memory_remember", kind=kind, fields=fields, files=files,
-                   evidence=evidence, confidence=confidence, priority=priority or None)
+                              evidence=evidence, confidence=confidence, priority=priority or None)
 
     @app.tool(description="Tell the memory whether a recalled note helped (true) or misled "
                           "(false), by its id.")
@@ -191,7 +191,7 @@ def build_server(service: Optional[MemoryService] = None, *,
     async def memory_session_end(ctx: Context, summary: str = "", completion: float = 1.0,
                            lessons: Optional[List[Any]] = None) -> Dict[str, Any]:
         return await dispatch(ctx, "memory_session_end", summary=summary, completion=completion,
-                   lessons=lessons)
+                              lessons=lessons)
 
     @app.tool(description="Hand over lessons from this session for a person to review. Each "
                           "lesson: {kind, fields, evidence, files, symbols}; kind and fields "
